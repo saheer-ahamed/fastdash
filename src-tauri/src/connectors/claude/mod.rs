@@ -26,6 +26,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset, Utc};
 
 use crate::engine::connector::{Connector, ConnectorError, ConnectorMeta, FetchCtx, Snapshot};
+use crate::engine::i18n;
 use crate::engine::panel::{Bar, Cell, Column, Panel, Stat, TableSpec};
 
 use aggregate::Aggregate;
@@ -126,21 +127,21 @@ fn build_panels(
 
     // --- Plan usage limits (official numbers) ---
     panels.push(Panel::Heading {
-        title: "Plan usage limits".into(),
+        title: i18n::t("claude.planUsageLimits"),
         badge: plan,
     });
 
     match official {
         Some(o) => {
             if let Some(w) = &o.five_hour {
-                panels.push(limit_meter("Current session", w, now));
+                panels.push(limit_meter(&i18n::t("claude.currentSession"), w, now));
             }
             panels.push(Panel::Heading {
-                title: "Weekly limits".into(),
+                title: i18n::t("claude.weeklyLimits"),
                 badge: None,
             });
             if let Some(w) = &o.weekly {
-                panels.push(limit_meter("All models", w, now));
+                panels.push(limit_meter(&i18n::t("claude.allModels"), w, now));
             }
             for s in &o.scoped {
                 panels.push(scoped_meter(s, now));
@@ -149,14 +150,14 @@ fn build_panels(
         None => {
             // Official numbers unavailable (offline / rate-limited): show local
             // estimates so the section is never blank.
-            panels.push(local_meter("Current session (est.)", agg.five_hour_tokens, "in the last 5h"));
-            panels.push(local_meter("This week (est.)", agg.current_week_tokens, "this week"));
+            panels.push(local_meter(&i18n::t("claude.currentSessionEst"), agg.five_hour_tokens, &i18n::t("claude.inLast5h")));
+            panels.push(local_meter(&i18n::t("claude.thisWeekEst"), agg.current_week_tokens, &i18n::t("claude.thisWeek")));
         }
     }
 
     // --- Token usage (local transcripts) ---
     panels.push(Panel::Heading {
-        title: "Token usage".into(),
+        title: i18n::t("claude.tokenUsage"),
         badge: None,
     });
 
@@ -170,24 +171,24 @@ fn build_panels(
         title: None,
         stats: vec![
             Stat {
-                label: "This month".into(),
+                label: i18n::t("claude.thisMonth"),
                 value: fmt_tokens(agg.current_month_tokens),
-                sub: Some("tokens".into()),
+                sub: Some(i18n::t("claude.tokens")),
             },
             Stat {
-                label: "Today".into(),
+                label: i18n::t("claude.today"),
                 value: fmt_tokens(agg.today_tokens),
-                sub: Some("tokens".into()),
+                sub: Some(i18n::t("claude.tokens")),
             },
             Stat {
-                label: "All time".into(),
+                label: i18n::t("claude.allTime"),
                 value: fmt_tokens(agg.total_tokens()),
-                sub: Some(format!("{} sessions", fmt_count(agg.sessions as u64))),
+                sub: Some(i18n::tf("claude.sessions", &[("n", &fmt_count(agg.sessions as u64))])),
             },
             Stat {
-                label: "Equivalent cost".into(),
+                label: i18n::t("claude.equivalentCost"),
                 value: fmt_usd(cost),
-                sub: Some("all time, notional".into()),
+                sub: Some(i18n::t("claude.allTimeNotional")),
             },
         ],
     });
@@ -202,7 +203,7 @@ fn build_panels(
 /// A 0..100 official limit meter: "31% used" on the right, reset under the label.
 fn limit_meter(label: &str, w: &UsageWindow, now: DateTime<Utc>) -> Panel {
     let sub = if w.percent <= 0.0 && w.resets_at.is_none() {
-        Some(format!("You haven't used {label} yet"))
+        Some(i18n::tf("claude.notUsedYet", &[("label", label)]))
     } else {
         w.resets_at.map(|r| fmt_reset(r, now))
     };
@@ -212,7 +213,7 @@ fn limit_meter(label: &str, w: &UsageWindow, now: DateTime<Utc>) -> Panel {
         limit: Some(100.0),
         unit: "%".into(),
         sub,
-        caption: Some(format!("{:.0}% used", w.percent)),
+        caption: Some(i18n::tf("claude.percentUsed", &[("p", &format!("{:.0}", w.percent))])),
     }
 }
 
@@ -232,15 +233,18 @@ fn local_meter(label: &str, tokens: u64, when: &str) -> Panel {
         used: 0.0,
         limit: None,
         unit: "tokens".into(),
-        sub: Some("official usage unavailable - local estimate".into()),
-        caption: Some(format!("{} {when}", fmt_tokens(tokens))),
+        sub: Some(i18n::t("claude.localEstimate")),
+        caption: Some(i18n::tf(
+            "claude.localCaption",
+            &[("tokens", &fmt_tokens(tokens)), ("when", when)],
+        )),
     }
 }
 
 fn monthly_table(agg: &Aggregate) -> Panel {
     let columns = vec![
-        Column { key: "month".into(), label: "Month".into(), numeric: false },
-        Column { key: "tokens".into(), label: "Tokens".into(), numeric: true },
+        Column { key: "month".into(), label: i18n::t("claude.colMonth"), numeric: false },
+        Column { key: "tokens".into(), label: i18n::t("claude.colTokens"), numeric: true },
     ];
     let rows = agg
         .per_month
@@ -249,7 +253,7 @@ fn monthly_table(agg: &Aggregate) -> Panel {
         .collect();
 
     Panel::Table(TableSpec {
-        title: Some("Tokens by month".into()),
+        title: Some(i18n::t("claude.tokensByMonth")),
         columns,
         rows,
     })
@@ -257,12 +261,12 @@ fn monthly_table(agg: &Aggregate) -> Panel {
 
 fn tokens_by_model_table(agg: &Aggregate) -> Panel {
     let columns = vec![
-        Column { key: "model".into(), label: "Model".into(), numeric: false },
-        Column { key: "input".into(), label: "Input".into(), numeric: true },
-        Column { key: "output".into(), label: "Output".into(), numeric: true },
-        Column { key: "cache_read".into(), label: "Cache read".into(), numeric: true },
-        Column { key: "total".into(), label: "Total".into(), numeric: true },
-        Column { key: "cost".into(), label: "Cost".into(), numeric: true },
+        Column { key: "model".into(), label: i18n::t("claude.colModel"), numeric: false },
+        Column { key: "input".into(), label: i18n::t("claude.colInput"), numeric: true },
+        Column { key: "output".into(), label: i18n::t("claude.colOutput"), numeric: true },
+        Column { key: "cache_read".into(), label: i18n::t("claude.colCacheRead"), numeric: true },
+        Column { key: "total".into(), label: i18n::t("claude.colTotal"), numeric: true },
+        Column { key: "cost".into(), label: i18n::t("claude.colCost"), numeric: true },
     ];
 
     let rows = agg
@@ -282,7 +286,7 @@ fn tokens_by_model_table(agg: &Aggregate) -> Panel {
         .collect();
 
     Panel::Table(TableSpec {
-        title: Some("Tokens by model".into()),
+        title: Some(i18n::t("claude.tokensByModel")),
         columns,
         rows,
     })
@@ -298,13 +302,16 @@ fn effort_bars(agg: &Aggregate) -> Panel {
             Bar {
                 label: e.effort.clone(),
                 value: frac,
-                display: Some(format!("{:.0}% \u{00b7} {} msgs", frac * 100.0, fmt_count(e.turns))),
+                display: Some(i18n::tf(
+                    "claude.effortDisplay",
+                    &[("p", &format!("{:.0}", frac * 100.0)), ("n", &fmt_count(e.turns))],
+                )),
             }
         })
         .collect();
 
     Panel::BarList {
-        title: Some("Effort (share of output tokens)".into()),
+        title: Some(i18n::t("claude.effortTitle")),
         bars,
     }
 }
@@ -320,19 +327,19 @@ fn cell(text: String) -> Cell {
 fn fmt_reset(target: DateTime<Utc>, now: DateTime<Utc>) -> String {
     let secs = (target - now).num_seconds();
     if secs <= 0 {
-        return "Resets now".into();
+        return i18n::t("claude.resetsNow");
     }
     if secs < 12 * 3600 {
         let hours = secs / 3600;
         let mins = (secs % 3600) / 60;
         if hours > 0 {
-            format!("Resets in {hours}h {mins}m")
+            i18n::tf("claude.resetsInHm", &[("h", &hours.to_string()), ("m", &mins.to_string())])
         } else {
-            format!("Resets in {mins} min")
+            i18n::tf("claude.resetsInMin", &[("m", &mins.to_string())])
         }
     } else {
         let local = target.with_timezone(&ist());
-        format!("Resets {}", local.format("%a %-I:%M %p"))
+        i18n::tf("claude.resetsAt", &[("when", &local.format("%a %-I:%M %p").to_string())])
     }
 }
 
