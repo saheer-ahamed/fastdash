@@ -14,13 +14,20 @@ pub enum Panel {
         title: Option<String>,
         stats: Vec<Stat>,
     },
+    /// A section heading with an optional badge (e.g. the plan name).
+    Heading {
+        title: String,
+        badge: Option<String>,
+    },
     /// A progress bar with an optional limit (5h window, weekly usage).
     Meter {
         label: String,
         used: f64,
         limit: Option<f64>,
         unit: String,
-        /// Pre-formatted caption, e.g. "62% - resets in 1h14m".
+        /// Secondary line under the label, e.g. "Resets in 47 min".
+        sub: Option<String>,
+        /// Right-aligned value, e.g. "31% used".
         caption: Option<String>,
     },
     /// A sortable table (PR counts, per-model tokens, line contributions).

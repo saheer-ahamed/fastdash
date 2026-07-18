@@ -48,6 +48,14 @@ pub struct DayPoint {
     pub total_tokens: u64,
 }
 
+/// One IST calendar month of total token usage.
+#[derive(Debug, Clone)]
+pub struct MonthPoint {
+    /// e.g. "Jul 2026".
+    pub label: String,
+    pub total_tokens: u64,
+}
+
 /// Everything the panels need, derived from local transcripts.
 #[derive(Debug, Clone, Default)]
 pub struct Aggregate {
@@ -68,6 +76,12 @@ pub struct Aggregate {
     pub current_week_tokens: u64,
     /// Sum of all tokens for turns in the last rolling 5 hours.
     pub five_hour_tokens: u64,
+    /// Sum of tokens in the current IST calendar month.
+    pub current_month_tokens: u64,
+    /// Sum of tokens today (IST).
+    pub today_tokens: u64,
+    /// IST calendar-month totals, most recent month first.
+    pub per_month: Vec<MonthPoint>,
 }
 
 impl Aggregate {
@@ -90,6 +104,7 @@ pub fn build(turns: &[Turn], now: DateTime<Utc>) -> Aggregate {
     let mut efforts: HashMap<String, EffortSplit> = HashMap::new();
     let mut sessions: HashSet<&str> = HashSet::new();
     let mut days: BTreeMap<NaiveDate, u64> = BTreeMap::new();
+    let mut months: BTreeMap<(i32, u32), u64> = BTreeMap::new();
 
     let ist = ist();
     let now_ist = now.with_timezone(&ist);
@@ -131,11 +146,20 @@ pub fn build(turns: &[Turn], now: DateTime<Utc>) -> Aggregate {
         let turn_ist_date = t.timestamp.with_timezone(&ist).date_naive();
         *days.entry(turn_ist_date).or_insert(0) += line_total;
 
+        let (ty, tm) = (turn_ist_date.year(), turn_ist_date.month());
+        *months.entry((ty, tm)).or_insert(0) += line_total;
+
         if turn_ist_date >= week_start {
             agg.current_week_tokens += line_total;
         }
         if t.timestamp >= five_hour_cutoff {
             agg.five_hour_tokens += line_total;
+        }
+        if turn_ist_date == today {
+            agg.today_tokens += line_total;
+        }
+        if ty == now_ist.year() && tm == now_ist.month() {
+            agg.current_month_tokens += line_total;
         }
     }
 
@@ -151,6 +175,16 @@ pub fn build(turns: &[Turn], now: DateTime<Utc>) -> Aggregate {
     agg.per_day = days
         .into_iter()
         .map(|(date, total_tokens)| DayPoint { date, total_tokens })
+        .collect();
+    agg.per_month = months
+        .into_iter()
+        .rev()
+        .map(|((y, m), total_tokens)| {
+            let label = NaiveDate::from_ymd_opt(y, m, 1)
+                .map(|d| d.format("%b %Y").to_string())
+                .unwrap_or_default();
+            MonthPoint { label, total_tokens }
+        })
         .collect();
 
     agg

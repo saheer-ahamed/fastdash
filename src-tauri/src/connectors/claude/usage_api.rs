@@ -77,6 +77,37 @@ pub fn read_oauth_token() -> Result<String, UsageError> {
         .ok_or(UsageError::NoToken)
 }
 
+/// Human-readable plan label from the stored credentials, e.g. "Max (5x)".
+/// Derived from `subscriptionType` ("max") + `rateLimitTier`
+/// ("default_claude_max_5x" -> "5x"). Returns `None` if unavailable.
+pub fn read_plan() -> Option<String> {
+    let base = directories::BaseDirs::new()?;
+    let path = base.home_dir().join(".claude").join(".credentials.json");
+    let raw = std::fs::read_to_string(&path).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let oauth = &v["claudeAiOauth"];
+
+    let sub = oauth["subscriptionType"].as_str().filter(|s| !s.is_empty())?;
+    let name = {
+        let mut chars = sub.chars();
+        chars
+            .next()
+            .map(|f| f.to_uppercase().collect::<String>() + chars.as_str())
+            .unwrap_or_default()
+    };
+
+    // Pull a "<n>x" multiplier out of the tier string if present.
+    let mult = oauth["rateLimitTier"].as_str().and_then(|tier| {
+        tier.rsplit('_')
+            .find(|p| p.ends_with('x') && p[..p.len() - 1].chars().all(|c| c.is_ascii_digit()))
+    });
+
+    Some(match mult {
+        Some(m) => format!("{name} ({m})"),
+        None => name,
+    })
+}
+
 /// Fetch and normalize the official usage numbers.
 pub async fn fetch_official_usage(token: &str) -> Result<OfficialUsage, UsageError> {
     let resp = reqwest::Client::new()

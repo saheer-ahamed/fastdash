@@ -153,13 +153,23 @@ function PanelView({ panel }: { panel: Panel }) {
           </div>
         </section>
       );
+    case "heading":
+      return (
+        <div className="section-heading">
+          <h2>{panel.title}</h2>
+          {panel.badge && <span className="badge">{panel.badge}</span>}
+        </div>
+      );
     case "meter": {
       const pct = panel.limit ? Math.min(100, (panel.used / panel.limit) * 100) : 0;
       return (
-        <section className="card">
+        <section className="card meter-card">
           <div className="meter-head">
-            <span>{panel.label}</span>
-            <span className="muted">{panel.caption ?? `${Math.round(pct)}%`}</span>
+            <div className="meter-label-group">
+              <span className="meter-label">{panel.label}</span>
+              {panel.sub && <span className="meter-sub muted">{panel.sub}</span>}
+            </div>
+            <span className="meter-pct">{panel.caption ?? `${Math.round(pct)}%`}</span>
           </div>
           <div className="meter-track">
             <div className="meter-fill" style={{ width: `${pct}%` }} />

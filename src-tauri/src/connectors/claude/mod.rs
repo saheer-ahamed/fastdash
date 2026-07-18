@@ -4,10 +4,14 @@
 //! effort, timestamps) and overlays the official `/usage` numbers. Fully
 //! offline for token/effort/cost; the official limit + reset is best-effort.
 //!
-//! Owned modules (fleshed out in the `feat/claude` worktree):
+//! The official `/usage` endpoint is rate-limited, so it is pulled at most once
+//! per `OFFICIAL_TTL` and the last good value is reused if a later pull fails
+//! (e.g. a transient 429). The local transcript scan drives everything else.
+//!
+//! Owned modules:
 //!   - `parse`     JSONL reader (cold full-scan; incremental watcher is a TODO)
-//!   - `aggregate` rollups by model / effort / day / week / 5h block
-//!   - `usage_api` official /usage pull with offline-estimate fallback
+//!   - `aggregate` rollups by model / effort / day / week / month / 5h block
+//!   - `usage_api` official /usage pull + plan label
 //!   - `pricing`   token -> notional cost
 
 mod aggregate;
@@ -15,22 +19,64 @@ mod parse;
 mod pricing;
 mod usage_api;
 
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, FixedOffset, Utc};
 
 use crate::engine::connector::{Connector, ConnectorError, ConnectorMeta, FetchCtx, Snapshot};
 use crate::engine::panel::{Bar, Cell, Column, Panel, Stat, TableSpec};
 
 use aggregate::Aggregate;
-use usage_api::{OfficialUsage, UsageWindow};
+use usage_api::{OfficialUsage, ScopedLimit, UsageWindow};
 
-const REFRESH_SECS: u64 = 5;
+/// Local transcript re-scan cadence.
+const REFRESH_SECS: u64 = 60;
+/// Minimum spacing between official `/usage` pulls (the endpoint is rate-limited
+/// and returns 429 if polled too often).
+const OFFICIAL_TTL: Duration = Duration::from_secs(45);
 
-pub struct ClaudeConnector;
+pub struct ClaudeConnector {
+    /// Last good official usage plus when it was fetched, used to throttle the
+    /// pull and to survive a transient rate-limit.
+    official: Mutex<Option<(OfficialUsage, Instant)>>,
+}
 
 impl ClaudeConnector {
     pub fn new() -> Self {
-        ClaudeConnector
+        ClaudeConnector {
+            official: Mutex::new(None),
+        }
+    }
+
+    /// Official usage, pulling fresh only if the cache is older than
+    /// `OFFICIAL_TTL`. On a failed pull the last good value is reused so a 429
+    /// never blanks the meters. The lock is never held across the await.
+    async fn official_usage(&self) -> Option<OfficialUsage> {
+        {
+            let guard = self.official.lock().unwrap();
+            if let Some((usage, at)) = guard.as_ref() {
+                if at.elapsed() < OFFICIAL_TTL {
+                    return Some(usage.clone());
+                }
+            }
+        }
+
+        let fresh = match usage_api::read_oauth_token() {
+            Ok(token) => usage_api::fetch_official_usage(&token).await.ok(),
+            Err(_) => None,
+        };
+
+        let mut guard = self.official.lock().unwrap();
+        match fresh {
+            Some(usage) => {
+                *guard = Some((usage.clone(), Instant::now()));
+                Some(usage)
+            }
+            // Offline or rate-limited: reuse the last good value if we have one.
+            None => guard.as_ref().map(|(u, _)| u.clone()),
+        }
     }
 }
 
@@ -46,13 +92,10 @@ impl Connector for ClaudeConnector {
     }
 
     async fn fetch(&self, _ctx: &FetchCtx) -> Result<Snapshot, ConnectorError> {
-        // 1. Official usage (best-effort). Any failure -> local estimate later.
-        let official = match usage_api::read_oauth_token() {
-            Ok(token) => usage_api::fetch_official_usage(&token).await.ok(),
-            Err(_) => None,
-        };
+        let official = self.official_usage().await;
+        let plan = usage_api::read_plan();
 
-        // 2. Local transcripts (blocking fs) off the async runtime.
+        // Local transcripts (blocking fs) off the async runtime.
         let turns = tokio::task::spawn_blocking(parse::scan_transcripts)
             .await
             .map_err(|e| ConnectorError::Other(format!("scan task failed: {e}")))?
@@ -61,21 +104,62 @@ impl Connector for ClaudeConnector {
         let now = Utc::now();
         let agg = aggregate::build(&turns, now);
 
-        let panels = build_panels(&agg, official.as_ref(), now);
+        let panels = build_panels(&agg, official.as_ref(), plan, now);
         Ok(Snapshot::ok(panels, Some(REFRESH_SECS)))
     }
 }
 
 // --- panel assembly ---
 
-fn build_panels(agg: &Aggregate, official: Option<&OfficialUsage>, now: DateTime<Utc>) -> Vec<Panel> {
+/// IST offset for humanized reset times.
+fn ist() -> FixedOffset {
+    FixedOffset::east_opt(5 * 3600 + 30 * 60).expect("IST offset is valid")
+}
+
+fn build_panels(
+    agg: &Aggregate,
+    official: Option<&OfficialUsage>,
+    plan: Option<String>,
+    now: DateTime<Utc>,
+) -> Vec<Panel> {
     let mut panels = Vec::new();
 
-    // 5-hour + weekly meters (official percent, or a local token-based fallback).
-    panels.push(five_hour_meter(agg, official, now));
-    panels.push(weekly_meter(agg, official, now));
+    // --- Plan usage limits (official numbers) ---
+    panels.push(Panel::Heading {
+        title: "Plan usage limits".into(),
+        badge: plan,
+    });
 
-    // KPI tiles.
+    match official {
+        Some(o) => {
+            if let Some(w) = &o.five_hour {
+                panels.push(limit_meter("Current session", w, now));
+            }
+            panels.push(Panel::Heading {
+                title: "Weekly limits".into(),
+                badge: None,
+            });
+            if let Some(w) = &o.weekly {
+                panels.push(limit_meter("All models", w, now));
+            }
+            for s in &o.scoped {
+                panels.push(scoped_meter(s, now));
+            }
+        }
+        None => {
+            // Official numbers unavailable (offline / rate-limited): show local
+            // estimates so the section is never blank.
+            panels.push(local_meter("Current session (est.)", agg.five_hour_tokens, "in the last 5h"));
+            panels.push(local_meter("This week (est.)", agg.current_week_tokens, "this week"));
+        }
+    }
+
+    // --- Token usage (local transcripts) ---
+    panels.push(Panel::Heading {
+        title: "Token usage".into(),
+        badge: None,
+    });
+
     let cost: f64 = agg
         .per_model
         .iter()
@@ -83,96 +167,92 @@ fn build_panels(agg: &Aggregate, official: Option<&OfficialUsage>, now: DateTime
         .sum();
 
     panels.push(Panel::StatCards {
-        title: Some("Claude usage".into()),
+        title: None,
         stats: vec![
             Stat {
-                label: "Total tokens".into(),
+                label: "This month".into(),
+                value: fmt_tokens(agg.current_month_tokens),
+                sub: Some("tokens".into()),
+            },
+            Stat {
+                label: "Today".into(),
+                value: fmt_tokens(agg.today_tokens),
+                sub: Some("tokens".into()),
+            },
+            Stat {
+                label: "All time".into(),
                 value: fmt_tokens(agg.total_tokens()),
-                sub: Some(format!(
-                    "{} in \u{00b7} {} out",
-                    fmt_tokens(agg.total_input),
-                    fmt_tokens(agg.total_output)
-                )),
+                sub: Some(format!("{} sessions", fmt_count(agg.sessions as u64))),
             },
             Stat {
                 label: "Equivalent cost".into(),
                 value: fmt_usd(cost),
-                sub: Some("notional API rate".into()),
-            },
-            Stat {
-                label: "Sessions".into(),
-                value: fmt_count(agg.sessions as u64),
-                sub: None,
-            },
-            Stat {
-                label: "Messages".into(),
-                value: fmt_count(agg.messages as u64),
-                sub: None,
+                sub: Some("all time, notional".into()),
             },
         ],
     });
 
-    // Per-model token table.
+    panels.push(monthly_table(agg));
     panels.push(tokens_by_model_table(agg));
-
-    // Effort split as fractional bars.
     panels.push(effort_bars(agg));
-
-    // Per-model weekly scoped limits, if the official API returned any.
-    if let Some(o) = official {
-        if !o.scoped.is_empty() {
-            panels.push(scoped_limits_table(o, now));
-        }
-    }
 
     panels
 }
 
-fn five_hour_meter(agg: &Aggregate, official: Option<&OfficialUsage>, now: DateTime<Utc>) -> Panel {
-    match official.and_then(|o| o.five_hour.as_ref()) {
-        Some(w) => percent_meter("5-hour window", w, now),
-        None => Panel::Meter {
-            label: "5-hour window".into(),
-            used: agg.five_hour_tokens as f64,
-            limit: None,
-            unit: "tokens".into(),
-            caption: Some(format!(
-                "{} in the last 5h \u{00b7} official usage unavailable",
-                fmt_tokens(agg.five_hour_tokens)
-            )),
-        },
-    }
-}
-
-fn weekly_meter(agg: &Aggregate, official: Option<&OfficialUsage>, now: DateTime<Utc>) -> Panel {
-    match official.and_then(|o| o.weekly.as_ref()) {
-        Some(w) => percent_meter("Weekly", w, now),
-        None => Panel::Meter {
-            label: "Weekly".into(),
-            used: agg.current_week_tokens as f64,
-            limit: None,
-            unit: "tokens".into(),
-            caption: Some(format!(
-                "{} this week \u{00b7} official usage unavailable",
-                fmt_tokens(agg.current_week_tokens)
-            )),
-        },
-    }
-}
-
-/// A 0..100 percent meter with a humanized reset caption.
-fn percent_meter(label: &str, w: &UsageWindow, now: DateTime<Utc>) -> Panel {
-    let caption = match w.resets_at {
-        Some(reset) => format!("{:.0}% - resets in {}", w.percent, humanize_until(reset, now)),
-        None => format!("{:.0}%", w.percent),
+/// A 0..100 official limit meter: "31% used" on the right, reset under the label.
+fn limit_meter(label: &str, w: &UsageWindow, now: DateTime<Utc>) -> Panel {
+    let sub = if w.percent <= 0.0 && w.resets_at.is_none() {
+        Some(format!("You haven't used {label} yet"))
+    } else {
+        w.resets_at.map(|r| fmt_reset(r, now))
     };
     Panel::Meter {
         label: label.into(),
         used: w.percent,
         limit: Some(100.0),
         unit: "%".into(),
-        caption: Some(caption),
+        sub,
+        caption: Some(format!("{:.0}% used", w.percent)),
     }
+}
+
+fn scoped_meter(s: &ScopedLimit, now: DateTime<Utc>) -> Panel {
+    let w = UsageWindow {
+        percent: s.percent,
+        resets_at: s.resets_at,
+    };
+    limit_meter(&s.label, &w, now)
+}
+
+/// Fallback meter shown when the official numbers are unavailable: a local token
+/// count with no percentage bar.
+fn local_meter(label: &str, tokens: u64, when: &str) -> Panel {
+    Panel::Meter {
+        label: label.into(),
+        used: 0.0,
+        limit: None,
+        unit: "tokens".into(),
+        sub: Some("official usage unavailable - local estimate".into()),
+        caption: Some(format!("{} {when}", fmt_tokens(tokens))),
+    }
+}
+
+fn monthly_table(agg: &Aggregate) -> Panel {
+    let columns = vec![
+        Column { key: "month".into(), label: "Month".into(), numeric: false },
+        Column { key: "tokens".into(), label: "Tokens".into(), numeric: true },
+    ];
+    let rows = agg
+        .per_month
+        .iter()
+        .map(|m| vec![cell(m.label.clone()), cell(fmt_tokens(m.total_tokens))])
+        .collect();
+
+    Panel::Table(TableSpec {
+        title: Some("Tokens by month".into()),
+        columns,
+        rows,
+    })
 }
 
 fn tokens_by_model_table(agg: &Aggregate) -> Panel {
@@ -229,39 +309,31 @@ fn effort_bars(agg: &Aggregate) -> Panel {
     }
 }
 
-fn scoped_limits_table(o: &OfficialUsage, now: DateTime<Utc>) -> Panel {
-    let columns = vec![
-        Column { key: "model".into(), label: "Model".into(), numeric: false },
-        Column { key: "weekly".into(), label: "Weekly".into(), numeric: true },
-        Column { key: "resets".into(), label: "Resets in".into(), numeric: false },
-    ];
-    let rows = o
-        .scoped
-        .iter()
-        .map(|s| {
-            let resets = s
-                .resets_at
-                .map(|r| humanize_until(r, now))
-                .unwrap_or_else(|| "-".into());
-            vec![
-                cell(s.label.clone()),
-                cell(format!("{:.0}%", s.percent)),
-                cell(resets),
-            ]
-        })
-        .collect();
-
-    Panel::Table(TableSpec {
-        title: Some("Weekly limits by model".into()),
-        columns,
-        rows,
-    })
-}
-
 // --- formatting helpers ---
 
 fn cell(text: String) -> Cell {
     Cell { text, href: None }
+}
+
+/// "Resets in 47 min" / "Resets in 2h 14m" when soon; else the absolute IST
+/// weekday + time, e.g. "Resets Sat 10:30 AM".
+fn fmt_reset(target: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    let secs = (target - now).num_seconds();
+    if secs <= 0 {
+        return "Resets now".into();
+    }
+    if secs < 12 * 3600 {
+        let hours = secs / 3600;
+        let mins = (secs % 3600) / 60;
+        if hours > 0 {
+            format!("Resets in {hours}h {mins}m")
+        } else {
+            format!("Resets in {mins} min")
+        }
+    } else {
+        let local = target.with_timezone(&ist());
+        format!("Resets {}", local.format("%a %-I:%M %p"))
+    }
 }
 
 /// Compact token count: 12.4M, 3.1K, 1.2B.
@@ -292,6 +364,9 @@ fn fmt_count(n: u64) -> String {
 
 /// Compact USD: $12.3K above a thousand, else two decimals.
 fn fmt_usd(cost: f64) -> String {
+    if cost < 0.005 {
+        return "$0.00".into();
+    }
     if cost >= 1000.0 {
         format!("${:.1}K", cost / 1000.0)
     } else {
@@ -304,20 +379,32 @@ fn short_model(model: &str) -> String {
     model.strip_prefix("claude-").unwrap_or(model).to_string()
 }
 
-/// Humanized "time until": "3d 4h", "2h14m", "12m", or "now".
-fn humanize_until(target: DateTime<Utc>, now: DateTime<Utc>) -> String {
-    let secs = (target - now).num_seconds();
-    if secs <= 0 {
-        return "now".into();
-    }
-    let days = secs / 86_400;
-    let hours = (secs % 86_400) / 3_600;
-    let mins = (secs % 3_600) / 60;
-    if days > 0 {
-        format!("{days}d {hours}h")
-    } else if hours > 0 {
-        format!("{hours}h{mins}m")
-    } else {
-        format!("{mins}m")
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Verifies the official-usage panel layout deterministically, without
+    // depending on the (rate-limited) live endpoint.
+    #[test]
+    fn official_panels_render() {
+        let now = Utc::now();
+        let official = OfficialUsage {
+            five_hour: Some(UsageWindow {
+                percent: 31.0,
+                resets_at: Some(now + chrono::Duration::minutes(47)),
+            }),
+            weekly: Some(UsageWindow {
+                percent: 3.0,
+                resets_at: Some(now + chrono::Duration::days(6)),
+            }),
+            scoped: vec![ScopedLimit {
+                label: "Fable".into(),
+                percent: 0.0,
+                resets_at: None,
+            }],
+        };
+        let panels = build_panels(&Aggregate::default(), Some(&official), Some("Max (5x)".into()), now);
+        println!("PANELS:\n{}", serde_json::to_string_pretty(&panels).unwrap());
+        assert!(panels.len() >= 6);
     }
 }

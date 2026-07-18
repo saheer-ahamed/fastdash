@@ -38,12 +38,14 @@ export interface ListItem {
 
 export type Panel =
   | { kind: "statCards"; title: string | null; stats: Stat[] }
+  | { kind: "heading"; title: string; badge: string | null }
   | {
       kind: "meter";
       label: string;
       used: number;
       limit: number | null;
       unit: string;
+      sub: string | null;
       caption: string | null;
     }
   | { kind: "table"; title: string | null; columns: Column[]; rows: Cell[][] }

@@ -222,12 +222,58 @@ body {
   margin-top: 4px;
 }
 
+/* Section heading (Plan usage limits / Weekly limits / Token usage) */
+.section-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 6px 2px -2px;
+}
+
+.section-heading h2 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  margin: 0;
+}
+
+.badge {
+  font-size: 12px;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 9px;
+}
+
 /* Meter */
 .meter-head {
   display: flex;
   justify-content: space-between;
-  margin-bottom: 8px;
+  align-items: flex-start;
+  margin-bottom: 10px;
   font-size: 14px;
+}
+
+.meter-label-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.meter-label {
+  font-weight: 500;
+}
+
+.meter-sub {
+  font-size: 12px;
+}
+
+.meter-pct {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .meter-track {
