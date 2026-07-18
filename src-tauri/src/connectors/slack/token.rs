@@ -1,7 +1,7 @@
 //! Slack user-token resolution.
 //!
-//! Temporary source until `feat/core` lands proper config + keychain wiring:
-//!   1. OS keychain entry with service `fastdash/slack/<label>`
+//! Token resolution order:
+//!   1. OS keychain via `engine::secrets` (key `slack/<label>`, written by Settings)
 //!   2. env var `SLACK_USER_TOKEN` (handy for local dev / testing)
 //!
 //! `search.messages` requires a **user token** (`xoxp`), so a resolved token
@@ -12,9 +12,6 @@
 //! workspace label(s) chosen in Settings, and support multiple workspaces
 //! (one token per label) rather than a single default.
 
-/// Keychain account name paired with the `fastdash/slack/<label>` service so
-/// lookups are deterministic across platforms.
-const KEYRING_ACCOUNT: &str = "user-token";
 const ENV_TOKEN: &str = "SLACK_USER_TOKEN";
 
 /// The workspace label used until config wiring exists.
@@ -44,11 +41,9 @@ pub fn resolve(label: &str) -> Option<ResolvedToken> {
 }
 
 fn from_keyring(label: &str) -> Option<String> {
-    let service = format!("fastdash/slack/{label}");
-    // Any keyring failure (no entry, locked keychain, platform error) is treated
-    // as "not configured here" so we can fall through to the env var.
-    let entry = keyring::Entry::new(&service, KEYRING_ACCOUNT).ok()?;
-    let token = entry.get_password().ok()?;
+    // Read through the shared keychain wrapper so this matches exactly what the
+    // Settings UI writes via `set_secret` (service `fastdash`, key `slack/<label>`).
+    let token = crate::engine::secrets::get("slack", label).ok()??;
     let trimmed = token.trim();
     if trimmed.is_empty() {
         None

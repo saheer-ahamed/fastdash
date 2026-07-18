@@ -1,18 +1,15 @@
 //! GitHub connector configuration.
 //!
-//! TEMPORARY source until the core config/keychain (`feat/core`) lands. For now
-//! the token comes from the OS keychain entry `fastdash/github/<label>` and, if
-//! that is missing, the `GITHUB_TOKEN` env var. Organizations come from the
-//! `FASTDASH_GITHUB_ORGS` env var (comma-separated), defaulting to `z-roworld`.
+//! Resolution: the first GitHub account configured in the shared `engine::config`
+//! (its label + selected orgs), with the token read from the OS keychain via
+//! `engine::secrets` (key `github/<label>`, written by the Settings UI). The env
+//! vars `GITHUB_TOKEN` / `FASTDASH_GITHUB_ORGS` / `FASTDASH_GITHUB_LABEL` act as
+//! fallbacks for local/dev use.
 //!
-//! TODO(feat/core): replace this with the shared config loader + keychain. The
-//! real design supports multiple accounts (work `saheer-zro`, personal
-//! `saheer-ahamed`), each with its own PAT in the keychain, and org selection
-//! persisted in `%APPDATA%/fastdash/config.toml` (populated from `/user/orgs`).
+//! TODO: support multiple accounts at once (work `saheer-zro` + personal
+//! `saheer-ahamed`) and populate the org checklist from `/user/orgs`.
 
-/// Keychain service under which per-account tokens live (`<service>/<label>`).
-const KEYCHAIN_SERVICE: &str = "fastdash/github";
-/// Default account label until multi-account config lands.
+/// Default account label when none is configured.
 const DEFAULT_LABEL: &str = "default";
 /// Default org when `FASTDASH_GITHUB_ORGS` is unset.
 const DEFAULT_ORG: &str = "z-roworld";
@@ -31,25 +28,37 @@ impl GithubConfig {
     /// Resolve the configuration, or `None` if no token is available (the
     /// connector then reports `NeedsAuth`).
     pub fn resolve() -> Option<Self> {
-        let label =
-            std::env::var("FASTDASH_GITHUB_LABEL").unwrap_or_else(|_| DEFAULT_LABEL.to_string());
+        // Prefer the first account configured in Settings; fall back to env vars.
+        let account = crate::engine::config::load()
+            .github
+            .accounts
+            .into_iter()
+            .next();
+        let label = account
+            .as_ref()
+            .map(|a| a.label.clone())
+            .or_else(|| std::env::var("FASTDASH_GITHUB_LABEL").ok())
+            .unwrap_or_else(|| DEFAULT_LABEL.to_string());
 
         // Prefer the keychain; fall back to the env var for local/dev use.
         let token = token_from_keychain(&label).or_else(token_from_env)?;
 
-        Some(GithubConfig {
-            token,
-            orgs: orgs_from_env(),
-            label,
-        })
+        // Orgs from the configured account, else the env-var default.
+        let orgs = account
+            .map(|a| a.orgs)
+            .filter(|o| !o.is_empty())
+            .unwrap_or_else(orgs_from_env);
+
+        Some(GithubConfig { token, orgs, label })
     }
 }
 
 /// Read `fastdash/github/<label>` from the OS keychain. Any error (including a
 /// missing entry) yields `None` so the caller can fall back to the env var.
 fn token_from_keychain(label: &str) -> Option<String> {
-    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, label).ok()?;
-    let token = entry.get_password().ok()?;
+    // Read through the shared keychain wrapper so this matches exactly what the
+    // Settings UI writes via `set_secret` (service `fastdash`, key `github/<label>`).
+    let token = crate::engine::secrets::get("github", label).ok()??;
     let token = token.trim().to_string();
     if token.is_empty() {
         None

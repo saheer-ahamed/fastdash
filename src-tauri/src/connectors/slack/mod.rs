@@ -49,10 +49,17 @@ impl Connector for SlackConnector {
     }
 
     async fn fetch(&self, _ctx: &FetchCtx) -> Result<Snapshot, ConnectorError> {
-        // TODO(feat/core): honor `_ctx.timezone` and the configured workspace
-        // label(s) once config lands. For now "today" is pinned to IST per the
-        // design, and we read the single `default` workspace token.
-        let Some(resolved) = token::resolve(token::DEFAULT_LABEL) else {
+        // Use the first workspace configured in Settings; fall back to the default.
+        // TODO: honor `_ctx.timezone` (today is pinned to IST) and support more
+        // than one workspace.
+        let cfg = crate::engine::config::load();
+        let label = cfg
+            .slack
+            .workspaces
+            .first()
+            .map(|w| w.label.clone())
+            .unwrap_or_else(|| token::DEFAULT_LABEL.to_string());
+        let Some(resolved) = token::resolve(&label) else {
             return Ok(Snapshot::needs_auth(NEEDS_AUTH_MSG));
         };
 
