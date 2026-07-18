@@ -1,6 +1,15 @@
 /* fastdash - flat terminal UI. Monospace, monochrome, no radius, no shadows. */
 
-:root {
+/*
+ * Theming: every color is a CSS variable defined per theme below and keyed by
+ * the `data-theme` attribute on <html> (set from system preference or the user's
+ * choice - see src/theme.ts). No component hardcodes a color; add a theme by
+ * copying a block and adding it to THEMES in src/theme.ts.
+ */
+
+/* Dark theme (also the default when no data-theme is set). */
+:root,
+:root[data-theme="dark"] {
   --bg: #0a0b0c;
   --panel: #0e0f11;
   --panel-2: #17191c;
@@ -10,15 +19,41 @@
   --bright: #e8ebee;
   --muted: #6a7078;
   --fill: #8a9198;
+  --idle: #3a3e44;
   --ok: #9aa1a8;
   --warn: #b28f3a;
   --err: #c0564a;
   color-scheme: dark;
 }
 
+/* Light theme. */
+:root[data-theme="light"] {
+  --bg: #f6f6f3;
+  --panel: #ffffff;
+  --panel-2: #ececea;
+  --border: #dcdcd6;
+  --border-bright: #c4c4bd;
+  --text: #2b2d30;
+  --bright: #0d0e10;
+  --muted: #7c7f84;
+  --fill: #565b61;
+  --idle: #c4c4bd;
+  --ok: #4d5157;
+  --warn: #8a6a1e;
+  --err: #a83a2b;
+  color-scheme: light;
+}
+
 * {
   box-sizing: border-box;
   border-radius: 0 !important;
+}
+
+/* Smooth theme transitions (color properties only). */
+*,
+*::before,
+*::after {
+  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease;
 }
 
 html,
@@ -126,7 +161,7 @@ body {
   background: var(--err);
 }
 .dot.idle {
-  background: #3a3e44;
+  background: var(--idle);
 }
 
 /* Content */
@@ -520,4 +555,34 @@ a:hover {
 
 .save-btn:hover {
   background: var(--border);
+}
+
+/* Segmented control (theme switcher) */
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--border-bright);
+}
+
+.seg {
+  background: transparent;
+  border: none;
+  border-right: 1px solid var(--border-bright);
+  color: var(--muted);
+  padding: 5px 15px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.seg:last-child {
+  border-right: none;
+}
+
+.seg:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.seg.active {
+  background: var(--fill);
+  color: var(--bg);
 }

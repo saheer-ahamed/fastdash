@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AppConfig } from "./types";
+import { THEMES, getStoredTheme, setTheme, type ThemeChoice } from "./theme";
 
 // Minimal settings UI: non-secret config goes to `save_config`; tokens go
 // straight to the OS keychain via `set_secret` and are never read back.
@@ -16,6 +17,7 @@ export default function Settings({
   // General
   const [timezone, setTimezone] = useState("");
   const [filterBots, setFilterBots] = useState(true);
+  const [theme, setThemeChoice] = useState<ThemeChoice>(getStoredTheme());
 
   // GitHub (single account in the minimal UI)
   const [ghLabel, setGhLabel] = useState("work");
@@ -116,6 +118,24 @@ export default function Settings({
 
       <section className="card">
         <h2>General</h2>
+        <div className="field">
+          <label>Theme</label>
+          <div className="segmented">
+            {THEMES.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                className={"seg" + (theme === t.id ? " active" : "")}
+                onClick={() => {
+                  setThemeChoice(t.id);
+                  setTheme(t.id);
+                }}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+        </div>
         <div className="field">
           <label htmlFor="tz">Timezone (IANA)</label>
           <input

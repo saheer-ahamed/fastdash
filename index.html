@@ -4,6 +4,23 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>fastdash</title>
+    <script>
+      // Set the theme before first paint to avoid a flash. Mirrors src/theme.ts.
+      (function () {
+        try {
+          var c = localStorage.getItem("fastdash.theme") || "system";
+          var resolved =
+            c === "system"
+              ? window.matchMedia("(prefers-color-scheme: light)").matches
+                ? "light"
+                : "dark"
+              : c;
+          document.documentElement.dataset.theme = resolved;
+        } catch (e) {
+          document.documentElement.dataset.theme = "dark";
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
