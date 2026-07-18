@@ -44,6 +44,78 @@
   color-scheme: light;
 }
 
+/* Midnight - blue-tinted dark. */
+:root[data-theme="midnight"] {
+  --bg: #0a0e17;
+  --panel: #0d1220;
+  --panel-2: #141c2e;
+  --border: #1e2940;
+  --border-bright: #2d3c5a;
+  --text: #a9b7d4;
+  --bright: #e3ebfa;
+  --muted: #5c6d8c;
+  --fill: #5b7ec4;
+  --idle: #2d3c5a;
+  --ok: #6f8ac2;
+  --warn: #c79a3e;
+  --err: #d05a5a;
+  color-scheme: dark;
+}
+
+/* Amber - CRT amber phosphor on black. */
+:root[data-theme="amber"] {
+  --bg: #0a0700;
+  --panel: #100b02;
+  --panel-2: #1b1405;
+  --border: #3a2c10;
+  --border-bright: #574417;
+  --text: #d99a2b;
+  --bright: #ffbe4d;
+  --muted: #7d6024;
+  --fill: #e0952a;
+  --idle: #3a2c10;
+  --ok: #e0952a;
+  --warn: #ffbe4d;
+  --err: #ff6a4a;
+  color-scheme: dark;
+}
+
+/* Green - classic green phosphor on black. */
+:root[data-theme="green"] {
+  --bg: #000700;
+  --panel: #021102;
+  --panel-2: #051b05;
+  --border: #0f3a12;
+  --border-bright: #17571c;
+  --text: #33cc46;
+  --bright: #5cff6f;
+  --muted: #1f6a2a;
+  --fill: #33cc46;
+  --idle: #0f3a12;
+  --ok: #33cc46;
+  --warn: #cbb23a;
+  --err: #ff5a5a;
+  color-scheme: dark;
+}
+
+/* Paper - warm light. */
+:root[data-theme="paper"] {
+  --bg: #f4f1ea;
+  --panel: #fbf9f3;
+  --panel-2: #eae4d8;
+  --border: #d9d1c1;
+  --border-bright: #c3b9a2;
+  --text: #34302a;
+  --bright: #14120d;
+  --muted: #867c68;
+  --fill: #6b5f45;
+  --idle: #c3b9a2;
+  --ok: #5a5140;
+  --warn: #8a6a1e;
+  --err: #a8402b;
+  color-scheme: light;
+}
+
 * {
   box-sizing: border-box;
   border-radius: 0 !important;
@@ -557,24 +629,20 @@ a:hover {
   background: var(--border);
 }
 
-/* Segmented control (theme switcher) */
+/* Segmented control (theme switcher) - wraps as flat chips */
 .segmented {
-  display: inline-flex;
-  border: 1px solid var(--border-bright);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .seg {
   background: transparent;
-  border: none;
-  border-right: 1px solid var(--border-bright);
+  border: 1px solid var(--border-bright);
   color: var(--muted);
-  padding: 5px 15px;
+  padding: 5px 14px;
   cursor: pointer;
   font: inherit;
-}
-
-.seg:last-child {
-  border-right: none;
 }
 
 .seg:hover {
@@ -585,4 +653,5 @@ a:hover {
 .seg.active {
   background: var(--fill);
   color: var(--bg);
+  border-color: var(--fill);
 }

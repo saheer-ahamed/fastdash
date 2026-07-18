@@ -2,14 +2,18 @@
 // Color values themselves live in styles.css (one `:root[data-theme="..."]`
 // block per theme). To add a theme: add a CSS block there and an entry here.
 
-export type ThemeChoice = "system" | "dark" | "light";
 /** Concrete themes that have a CSS block; excludes the "system" alias. */
-export type ResolvedTheme = "dark" | "light";
+export type ResolvedTheme = "dark" | "light" | "midnight" | "amber" | "green" | "paper";
+export type ThemeChoice = "system" | ResolvedTheme;
 
 export const THEMES: { id: ThemeChoice; label: string }[] = [
   { id: "system", label: "System" },
   { id: "dark", label: "Dark" },
   { id: "light", label: "Light" },
+  { id: "midnight", label: "Midnight" },
+  { id: "amber", label: "Amber" },
+  { id: "green", label: "Green" },
+  { id: "paper", label: "Paper" },
 ];
 
 const STORAGE_KEY = "fastdash.theme";
