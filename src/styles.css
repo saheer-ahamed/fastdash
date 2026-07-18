@@ -26,6 +26,8 @@ body,
 #root {
   height: 100%;
   margin: 0;
+  /* Kill the webview's elastic overscroll / rubber-band bounce. */
+  overscroll-behavior: none;
 }
 
 body {
@@ -198,6 +200,7 @@ button {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: none;
 }
 
 .empty {
@@ -342,6 +345,7 @@ button {
 /* Table */
 .table-wrap {
   overflow-x: auto;
+  overscroll-behavior: none;
 }
 
 table {
