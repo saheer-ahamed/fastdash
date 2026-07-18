@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { ConnectorMeta, ConnectorUpdate, Health, Panel, Snapshot } from "./types";
 import Settings from "./Settings";
+import { t } from "./i18n";
 
 export default function App() {
   const [connectors, setConnectors] = useState<ConnectorMeta[]>([]);
@@ -78,7 +79,7 @@ export default function App() {
           onClick={() => setShowSettings(true)}
         >
           <span className="dot idle" />
-          Settings
+          {t("app.settings")}
         </button>
       </aside>
 
@@ -86,7 +87,7 @@ export default function App() {
         {showSettings ? (
           <>
             <header className="topbar">
-              <h1>Settings</h1>
+              <h1>{t("app.settings")}</h1>
             </header>
             <Settings onRefresh={refresh} />
           </>
@@ -95,18 +96,26 @@ export default function App() {
             <header className="topbar">
               <h1>{activeName}</h1>
               <div className="actions">
-                {snap && <span className="muted">updated {fetchedLabel(snap.fetchedAt)}</span>}
+                {snap && (
+                  <span className="muted">
+                    {t("app.updated", { time: fetchedLabel(snap.fetchedAt) })}
+                  </span>
+                )}
                 <button
                   className="refresh"
                   disabled={loading || !active}
                   onClick={() => active && refresh(active)}
                 >
-                  {loading ? "..." : "Refresh"}
+                  {loading ? t("app.refreshing") : t("app.refresh")}
                 </button>
               </div>
             </header>
 
-            {snap ? <SnapshotView snapshot={snap} /> : <div className="empty">Loading...</div>}
+            {snap ? (
+              <SnapshotView snapshot={snap} />
+            ) : (
+              <div className="empty">{t("app.loading")}</div>
+            )}
           </>
         )}
       </main>
@@ -132,7 +141,7 @@ function StatusBanner({ status }: { status: Health }) {
       ? status.message
       : status.state === "error"
         ? status.message
-        : "Rate limited - retrying shortly";
+        : t("status.rateLimited");
   return <div className={"banner " + statusClass(status)}>{text}</div>;
 }
 
@@ -274,13 +283,17 @@ function TableView({ panel }: { panel: Extract<Panel, { kind: "table" }> }) {
       {paginated && (
         <div className="pager">
           <button disabled={clamped === 0} onClick={() => setPage(clamped - 1)}>
-            [ prev ]
+            {t("pager.prev")}
           </button>
           <span className="muted">
-            {start + 1}-{Math.min(start + PAGE_SIZE, total)} of {total}
+            {t("pager.range", {
+              start: start + 1,
+              end: Math.min(start + PAGE_SIZE, total),
+              total,
+            })}
           </span>
           <button disabled={clamped >= pages - 1} onClick={() => setPage(clamped + 1)}>
-            [ next ]
+            {t("pager.next")}
           </button>
         </div>
       )}

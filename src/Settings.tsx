@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AppConfig } from "./types";
 import { THEMES, getStoredTheme, setTheme, type ThemeChoice } from "./theme";
+import { t } from "./i18n";
 
 // Minimal settings UI: non-secret config goes to `save_config`; tokens go
 // straight to the OS keychain via `set_secret` and are never read back.
@@ -52,11 +53,14 @@ export default function Settings({
     window.setTimeout(() => setSavedMsg(null), 2500);
   };
 
+  const error = (e: unknown) => flash(t("settings.error", { message: String(e) }));
+
   // Persist the config plus whatever slices the caller overrides in one write,
   // keeping the in-memory `config` state in sync.
   async function persist(patch: Partial<AppConfig>): Promise<AppConfig> {
     const base = config ?? {
       timezone,
+      locale: "en",
       github: { accounts: [] },
       slack: { workspaces: [] },
       filterBots,
@@ -76,9 +80,9 @@ export default function Settings({
   async function saveGeneral() {
     try {
       await persist({});
-      flash("General settings saved");
+      flash(t("settings.saved", { section: t("settings.general") }));
     } catch (e) {
-      flash(`Error: ${e}`);
+      error(e);
     }
   }
 
@@ -91,9 +95,9 @@ export default function Settings({
       }
       await persist({ github: { accounts: [{ label, orgs: parseOrgs(ghOrgs) }] } });
       onRefresh("github");
-      flash("GitHub settings saved");
+      flash(t("settings.saved", { section: t("settings.github") }));
     } catch (e) {
-      flash(`Error: ${e}`);
+      error(e);
     }
   }
 
@@ -106,9 +110,9 @@ export default function Settings({
       }
       await persist({ slack: { workspaces: [{ label }] } });
       onRefresh("slack");
-      flash("Slack settings saved");
+      flash(t("settings.saved", { section: t("settings.slack") }));
     } catch (e) {
-      flash(`Error: ${e}`);
+      error(e);
     }
   }
 
@@ -117,32 +121,32 @@ export default function Settings({
       {savedMsg && <div className="banner ok-banner">{savedMsg}</div>}
 
       <section className="card">
-        <h2>General</h2>
+        <h2>{t("settings.general")}</h2>
         <div className="field">
-          <label>Theme</label>
+          <label>{t("settings.theme")}</label>
           <div className="segmented">
-            {THEMES.map((t) => (
+            {THEMES.map((opt) => (
               <button
-                key={t.id}
+                key={opt.id}
                 type="button"
-                className={"seg" + (theme === t.id ? " active" : "")}
+                className={"seg" + (theme === opt.id ? " active" : "")}
                 onClick={() => {
-                  setThemeChoice(t.id);
-                  setTheme(t.id);
+                  setThemeChoice(opt.id);
+                  setTheme(opt.id);
                 }}
               >
-                {t.label}
+                {opt.label}
               </button>
             ))}
           </div>
         </div>
         <div className="field">
-          <label htmlFor="tz">Timezone (IANA)</label>
+          <label htmlFor="tz">{t("settings.timezone")}</label>
           <input
             id="tz"
             value={timezone}
             onChange={(e) => setTimezone(e.target.value)}
-            placeholder="Asia/Kolkata"
+            placeholder={t("settings.timezonePlaceholder")}
           />
         </div>
         <label className="checkbox">
@@ -151,52 +155,52 @@ export default function Settings({
             checked={filterBots}
             onChange={(e) => setFilterBots(e.target.checked)}
           />
-          Filter bot authors (dependabot and similar)
+          {t("settings.filterBots")}
         </label>
         <div className="field-actions">
           <button className="save-btn" onClick={saveGeneral}>
-            Save
+            {t("settings.save")}
           </button>
         </div>
       </section>
 
       <section className="card">
-        <h2>GitHub</h2>
+        <h2>{t("settings.github")}</h2>
         <div className="field">
-          <label htmlFor="gh-label">Account label</label>
+          <label htmlFor="gh-label">{t("settings.accountLabel")}</label>
           <input id="gh-label" value={ghLabel} onChange={(e) => setGhLabel(e.target.value)} />
         </div>
         <div className="field">
-          <label htmlFor="gh-token">Personal access token</label>
+          <label htmlFor="gh-token">{t("settings.pat")}</label>
           <input
             id="gh-token"
             type="password"
             value={ghToken}
             onChange={(e) => setGhToken(e.target.value)}
-            placeholder="Paste to set or replace - stored in the OS keychain"
+            placeholder={t("settings.tokenPlaceholder")}
             autoComplete="off"
           />
         </div>
         <div className="field">
-          <label htmlFor="gh-orgs">Organizations</label>
+          <label htmlFor="gh-orgs">{t("settings.orgs")}</label>
           <input
             id="gh-orgs"
             value={ghOrgs}
             onChange={(e) => setGhOrgs(e.target.value)}
-            placeholder="z-roworld, another-org"
+            placeholder={t("settings.orgsPlaceholder")}
           />
         </div>
         <div className="field-actions">
           <button className="save-btn" onClick={saveGithub}>
-            Save
+            {t("settings.save")}
           </button>
         </div>
       </section>
 
       <section className="card">
-        <h2>Slack</h2>
+        <h2>{t("settings.slack")}</h2>
         <div className="field">
-          <label htmlFor="slack-label">Workspace label</label>
+          <label htmlFor="slack-label">{t("settings.workspaceLabel")}</label>
           <input
             id="slack-label"
             value={slackLabel}
@@ -204,19 +208,19 @@ export default function Settings({
           />
         </div>
         <div className="field">
-          <label htmlFor="slack-token">User OAuth token (xoxp)</label>
+          <label htmlFor="slack-token">{t("settings.slackToken")}</label>
           <input
             id="slack-token"
             type="password"
             value={slackToken}
             onChange={(e) => setSlackToken(e.target.value)}
-            placeholder="Paste to set or replace - stored in the OS keychain"
+            placeholder={t("settings.tokenPlaceholder")}
             autoComplete="off"
           />
         </div>
         <div className="field-actions">
           <button className="save-btn" onClick={saveSlack}>
-            Save
+            {t("settings.save")}
           </button>
         </div>
       </section>

@@ -28,7 +28,9 @@ use engine::registry::Registry;
 pub fn run() {
     let registry = Arc::new(Registry::with_default_connectors());
     let cache = Arc::new(SnapshotCache::new());
-    let config: Arc<RwLock<AppConfig>> = Arc::new(RwLock::new(config::load()));
+    let loaded = config::load();
+    engine::i18n::set_locale(&loaded.locale);
+    let config: Arc<RwLock<AppConfig>> = Arc::new(RwLock::new(loaded));
 
     tauri::Builder::default()
         .manage(Arc::clone(&registry))

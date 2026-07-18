@@ -18,6 +18,8 @@ use serde::{Deserialize, Serialize};
 pub struct AppConfig {
     /// IANA timezone used to define "today" across connectors.
     pub timezone: String,
+    /// UI language (BCP-47-ish code, e.g. "en"). Only English is shipped today.
+    pub locale: String,
     /// GitHub accounts and their selected orgs. The PAT for an account lives in
     /// the keychain under `github/{label}`.
     pub github: GithubConfig,
@@ -33,6 +35,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         AppConfig {
             timezone: "Asia/Kolkata".to_string(),
+            locale: "en".to_string(),
             github: GithubConfig::default(),
             slack: SlackConfig::default(),
             filter_bots: true,

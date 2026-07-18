@@ -1,0 +1,36 @@
+{
+  "app": {
+    "loading": "Loading...",
+    "refresh": "Refresh",
+    "refreshing": "...",
+    "updated": "updated {time}",
+    "settings": "Settings"
+  },
+  "pager": {
+    "prev": "[ prev ]",
+    "next": "[ next ]",
+    "range": "{start}-{end} of {total}"
+  },
+  "status": {
+    "rateLimited": "Rate limited - retrying shortly"
+  },
+  "settings": {
+    "general": "General",
+    "theme": "Theme",
+    "timezone": "Timezone (IANA)",
+    "timezonePlaceholder": "Asia/Kolkata",
+    "filterBots": "Filter bot authors (dependabot and similar)",
+    "save": "Save",
+    "saved": "{section} settings saved",
+    "error": "Error: {message}",
+    "github": "GitHub",
+    "slack": "Slack",
+    "accountLabel": "Account label",
+    "pat": "Personal access token",
+    "tokenPlaceholder": "Paste to set or replace - stored in the OS keychain",
+    "orgs": "Organizations",
+    "orgsPlaceholder": "z-roworld, another-org",
+    "workspaceLabel": "Workspace label",
+    "slackToken": "User OAuth token (xoxp)"
+  }
+}
