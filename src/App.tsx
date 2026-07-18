@@ -178,41 +178,7 @@ function PanelView({ panel }: { panel: Panel }) {
       );
     }
     case "table":
-      return (
-        <section className="card">
-          {panel.title && <h2>{panel.title}</h2>}
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  {panel.columns.map((col) => (
-                    <th key={col.key} className={col.numeric ? "num" : ""}>
-                      {col.label}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {panel.rows.map((row, ri) => (
-                  <tr key={ri}>
-                    {row.map((cell, ci) => (
-                      <td key={ci} className={panel.columns[ci]?.numeric ? "num" : ""}>
-                        {cell.href ? (
-                          <a href={cell.href} target="_blank" rel="noreferrer">
-                            {cell.text}
-                          </a>
-                        ) : (
-                          cell.text
-                        )}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      );
+      return <TableView panel={panel} />;
     case "barList":
       return (
         <section className="card">
@@ -254,6 +220,72 @@ function PanelView({ panel }: { panel: Panel }) {
         </section>
       );
   }
+}
+
+const PAGE_SIZE = 15;
+
+// A table that paginates client-side once it exceeds PAGE_SIZE rows.
+function TableView({ panel }: { panel: Extract<Panel, { kind: "table" }> }) {
+  const [page, setPage] = useState(0);
+  const total = panel.rows.length;
+  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const paginated = total > PAGE_SIZE;
+  const clamped = Math.min(page, pages - 1);
+  const start = clamped * PAGE_SIZE;
+  const rows = paginated ? panel.rows.slice(start, start + PAGE_SIZE) : panel.rows;
+
+  useEffect(() => {
+    if (page > pages - 1) setPage(0);
+  }, [page, pages]);
+
+  return (
+    <section className="card">
+      {panel.title && <h2>{panel.title}</h2>}
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              {panel.columns.map((col) => (
+                <th key={col.key} className={col.numeric ? "num" : ""}>
+                  {col.label}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, ri) => (
+              <tr key={start + ri}>
+                {row.map((cell, ci) => (
+                  <td key={ci} className={panel.columns[ci]?.numeric ? "num" : ""}>
+                    {cell.href ? (
+                      <a href={cell.href} target="_blank" rel="noreferrer">
+                        {cell.text}
+                      </a>
+                    ) : (
+                      cell.text
+                    )}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {paginated && (
+        <div className="pager">
+          <button disabled={clamped === 0} onClick={() => setPage(clamped - 1)}>
+            [ prev ]
+          </button>
+          <span className="muted">
+            {start + 1}-{Math.min(start + PAGE_SIZE, total)} of {total}
+          </span>
+          <button disabled={clamped >= pages - 1} onClick={() => setPage(clamped + 1)}>
+            [ next ]
+          </button>
+        </div>
+      )}
+    </section>
+  );
 }
 
 function statusClass(status: Health | undefined): string {

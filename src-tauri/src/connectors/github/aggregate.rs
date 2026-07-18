@@ -208,8 +208,13 @@ fn line_contributions_table(rollup: &Rollup) -> Panel {
 
 fn pr_list_table(rollup: &Rollup, ist: FixedOffset) -> Panel {
     let mut entries: Vec<&PrEntry> = rollup.pr_list.iter().collect();
-    // Most recent event first; entries without a time sink to the bottom.
-    entries.sort_by(|a, b| b.at.cmp(&a.at));
+    // Grouped by contributor: sort by author (case-insensitive), then most
+    // recent event first within each author. Unknown authors sink to the bottom.
+    entries.sort_by(|a, b| {
+        let aa = a.author.as_deref().unwrap_or("~~~").to_lowercase();
+        let ba = b.author.as_deref().unwrap_or("~~~").to_lowercase();
+        aa.cmp(&ba).then(b.at.cmp(&a.at))
+    });
 
     let rows = entries
         .into_iter()
@@ -224,9 +229,9 @@ fn pr_list_table(rollup: &Rollup, ist: FixedOffset) -> Panel {
                 .map(|t| t.with_timezone(&ist).format("%H:%M").to_string())
                 .unwrap_or_else(|| "-".into());
             vec![
+                text(author),
                 text(pr.name_with_owner.clone()),
                 link(pr.title.clone(), pr.url.clone()),
-                text(author),
                 text(pr.state.label().to_string()),
                 text(delta),
                 text(time),
@@ -235,11 +240,11 @@ fn pr_list_table(rollup: &Rollup, ist: FixedOffset) -> Panel {
         .collect();
 
     Panel::Table(TableSpec {
-        title: Some("PRs today".into()),
+        title: Some("PRs today (by contributor)".into()),
         columns: vec![
+            col("author", "Contributor", false),
             col("repo", "Repo", false),
             col("title", "Title", false),
-            col("author", "Author", false),
             col("state", "State", false),
             col("delta", "+/-", false),
             col("time", "Time", false),
