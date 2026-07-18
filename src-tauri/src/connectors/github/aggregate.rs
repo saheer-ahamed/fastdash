@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, FixedOffset, Utc};
 
+use crate::engine::i18n;
 use crate::engine::panel::{Cell, Column, Panel, Stat, TableSpec};
 
 /// Outcome of a PR within the day's window.
@@ -15,11 +16,11 @@ pub enum PrState {
 }
 
 impl PrState {
-    fn label(self) -> &'static str {
+    fn label(self) -> String {
         match self {
-            PrState::Merged => "Merged",
-            PrState::Closed => "Closed",
-            PrState::Open => "Open",
+            PrState::Merged => i18n::t("github.state.merged"),
+            PrState::Closed => i18n::t("github.state.closed"),
+            PrState::Open => i18n::t("github.state.open"),
         }
     }
 }
@@ -81,20 +82,20 @@ fn stat_cards(rollup: &Rollup) -> Panel {
     }
 
     Panel::StatCards {
-        title: Some("Today".into()),
+        title: Some(i18n::t("github.stats.title")),
         stats: vec![
             Stat {
-                label: "PRs opened".into(),
+                label: i18n::t("github.stats.prsOpened"),
                 value: total_opened.to_string(),
                 sub: None,
             },
             Stat {
-                label: "PRs merged".into(),
+                label: i18n::t("github.stats.prsMerged"),
                 value: total_merged.to_string(),
                 sub: None,
             },
             Stat {
-                label: "Contributors active".into(),
+                label: i18n::t("github.stats.contributorsActive"),
                 value: active.len().to_string(),
                 sub: None,
             },
@@ -143,13 +144,13 @@ fn pr_activity_table(rollup: &Rollup) -> Panel {
         .collect();
 
     Panel::Table(TableSpec {
-        title: Some("PR activity today".into()),
+        title: Some(i18n::t("github.table.prActivity")),
         columns: vec![
-            col("contributor", "Contributor", false),
-            col("opened", "Opened", true),
-            col("merged", "Merged", true),
-            col("closed", "Closed (no merge)", true),
-            col("open", "Open", true),
+            col("contributor", i18n::t("github.column.contributor"), false),
+            col("opened", i18n::t("github.column.opened"), true),
+            col("merged", i18n::t("github.column.merged"), true),
+            col("closed", i18n::t("github.column.closedNoMerge"), true),
+            col("open", i18n::t("github.column.open"), true),
         ],
         rows: table_rows,
     })
@@ -194,13 +195,13 @@ fn line_contributions_table(rollup: &Rollup) -> Panel {
         .collect();
 
     Panel::Table(TableSpec {
-        title: Some("Line contributions (merged today)".into()),
+        title: Some(i18n::t("github.table.lineContributions")),
         columns: vec![
-            col("contributor", "Contributor", false),
-            col("additions", "Additions", true),
-            col("deletions", "Deletions", true),
-            col("net", "Net", true),
-            col("prs", "PRs", true),
+            col("contributor", i18n::t("github.column.contributor"), false),
+            col("additions", i18n::t("github.column.additions"), true),
+            col("deletions", i18n::t("github.column.deletions"), true),
+            col("net", i18n::t("github.column.net"), true),
+            col("prs", i18n::t("github.column.prs"), true),
         ],
         rows: table_rows,
     })
@@ -232,7 +233,7 @@ fn pr_list_table(rollup: &Rollup, ist: FixedOffset) -> Panel {
                 text(author),
                 text(pr.name_with_owner.clone()),
                 link(pr.title.clone(), pr.url.clone()),
-                text(pr.state.label().to_string()),
+                text(pr.state.label()),
                 text(delta),
                 text(time),
             ]
@@ -240,14 +241,14 @@ fn pr_list_table(rollup: &Rollup, ist: FixedOffset) -> Panel {
         .collect();
 
     Panel::Table(TableSpec {
-        title: Some("PRs today (by contributor)".into()),
+        title: Some(i18n::t("github.table.prList")),
         columns: vec![
-            col("author", "Contributor", false),
-            col("repo", "Repo", false),
-            col("title", "Title", false),
-            col("state", "State", false),
-            col("delta", "+/-", false),
-            col("time", "Time", false),
+            col("author", i18n::t("github.column.contributor"), false),
+            col("repo", i18n::t("github.column.repo"), false),
+            col("title", i18n::t("github.column.title"), false),
+            col("state", i18n::t("github.column.state"), false),
+            col("delta", i18n::t("github.column.delta"), false),
+            col("time", i18n::t("github.column.time"), false),
         ],
         rows,
     })
@@ -261,7 +262,7 @@ fn format_net(net: i64) -> String {
     }
 }
 
-fn col(key: &str, label: &str, numeric: bool) -> Column {
+fn col(key: &str, label: impl Into<String>, numeric: bool) -> Column {
     Column {
         key: key.into(),
         label: label.into(),
