@@ -1,3 +1,37 @@
 {
-  "github": {}
+  "github": {
+    "stats": {
+      "title": "Today",
+      "prsOpened": "PRs opened",
+      "prsMerged": "PRs merged",
+      "contributorsActive": "Contributors active"
+    },
+    "table": {
+      "prActivity": "PR activity today",
+      "lineContributions": "Line contributions (merged today)",
+      "prList": "PRs today (by contributor)"
+    },
+    "column": {
+      "contributor": "Contributor",
+      "opened": "Opened",
+      "merged": "Merged",
+      "closedNoMerge": "Closed (no merge)",
+      "open": "Open",
+      "additions": "Additions",
+      "deletions": "Deletions",
+      "net": "Net",
+      "prs": "PRs",
+      "repo": "Repo",
+      "title": "Title",
+      "state": "State",
+      "delta": "+/-",
+      "time": "Time"
+    },
+    "state": {
+      "merged": "Merged",
+      "closed": "Closed",
+      "open": "Open"
+    },
+    "needsAuth": "Add a GitHub token (keychain fastdash/github/<label> or the GITHUB_TOKEN env var) and pick organizations"
+  }
 }

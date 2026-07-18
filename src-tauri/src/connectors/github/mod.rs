@@ -22,6 +22,7 @@ use chrono::{FixedOffset, Utc};
 
 use crate::engine::connector::Health;
 use crate::engine::connector::{Connector, ConnectorError, ConnectorMeta, FetchCtx, Snapshot};
+use crate::engine::i18n;
 
 use aggregate::{LineContrib, PrEntry, PrState, Rollup};
 use client::{EnrichedPr, GithubClient, GithubError, PrRef, SearchItem};
@@ -52,10 +53,7 @@ impl Connector for GithubConnector {
         // "Today" is fixed to the IST day per the design (PRs near midnight are
         // attributed by IST datetime bounds). `_ctx.timezone` is ignored for now.
         let Some(cfg) = GithubConfig::resolve() else {
-            return Ok(Snapshot::needs_auth(
-                "Add a GitHub token (keychain fastdash/github/<label> or the \
-                 GITHUB_TOKEN env var) and pick organizations",
-            ));
+            return Ok(Snapshot::needs_auth(i18n::t("github.needsAuth")));
         };
 
         match run_fetch(&cfg).await {
