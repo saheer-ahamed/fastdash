@@ -1,0 +1,20 @@
+# dependencies
+/node_modules
+
+# frontend build output
+/dist
+
+# rust build output
+/src-tauri/target
+
+# tauri generated schemas
+/src-tauri/gen/schemas
+
+# secrets / local env (never commit)
+.env
+*.local
+
+# logs / os cruft
+*.log
+.DS_Store
+Thumbs.db

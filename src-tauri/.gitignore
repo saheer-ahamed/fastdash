@@ -1,0 +1,4 @@
+# Rust / Cargo
+/target
+# Tauri generated
+/gen/schemas
