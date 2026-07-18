@@ -63,3 +63,26 @@ export interface ConnectorMeta {
   icon: string;
   defaultRefreshSecs: number;
 }
+
+// Payload of the `connector:update` Tauri event emitted by the scheduler.
+export interface ConnectorUpdate {
+  id: string;
+  snapshot: Snapshot;
+}
+
+// Mirrors the serde output of `engine::config::AppConfig` (camelCase).
+export interface GithubAccount {
+  label: string;
+  orgs: string[];
+}
+
+export interface SlackWorkspace {
+  label: string;
+}
+
+export interface AppConfig {
+  timezone: string;
+  github: { accounts: GithubAccount[] };
+  slack: { workspaces: SlackWorkspace[] };
+  filterBots: boolean;
+}

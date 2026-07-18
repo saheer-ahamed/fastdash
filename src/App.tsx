@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { ConnectorMeta, Health, Panel, Snapshot } from "./types";
+import { listen } from "@tauri-apps/api/event";
+import type { ConnectorMeta, ConnectorUpdate, Health, Panel, Snapshot } from "./types";
+import Settings from "./Settings";
 
 export default function App() {
   const [connectors, setConnectors] = useState<ConnectorMeta[]>([]);
   const [active, setActive] = useState<string | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
   const [snapshots, setSnapshots] = useState<Record<string, Snapshot>>({});
   const [loading, setLoading] = useState(false);
 
@@ -17,6 +20,17 @@ export default function App() {
       .catch((e) => console.error(e));
   }, []);
 
+  // Live updates: the scheduler emits `connector:update` on every refresh, so
+  // panels update on their own cadence without the UI polling.
+  useEffect(() => {
+    const unlisten = listen<ConnectorUpdate>("connector:update", (e) => {
+      setSnapshots((s) => ({ ...s, [e.payload.id]: e.payload.snapshot }));
+    });
+    return () => {
+      unlisten.then((f) => f());
+    };
+  }, []);
+
   const refresh = useCallback((id: string) => {
     setLoading(true);
     invoke<Snapshot>("fetch_connector", { id })
@@ -25,8 +39,16 @@ export default function App() {
       .finally(() => setLoading(false));
   }, []);
 
+  // On first showing a connector, seed instantly from the warm cache, then let
+  // the live event stream keep it fresh.
   useEffect(() => {
-    if (active) refresh(active);
+    if (!active) return;
+    invoke<Snapshot | null>("get_cached", { id: active })
+      .then((snap) => {
+        if (snap) setSnapshots((s) => ({ ...s, [active]: snap }));
+        else refresh(active);
+      })
+      .catch(() => refresh(active));
   }, [active, refresh]);
 
   const snap = active ? snapshots[active] : undefined;
@@ -40,32 +62,53 @@ export default function App() {
           {connectors.map((c) => (
             <button
               key={c.id}
-              className={"tab" + (c.id === active ? " active" : "")}
-              onClick={() => setActive(c.id)}
+              className={"tab" + (!showSettings && c.id === active ? " active" : "")}
+              onClick={() => {
+                setShowSettings(false);
+                setActive(c.id);
+              }}
             >
               <span className={"dot " + statusClass(snapshots[c.id]?.status)} />
               {c.name}
             </button>
           ))}
         </nav>
+        <button
+          className={"tab settings-tab" + (showSettings ? " active" : "")}
+          onClick={() => setShowSettings(true)}
+        >
+          <span className="dot idle" />
+          Settings
+        </button>
       </aside>
 
       <main className="content">
-        <header className="topbar">
-          <h1>{activeName}</h1>
-          <div className="actions">
-            {snap && <span className="muted">updated {fetchedLabel(snap.fetchedAt)}</span>}
-            <button
-              className="refresh"
-              disabled={loading || !active}
-              onClick={() => active && refresh(active)}
-            >
-              {loading ? "..." : "Refresh"}
-            </button>
-          </div>
-        </header>
+        {showSettings ? (
+          <>
+            <header className="topbar">
+              <h1>Settings</h1>
+            </header>
+            <Settings onRefresh={refresh} />
+          </>
+        ) : (
+          <>
+            <header className="topbar">
+              <h1>{activeName}</h1>
+              <div className="actions">
+                {snap && <span className="muted">updated {fetchedLabel(snap.fetchedAt)}</span>}
+                <button
+                  className="refresh"
+                  disabled={loading || !active}
+                  onClick={() => active && refresh(active)}
+                >
+                  {loading ? "..." : "Refresh"}
+                </button>
+              </div>
+            </header>
 
-        {snap ? <SnapshotView snapshot={snap} /> : <div className="empty">Loading...</div>}
+            {snap ? <SnapshotView snapshot={snap} /> : <div className="empty">Loading...</div>}
+          </>
+        )}
       </main>
     </div>
   );
