@@ -18,6 +18,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset, Utc};
 
 use crate::engine::connector::{Connector, ConnectorError, ConnectorMeta, FetchCtx, Snapshot};
+use crate::engine::i18n;
 use crate::engine::panel::{Cell, Column, Panel, Stat, TableSpec};
 
 use api::{Match, SlackClient, SlackError};
@@ -25,9 +26,6 @@ use api::{Match, SlackClient, SlackError};
 /// Guard against a runaway paging loop; 20 pages * 100 = 2000 mentions/day is
 /// far more than any human receives, so this only bounds pathological cases.
 const MAX_SEARCH_PAGES: u32 = 20;
-
-/// The needs-auth copy shown when no usable token is configured.
-const NEEDS_AUTH_MSG: &str = "Add a Slack user token and pick a workspace in Settings";
 
 pub struct SlackConnector;
 
@@ -60,14 +58,12 @@ impl Connector for SlackConnector {
             .map(|w| w.label.clone())
             .unwrap_or_else(|| token::DEFAULT_LABEL.to_string());
         let Some(resolved) = token::resolve(&label) else {
-            return Ok(Snapshot::needs_auth(NEEDS_AUTH_MSG));
+            return Ok(Snapshot::needs_auth(i18n::t("slack.needsAuth")));
         };
 
         if !resolved.is_user_token() {
             // A bot/app token can authenticate but can never call search.messages.
-            return Ok(Snapshot::needs_auth(
-                "Slack search needs a user token (xoxp-) with search:read; the configured token is not a user token",
-            ));
+            return Ok(Snapshot::needs_auth(i18n::t("slack.needsUserToken")));
         }
 
         let client = SlackClient::new(resolved.token).map_err(map_hard_error)?;
@@ -83,9 +79,7 @@ impl Connector for SlackConnector {
         };
 
         let Some(user_id) = identity.user_id.clone() else {
-            return Ok(Snapshot::needs_auth(
-                "Slack auth.test did not return a user id; re-check the token",
-            ));
+            return Ok(Snapshot::needs_auth(i18n::t("slack.noUserId")));
         };
 
         // 2. IST "today" bounds. The client-side `since` filter is the source of
@@ -212,15 +206,15 @@ fn build_panels(identity: &api::AuthTest, groups: &[ChannelGroup]) -> Vec<Panel>
         .unwrap_or_else(|| "Slack".into());
 
     let mut panels = vec![Panel::StatCards {
-        title: Some("Slack".into()),
+        title: Some(i18n::t("slack.title")),
         stats: vec![
             Stat {
-                label: "Mentions today".into(),
+                label: i18n::t("slack.mentionsToday"),
                 value: total.to_string(),
                 sub: Some(workspace),
             },
             Stat {
-                label: "Active channels".into(),
+                label: i18n::t("slack.activeChannels"),
                 value: active_channels.to_string(),
                 sub: None,
             },
@@ -257,26 +251,26 @@ fn build_panels(identity: &api::AuthTest, groups: &[ChannelGroup]) -> Vec<Panel>
         .collect();
 
     panels.push(Panel::Table(TableSpec {
-        title: Some("Mentions today".into()),
+        title: Some(i18n::t("slack.mentionsToday")),
         columns: vec![
             Column {
                 key: "channel".into(),
-                label: "Channel".into(),
+                label: i18n::t("slack.columnChannel"),
                 numeric: false,
             },
             Column {
                 key: "mentions".into(),
-                label: "Mentions".into(),
+                label: i18n::t("slack.columnMentions"),
                 numeric: true,
             },
             Column {
                 key: "last".into(),
-                label: "Last time".into(),
+                label: i18n::t("slack.columnLastTime"),
                 numeric: false,
             },
             Column {
                 key: "preview".into(),
-                label: "Preview".into(),
+                label: i18n::t("slack.columnPreview"),
                 numeric: false,
             },
         ],
@@ -344,19 +338,13 @@ fn clean_preview(text: &str) -> String {
 /// A user-facing hint for an auth-class Slack error.
 fn auth_hint(e: &SlackError) -> String {
     match e.api_code() {
-        Some("missing_scope") => {
-            "Slack token is missing the search:read scope; add it and reinstall the app".into()
-        }
-        Some("not_allowed_token_type") => {
-            "Slack search needs a user token (xoxp-); the configured token type cannot search".into()
-        }
+        Some("missing_scope") => i18n::t("slack.hintMissingScope"),
+        Some("not_allowed_token_type") => i18n::t("slack.hintNotUserToken"),
         Some("token_revoked" | "token_expired" | "invalid_auth" | "not_authed") => {
-            "Slack token is invalid or expired; paste a fresh user token in Settings".into()
+            i18n::t("slack.hintInvalidToken")
         }
-        Some("account_inactive") => {
-            "The Slack account for this token is deactivated".into()
-        }
-        _ => NEEDS_AUTH_MSG.to_string(),
+        Some("account_inactive") => i18n::t("slack.hintAccountInactive"),
+        _ => i18n::t("slack.needsAuth"),
     }
 }
 

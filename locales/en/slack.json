@@ -1,3 +1,18 @@
 {
-  "slack": {}
+  "slack": {
+    "title": "Slack",
+    "mentionsToday": "Mentions today",
+    "activeChannels": "Active channels",
+    "columnChannel": "Channel",
+    "columnMentions": "Mentions",
+    "columnLastTime": "Last time",
+    "columnPreview": "Preview",
+    "needsAuth": "Add a Slack user token and pick a workspace in Settings",
+    "needsUserToken": "Slack search needs a user token (xoxp-) with search:read; the configured token is not a user token",
+    "noUserId": "Slack auth.test did not return a user id; re-check the token",
+    "hintMissingScope": "Slack token is missing the search:read scope; add it and reinstall the app",
+    "hintNotUserToken": "Slack search needs a user token (xoxp-); the configured token type cannot search",
+    "hintInvalidToken": "Slack token is invalid or expired; paste a fresh user token in Settings",
+    "hintAccountInactive": "The Slack account for this token is deactivated"
+  }
 }
