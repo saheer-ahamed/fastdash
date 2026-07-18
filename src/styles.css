@@ -341,3 +341,86 @@ a:hover {
 .list li:last-child {
   border-bottom: none;
 }
+
+/* Settings */
+.settings-tab {
+  margin-top: auto;
+}
+
+.settings .card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.settings input[type="text"],
+.settings input[type="password"],
+.settings input:not([type]) {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  width: 100%;
+  outline: none;
+}
+
+.settings input:focus {
+  border-color: var(--accent);
+}
+
+.settings input::placeholder {
+  color: var(--muted);
+}
+
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.checkbox input {
+  accent-color: var(--accent);
+  width: 15px;
+  height: 15px;
+}
+
+.field-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.save-btn {
+  background: var(--accent);
+  border: none;
+  color: #1a1109;
+  font-weight: 600;
+  padding: 7px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.save-btn:hover {
+  opacity: 0.9;
+}
+
+.ok-banner {
+  border-color: var(--ok);
+  color: var(--text);
+}
