@@ -39,7 +39,10 @@ body {
 .app {
   display: grid;
   grid-template-columns: 208px 1fr;
-  height: 100%;
+  /* minmax(0, 1fr) lets the row's children shrink so only .panels scrolls */
+  grid-template-rows: minmax(0, 1fr);
+  height: 100vh;
+  overflow: hidden;
 }
 
 /* Sidebar */
@@ -50,6 +53,9 @@ body {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  /* Full-height, never scrolls: Settings stays pinned to the bottom. */
+  height: 100vh;
+  overflow: hidden;
 }
 
 .brand {
@@ -126,6 +132,8 @@ body {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  /* Allow the flex child (.panels) to shrink and scroll instead of the page. */
+  min-height: 0;
 }
 
 .topbar {
@@ -186,6 +194,9 @@ button {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  /* Fill the space under the topbar and scroll here only. */
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
 }
 
