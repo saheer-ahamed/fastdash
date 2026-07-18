@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { ConnectorMeta, ConnectorUpdate, Health, Panel, Snapshot } from "./types";
+import type { AppConfig, ConnectorMeta, ConnectorUpdate, Health, Panel, Snapshot } from "./types";
 import Settings from "./Settings";
-import { t } from "./i18n";
+import { setLocale, t } from "./i18n";
 
 export default function App() {
   const [connectors, setConnectors] = useState<ConnectorMeta[]>([]);
@@ -11,6 +11,8 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [snapshots, setSnapshots] = useState<Record<string, Snapshot>>({});
   const [loading, setLoading] = useState(false);
+  // Bumped on language change to re-render chrome that calls t().
+  const [, setLang] = useState("en");
 
   useEffect(() => {
     invoke<ConnectorMeta[]>("list_connectors")
@@ -19,6 +21,16 @@ export default function App() {
         if (cs.length > 0) setActive(cs[0].id);
       })
       .catch((e) => console.error(e));
+  }, []);
+
+  // Apply the saved language on startup.
+  useEffect(() => {
+    invoke<AppConfig>("get_config")
+      .then((cfg) => {
+        setLocale(cfg.locale);
+        setLang(cfg.locale);
+      })
+      .catch(() => {});
   }, []);
 
   // Live updates: the scheduler emits `connector:update` on every refresh, so
@@ -39,6 +51,17 @@ export default function App() {
       .catch((e) => console.error(e))
       .finally(() => setLoading(false));
   }, []);
+
+  // Switch language: update the frontend catalog, re-render chrome, and re-fetch
+  // every connector so backend panel strings come back in the new language.
+  const onLocaleChange = useCallback(
+    (next: string) => {
+      setLocale(next);
+      setLang(next);
+      connectors.forEach((c) => refresh(c.id));
+    },
+    [connectors, refresh],
+  );
 
   // On first showing a connector, seed instantly from the warm cache, then let
   // the live event stream keep it fresh.
@@ -89,7 +112,7 @@ export default function App() {
             <header className="topbar">
               <h1>{t("app.settings")}</h1>
             </header>
-            <Settings onRefresh={refresh} />
+            <Settings onRefresh={refresh} onLocaleChange={onLocaleChange} />
           </>
         ) : (
           <>

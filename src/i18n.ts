@@ -17,8 +17,16 @@ const catalogs: Record<string, Catalog> = {
 
 let locale = "en";
 
+// Selectable languages. Add a language: create locales/<id>/*.json, import and
+// merge it into `catalogs` above, and add an entry here.
+export const LOCALES: { id: string; label: string }[] = [{ id: "en", label: "English" }];
+
 export function availableLocales(): string[] {
   return Object.keys(catalogs);
+}
+
+export function getLocale(): string {
+  return locale;
 }
 
 export function setLocale(next: string): void {

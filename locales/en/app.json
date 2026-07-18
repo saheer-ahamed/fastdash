@@ -17,6 +17,7 @@
   "settings": {
     "general": "General",
     "theme": "Theme",
+    "language": "Language",
     "timezone": "Timezone (IANA)",
     "timezonePlaceholder": "Asia/Kolkata",
     "filterBots": "Filter bot authors (dependabot and similar)",

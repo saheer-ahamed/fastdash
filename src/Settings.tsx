@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AppConfig } from "./types";
 import { THEMES, getStoredTheme, setTheme, type ThemeChoice } from "./theme";
-import { t } from "./i18n";
+import { LOCALES, getLocale, setLocale, t } from "./i18n";
 
 // Minimal settings UI: non-secret config goes to `save_config`; tokens go
 // straight to the OS keychain via `set_secret` and are never read back.
@@ -10,8 +10,10 @@ import { t } from "./i18n";
 // user sees results immediately instead of waiting for the next scheduler tick.
 export default function Settings({
   onRefresh,
+  onLocaleChange,
 }: {
   onRefresh: (connectorId: string) => void;
+  onLocaleChange: (locale: string) => void;
 }) {
   const [config, setConfig] = useState<AppConfig | null>(null);
 
@@ -19,6 +21,7 @@ export default function Settings({
   const [timezone, setTimezone] = useState("");
   const [filterBots, setFilterBots] = useState(true);
   const [theme, setThemeChoice] = useState<ThemeChoice>(getStoredTheme());
+  const [locale, setLocaleChoice] = useState(getLocale());
 
   // GitHub (single account in the minimal UI)
   const [ghLabel, setGhLabel] = useState("work");
@@ -37,6 +40,8 @@ export default function Settings({
         setConfig(cfg);
         setTimezone(cfg.timezone);
         setFilterBots(cfg.filterBots);
+        setLocaleChoice(cfg.locale);
+        setLocale(cfg.locale);
         const acct = cfg.github.accounts[0];
         if (acct) {
           setGhLabel(acct.label);
@@ -54,6 +59,16 @@ export default function Settings({
   };
 
   const error = (e: unknown) => flash(t("settings.error", { message: String(e) }));
+
+  async function changeLocale(next: string) {
+    setLocaleChoice(next);
+    try {
+      await persist({ locale: next });
+      onLocaleChange(next);
+    } catch (e) {
+      error(e);
+    }
+  }
 
   // Persist the config plus whatever slices the caller overrides in one write,
   // keeping the in-memory `config` state in sync.
@@ -136,6 +151,21 @@ export default function Settings({
                 }}
               >
                 {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="field">
+          <label>{t("settings.language")}</label>
+          <div className="segmented">
+            {LOCALES.map((loc) => (
+              <button
+                key={loc.id}
+                type="button"
+                className={"seg" + (locale === loc.id ? " active" : "")}
+                onClick={() => changeLocale(loc.id)}
+              >
+                {loc.label}
               </button>
             ))}
           </div>

@@ -53,6 +53,8 @@ pub fn save_config(
     config: AppConfig,
 ) -> Result<(), String> {
     crate::engine::config::save(&config).map_err(|e| e.to_string())?;
+    // Apply the language immediately so connector panels localize on next fetch.
+    crate::engine::i18n::set_locale(&config.locale);
     *state.write().unwrap() = config;
     Ok(())
 }
