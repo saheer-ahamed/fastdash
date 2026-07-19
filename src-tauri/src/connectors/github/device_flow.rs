@@ -27,16 +27,27 @@ const GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
 /// read private repositories the user can see.
 const SCOPES: &str = "repo read:org read:user";
 
-/// Public OAuth App client id. **Not a secret.** Register an OAuth App at
-/// <https://github.com/settings/developers>, enable *Device Flow*, and paste its
-/// Client ID here (or set `FASTDASH_GITHUB_CLIENT_ID`).
-const CLIENT_ID: &str = "REPLACE_WITH_GITHUB_OAUTH_APP_CLIENT_ID";
+/// Public OAuth App client id, **baked in at build time** from the
+/// `FASTDASH_GITHUB_CLIENT_ID` env var set on the build machine. **Not a
+/// secret** - it is the app's public identifier and the same for every user;
+/// the compiled-in value ships in the binary so end users get it automatically.
+///
+/// Register an OAuth App at <https://github.com/settings/developers>, enable
+/// *Device Flow*, and set `FASTDASH_GITHUB_CLIENT_ID` when building a release
+/// (e.g. in CI). A build without it yields `None` and a clear "not configured"
+/// message - fine for contributors, who supply their own id if they want to
+/// exercise the login locally.
+const CLIENT_ID: Option<&str> = option_env!("FASTDASH_GITHUB_CLIENT_ID");
 
 /// Absolute ceiling on the poll loop so a wedged flow can never spin forever;
 /// GitHub codes expire well before this (typically 900s).
 const MAX_POLL_SECS: u64 = 900;
 
-/// Resolve the configured client id, or `None` if it is still the placeholder.
+/// Resolve the OAuth App client id, or `None` if none is configured.
+///
+/// Order: a **runtime** `FASTDASH_GITHUB_CLIENT_ID` (dev override, no rebuild
+/// needed) wins; otherwise the **build-time** value compiled into `CLIENT_ID`
+/// (what ships to users) is used.
 fn client_id() -> Option<String> {
     if let Ok(v) = std::env::var("FASTDASH_GITHUB_CLIENT_ID") {
         let v = v.trim().to_string();
@@ -44,12 +55,10 @@ fn client_id() -> Option<String> {
             return Some(v);
         }
     }
-    let c = CLIENT_ID.trim();
-    if c.is_empty() || c.starts_with("REPLACE") {
-        None
-    } else {
-        Some(c.to_string())
-    }
+    CLIENT_ID
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+        .map(str::to_string)
 }
 
 /// What the UI needs to guide the user through approval. Serialized camelCase
