@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AppConfig } from "./types";
 import { THEMES, getStoredTheme, setTheme, type ThemeChoice } from "./theme";
@@ -8,6 +8,16 @@ import { LOCALES, getLocale, setLocale, t } from "./i18n";
 // straight to the OS keychain via `set_secret` and are never read back.
 // After a successful save we ask the parent to refresh that connector so the
 // user sees results immediately instead of waiting for the next scheduler tick.
+
+/// GitHub Device Flow codes returned by `github_device_start`.
+type DeviceCode = {
+  deviceCode: string;
+  userCode: string;
+  verificationUri: string;
+  expiresIn: number;
+  interval: number;
+};
+
 export default function Settings({
   onRefresh,
   onLocaleChange,
@@ -27,10 +37,20 @@ export default function Settings({
   const [ghLabel, setGhLabel] = useState("work");
   const [ghOrgs, setGhOrgs] = useState("");
   const [ghToken, setGhToken] = useState("");
+  const [ghTokenStored, setGhTokenStored] = useState(false);
+  const [ghReplacing, setGhReplacing] = useState(false);
+  // Device Flow state: the active code pair while a login is in progress.
+  const [device, setDevice] = useState<DeviceCode | null>(null);
+  const [connecting, setConnecting] = useState(false);
+  const [copied, setCopied] = useState(false);
+  // Bumped to invalidate an in-flight poll when the user cancels.
+  const connectId = useRef(0);
 
   // Slack (single workspace in the minimal UI)
   const [slackLabel, setSlackLabel] = useState("default");
   const [slackToken, setSlackToken] = useState("");
+  const [slackTokenStored, setSlackTokenStored] = useState(false);
+  const [slackReplacing, setSlackReplacing] = useState(false);
 
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
 
@@ -52,6 +72,23 @@ export default function Settings({
       })
       .catch((e) => console.error(e));
   }, []);
+
+  // Reflect whether a token is already stored for the current label, so the
+  // input can show a masked "stored" state instead of looking empty. We never
+  // read the secret itself back - only whether one exists.
+  useEffect(() => {
+    const label = ghLabel.trim() || "work";
+    invoke<boolean>("has_secret", { connector: "github", label })
+      .then(setGhTokenStored)
+      .catch(() => setGhTokenStored(false));
+  }, [ghLabel]);
+
+  useEffect(() => {
+    const label = slackLabel.trim() || "default";
+    invoke<boolean>("has_secret", { connector: "slack", label })
+      .then(setSlackTokenStored)
+      .catch(() => setSlackTokenStored(false));
+  }, [slackLabel]);
 
   const flash = (msg: string) => {
     setSavedMsg(msg);
@@ -107,6 +144,8 @@ export default function Settings({
       if (ghToken.trim()) {
         await invoke("set_secret", { connector: "github", label, value: ghToken.trim() });
         setGhToken("");
+        setGhTokenStored(true);
+        setGhReplacing(false);
       }
       await persist({ github: { accounts: [{ label, orgs: parseOrgs(ghOrgs) }] } });
       onRefresh("github");
@@ -116,12 +155,63 @@ export default function Settings({
     }
   }
 
+  // Kick off GitHub Device Flow: fetch a code, show it while the user approves
+  // in the browser, then persist the account so the connector picks it up.
+  async function connectGithub() {
+    const label = ghLabel.trim() || "work";
+    const id = ++connectId.current;
+    setConnecting(true);
+    setCopied(false);
+    try {
+      const dc = await invoke<DeviceCode>("github_device_start");
+      if (connectId.current !== id) return; // cancelled while starting
+      setDevice(dc);
+      const login = await invoke<string>("github_device_poll", {
+        deviceCode: dc.deviceCode,
+        interval: dc.interval,
+        label,
+      });
+      if (connectId.current !== id) return; // cancelled while polling
+      setDevice(null);
+      setGhTokenStored(true);
+      setGhReplacing(false);
+      await persist({ github: { accounts: [{ label, orgs: parseOrgs(ghOrgs) }] } });
+      onRefresh("github");
+      flash(t("settings.connectedAs", { login }));
+    } catch (e) {
+      if (connectId.current === id) {
+        setDevice(null);
+        error(e);
+      }
+    } finally {
+      if (connectId.current === id) setConnecting(false);
+    }
+  }
+
+  function cancelConnect() {
+    connectId.current++; // invalidate the in-flight poll
+    setDevice(null);
+    setConnecting(false);
+  }
+
+  async function copyCode(code: string) {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* clipboard may be unavailable; the code is still shown to type manually */
+    }
+  }
+
   async function saveSlack() {
     try {
       const label = slackLabel.trim() || "default";
       if (slackToken.trim()) {
         await invoke("set_secret", { connector: "slack", label, value: slackToken.trim() });
         setSlackToken("");
+        setSlackTokenStored(true);
+        setSlackReplacing(false);
       }
       await persist({ slack: { workspaces: [{ label }] } });
       onRefresh("slack");
@@ -200,17 +290,72 @@ export default function Settings({
           <label htmlFor="gh-label">{t("settings.accountLabel")}</label>
           <input id="gh-label" value={ghLabel} onChange={(e) => setGhLabel(e.target.value)} />
         </div>
-        <div className="field">
-          <label htmlFor="gh-token">{t("settings.pat")}</label>
-          <input
-            id="gh-token"
-            type="password"
-            value={ghToken}
-            onChange={(e) => setGhToken(e.target.value)}
-            placeholder={t("settings.tokenPlaceholder")}
-            autoComplete="off"
-          />
-        </div>
+
+        {device ? (
+          <div className="device-flow">
+            <p>{t("settings.deviceInstructions")}</p>
+            <div className="device-code">
+              <code>{device.userCode}</code>
+              <button type="button" className="link-btn" onClick={() => copyCode(device.userCode)}>
+                {copied ? t("settings.copied") : t("settings.copy")}
+              </button>
+            </div>
+            <p className="muted device-waiting">{t("settings.deviceWaiting")}</p>
+            <div className="field-actions">
+              <a
+                className="link-btn"
+                href={device.verificationUri}
+                target="_blank"
+                rel="noreferrer"
+              >
+                {t("settings.deviceOpen")}
+              </a>
+              <button type="button" className="link-btn" onClick={cancelConnect}>
+                {t("settings.cancel")}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="field-actions connect-actions">
+              <button className="save-btn" onClick={connectGithub} disabled={connecting}>
+                {connecting ? t("settings.connecting") : t("settings.connectGithub")}
+              </button>
+            </div>
+
+            <div className="field">
+              <label htmlFor="gh-token">
+                {ghTokenStored ? t("settings.orPasteToken") : t("settings.pat")}
+              </label>
+              {ghTokenStored && !ghReplacing ? (
+                <div className="stored-token">
+                  <input type="password" value="storedtoken" readOnly aria-label={t("settings.tokenStored")} />
+                  <button
+                    type="button"
+                    className="link-btn"
+                    onClick={() => {
+                      setGhReplacing(true);
+                      setGhToken("");
+                    }}
+                  >
+                    {t("settings.replace")}
+                  </button>
+                </div>
+              ) : (
+                <input
+                  id="gh-token"
+                  type="password"
+                  value={ghToken}
+                  onChange={(e) => setGhToken(e.target.value)}
+                  placeholder={t("settings.tokenPlaceholder")}
+                  autoComplete="off"
+                />
+              )}
+              {ghTokenStored && <span className="muted stored-hint">{t("settings.tokenStored")}</span>}
+            </div>
+          </>
+        )}
+
         <div className="field">
           <label htmlFor="gh-orgs">{t("settings.orgs")}</label>
           <input
@@ -239,14 +384,38 @@ export default function Settings({
         </div>
         <div className="field">
           <label htmlFor="slack-token">{t("settings.slackToken")}</label>
-          <input
-            id="slack-token"
-            type="password"
-            value={slackToken}
-            onChange={(e) => setSlackToken(e.target.value)}
-            placeholder={t("settings.tokenPlaceholder")}
-            autoComplete="off"
-          />
+          {slackTokenStored && !slackReplacing ? (
+            <div className="stored-token">
+              <input
+                type="password"
+                value="storedtoken"
+                readOnly
+                aria-label={t("settings.tokenStored")}
+              />
+              <button
+                type="button"
+                className="link-btn"
+                onClick={() => {
+                  setSlackReplacing(true);
+                  setSlackToken("");
+                }}
+              >
+                {t("settings.replace")}
+              </button>
+            </div>
+          ) : (
+            <input
+              id="slack-token"
+              type="password"
+              value={slackToken}
+              onChange={(e) => setSlackToken(e.target.value)}
+              placeholder={t("settings.tokenPlaceholder")}
+              autoComplete="off"
+            />
+          )}
+          {slackTokenStored && (
+            <span className="muted stored-hint">{t("settings.tokenStored")}</span>
+          )}
         </div>
         <div className="field-actions">
           <button className="save-btn" onClick={saveSlack}>

@@ -32,6 +32,18 @@
     "orgs": "Organizations",
     "orgsPlaceholder": "z-roworld, another-org",
     "workspaceLabel": "Workspace label",
-    "slackToken": "User OAuth token (xoxp)"
+    "slackToken": "User OAuth token (xoxp)",
+    "connectGithub": "Connect with GitHub",
+    "connecting": "Connecting...",
+    "tokenStored": "Token stored - hidden for security",
+    "replace": "Replace",
+    "orPasteToken": "Or paste a token manually",
+    "deviceInstructions": "We opened GitHub in your browser. Enter this code there to finish:",
+    "deviceWaiting": "Waiting for you to approve in the browser...",
+    "deviceOpen": "Open GitHub again",
+    "copy": "Copy",
+    "copied": "Copied",
+    "cancel": "Cancel",
+    "connectedAs": "Connected as {login}"
   }
 }

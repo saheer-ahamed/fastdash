@@ -64,6 +64,36 @@ pub fn set_secret(connector: String, label: String, value: String) -> Result<(),
     secrets::set(&connector, &label, &value).map_err(|e| e.to_string())
 }
 
+/// Whether a secret is already stored for `{connector}/{label}`. Lets the UI
+/// show a "token stored" state without ever reading the secret back.
+#[tauri::command]
+pub fn has_secret(connector: String, label: String) -> bool {
+    matches!(secrets::get(&connector, &label), Ok(Some(_)))
+}
+
+/// Start a GitHub Device Flow login: fetch a code pair and open the browser to
+/// GitHub's verification page. The UI shows `userCode` while it awaits approval.
+#[tauri::command]
+pub async fn github_device_start(
+) -> Result<crate::connectors::github::device_flow::DeviceCode, String> {
+    crate::connectors::github::device_flow::start().await
+}
+
+/// Long-poll until the user approves the device login, then store the resulting
+/// token in the keychain under `github/{label}` and return the account login.
+#[tauri::command]
+pub async fn github_device_poll(
+    device_code: String,
+    interval: u64,
+    label: String,
+) -> Result<String, String> {
+    use crate::connectors::github::device_flow;
+    let token = device_flow::poll(&device_code, interval).await?;
+    let login = device_flow::fetch_login(&token).await?;
+    secrets::set("github", &label, &token).map_err(|e| e.to_string())?;
+    Ok(login)
+}
+
 #[tauri::command]
 pub fn delete_secret(connector: String, label: String) -> Result<(), String> {
     secrets::delete(&connector, &label).map_err(|e| e.to_string())
