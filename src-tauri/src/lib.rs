@@ -20,6 +20,8 @@ mod ipc;
 
 use std::sync::{Arc, RwLock};
 
+use tauri::Manager;
+
 use engine::cache::SnapshotCache;
 use engine::config::{self, AppConfig};
 use engine::registry::Registry;
@@ -49,6 +51,18 @@ pub fn run() {
             ipc::github_device_poll,
         ])
         .setup(move |app| {
+            // Force the window icon at runtime so the taskbar picks it up. In
+            // `tauri dev` on Windows the default icon path is not reliably
+            // applied to the taskbar; explicitly calling `set_icon` sends
+            // WM_SETICON and makes the taskbar/titlebar icon show up in dev too.
+            #[cfg(desktop)]
+            if let (Some(window), Some(icon)) = (
+                app.get_webview_window("main"),
+                app.default_window_icon().cloned(),
+            ) {
+                let _ = window.set_icon(icon);
+            }
+
             engine::scheduler::start(app.handle().clone(), registry, cache, config);
             Ok(())
         })
