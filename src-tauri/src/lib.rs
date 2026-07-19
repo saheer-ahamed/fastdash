@@ -49,6 +49,8 @@ pub fn run() {
             ipc::delete_secret,
             ipc::github_device_start,
             ipc::github_device_poll,
+            ipc::github_fetch,
+            ipc::open_external,
         ])
         .setup(move |app| {
             // Force the window icon at runtime so the taskbar picks it up. In

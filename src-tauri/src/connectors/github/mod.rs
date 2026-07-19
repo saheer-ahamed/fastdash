@@ -8,8 +8,9 @@
 //! today), and the PR list with repos.
 //!
 //! Supports multiple accounts (work `saheer-zro`, personal `saheer-ahamed`),
-//! each with its own PAT in the OS keychain. Multi-account selection is not yet
-//! wired (see `config.rs`); one account is resolved per fetch for now.
+//! each with its own PAT in the OS keychain. The scheduler's `fetch` renders the
+//! first account (all orgs) for the sidebar status dot; the UI drives per-account
+//! and per-org sub-tabs through `fetch_account` (see `ipc::github_fetch`).
 
 mod aggregate;
 mod client;
@@ -64,6 +65,30 @@ impl Connector for GithubConnector {
             }
             Err(e) => Err(ConnectorError::Other(e.to_string())),
         }
+    }
+}
+
+/// Fetch a specific account's dashboard, optionally scoped to a single org
+/// (an org-filter sub-tab; `None` means all of the account's orgs). Always
+/// returns a `Snapshot` carrying the right `Health` (needsAuth / rateLimited /
+/// error) so the UI can render a banner instead of surfacing a raw error.
+pub async fn fetch_account(label: String, org: Option<String>) -> Snapshot {
+    let Some(cfg) = GithubConfig::for_account(&label, org.as_deref()) else {
+        return Snapshot::needs_auth(i18n::t("github.needsAuth"));
+    };
+    match run_fetch(&cfg).await {
+        Ok(snapshot) => snapshot,
+        Err(GithubError::RateLimited { retry_after_secs }) => {
+            rate_limited_snapshot(retry_after_secs)
+        }
+        Err(e) => Snapshot {
+            status: Health::Error {
+                message: e.to_string(),
+            },
+            panels: vec![],
+            fetched_at: Utc::now(),
+            next_refresh_secs: None,
+        },
     }
 }
 

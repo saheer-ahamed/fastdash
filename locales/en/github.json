@@ -32,6 +32,8 @@
       "closed": "Closed",
       "open": "Open"
     },
-    "needsAuth": "Add a GitHub token (keychain fastdash/github/<label> or the GITHUB_TOKEN env var) and pick organizations"
+    "needsAuth": "Add a GitHub token (keychain fastdash/github/<label> or the GITHUB_TOKEN env var) and pick organizations",
+    "allOrgs": "All orgs",
+    "noAccounts": "No GitHub accounts connected yet. Add one in Settings."
   }
 }

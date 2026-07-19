@@ -315,6 +315,64 @@ button {
   color: var(--muted);
 }
 
+/* GitHub account sub-tabs: a row of buttons under the topbar. */
+.subtabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 8px 20px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.subtab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  padding: 6px 12px;
+  cursor: pointer;
+  font: inherit;
+  margin-bottom: -1px;
+}
+
+.subtab:hover {
+  color: var(--text);
+}
+
+.subtab.active {
+  color: var(--bright);
+  border-bottom: 2px solid var(--fill);
+}
+
+/* Per-account org filter: All + one chip per org. */
+.org-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 20px 0;
+}
+
+.chip {
+  background: transparent;
+  border: 1px solid var(--border-bright);
+  color: var(--muted);
+  padding: 3px 12px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+
+.chip:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.chip.active {
+  background: var(--fill);
+  color: var(--bg);
+  border-color: var(--fill);
+}
+
 .banner {
   padding: 10px 12px;
   border: 1px solid var(--border-bright);
@@ -700,6 +758,30 @@ a:hover {
   display: block;
   margin-top: 5px;
   font-size: 12px;
+}
+
+/* One GitHub account block inside the multi-account editor. */
+.account-card {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+
+.account-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* "Add account" + "Save" sit side by side under the account list. */
+.account-actions {
+  display: flex;
+  gap: 12px;
 }
 
 /* Device Flow panel shown while the user approves the login in the browser. */

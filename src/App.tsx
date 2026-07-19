@@ -1,7 +1,15 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { AppConfig, ConnectorMeta, ConnectorUpdate, Health, Panel, Snapshot } from "./types";
+import type {
+  AppConfig,
+  ConnectorMeta,
+  ConnectorUpdate,
+  GithubAccount,
+  Health,
+  Panel,
+  Snapshot,
+} from "./types";
 import Settings from "./Settings";
 import { setLocale, t } from "./i18n";
 
@@ -114,6 +122,8 @@ export default function App() {
             </header>
             <Settings onRefresh={refresh} onLocaleChange={onLocaleChange} />
           </>
+        ) : active === "github" ? (
+          <GithubView />
         ) : (
           <>
             <header className="topbar">
@@ -143,6 +153,145 @@ export default function App() {
         )}
       </main>
     </div>
+  );
+}
+
+// Open a link in the OS default browser. Tauri's webview ignores
+// `target="_blank"`, so panel links route through the backend `open_external`.
+function openExternal(url: string) {
+  invoke("open_external", { url }).catch((e) => console.error(e));
+}
+
+// A panel link that opens in the external browser instead of navigating the
+// webview. Keeps a real `href` for accessibility but intercepts the click.
+function ExtLink({ href, children }: { href: string; children: ReactNode }) {
+  return (
+    <a
+      href={href}
+      onClick={(e) => {
+        e.preventDefault();
+        openExternal(href);
+      }}
+    >
+      {children}
+    </a>
+  );
+}
+
+// The GitHub dashboard: one sub-tab per connected account, with an org filter
+// (All + each org) inside the account. Each selection fetches that scoped view
+// via `github_fetch`; the view also self-refreshes on the connector cadence.
+const GITHUB_REFRESH_MS = 60_000;
+
+function GithubView() {
+  const [accounts, setAccounts] = useState<GithubAccount[]>([]);
+  const [label, setLabel] = useState<string | null>(null);
+  // null = the account's "All orgs" view.
+  const [org, setOrg] = useState<string | null>(null);
+  const [snap, setSnap] = useState<Snapshot | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  // Load the configured accounts once and select the first.
+  useEffect(() => {
+    invoke<AppConfig>("get_config")
+      .then((cfg) => {
+        setAccounts(cfg.github.accounts);
+        setLabel((cur) => cur ?? cfg.github.accounts[0]?.label ?? null);
+      })
+      .catch((e) => console.error(e));
+  }, []);
+
+  const load = useCallback((lbl: string, o: string | null) => {
+    setLoading(true);
+    invoke<Snapshot>("github_fetch", { label: lbl, org: o })
+      .then(setSnap)
+      .catch((e) => console.error(e))
+      .finally(() => setLoading(false));
+  }, []);
+
+  // Fetch on account/org change and keep the active view fresh on the cadence.
+  useEffect(() => {
+    if (!label) return;
+    setSnap(null);
+    load(label, org);
+    const id = window.setInterval(() => load(label, org), GITHUB_REFRESH_MS);
+    return () => window.clearInterval(id);
+  }, [label, org, load]);
+
+  const activeAccount = accounts.find((a) => a.label === label);
+
+  if (accounts.length === 0) {
+    return (
+      <>
+        <header className="topbar">
+          <h1>GitHub</h1>
+        </header>
+        <div className="empty">{t("github.noAccounts")}</div>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <header className="topbar">
+        <h1>GitHub</h1>
+        <div className="actions">
+          {snap && (
+            <span className="muted">
+              {t("app.updated", { time: fetchedLabel(snap.fetchedAt) })}
+            </span>
+          )}
+          <button
+            className="refresh"
+            disabled={loading || !label}
+            onClick={() => label && load(label, org)}
+          >
+            {loading ? t("app.refreshing") : t("app.refresh")}
+          </button>
+        </div>
+      </header>
+
+      <div className="subtabs">
+        {accounts.map((a) => (
+          <button
+            key={a.label}
+            className={"subtab" + (a.label === label ? " active" : "")}
+            onClick={() => {
+              setLabel(a.label);
+              setOrg(null);
+            }}
+          >
+            {a.label}
+          </button>
+        ))}
+      </div>
+
+      {activeAccount && activeAccount.orgs.length > 1 && (
+        <div className="org-filter">
+          <button
+            className={"chip" + (org === null ? " active" : "")}
+            onClick={() => setOrg(null)}
+          >
+            {t("github.allOrgs")}
+          </button>
+          {activeAccount.orgs.map((o) => (
+            <button
+              key={o}
+              className={"chip" + (org === o ? " active" : "")}
+              onClick={() => setOrg(o)}
+            >
+              {o}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {snap ? (
+        <SnapshotView snapshot={snap} />
+      ) : (
+        <div className="empty">{t("app.loading")}</div>
+      )}
+    </>
   );
 }
 
@@ -237,9 +386,7 @@ function PanelView({ panel }: { panel: Panel }) {
               <li key={i}>
                 <div className="list-main">
                   {item.href ? (
-                    <a href={item.href} target="_blank" rel="noreferrer">
-                      {item.title}
-                    </a>
+                    <ExtLink href={item.href}>{item.title}</ExtLink>
                   ) : (
                     <span>{item.title}</span>
                   )}
@@ -290,9 +437,7 @@ function TableView({ panel }: { panel: Extract<Panel, { kind: "table" }> }) {
                 {row.map((cell, ci) => (
                   <td key={ci} className={panel.columns[ci]?.numeric ? "num" : ""}>
                     {cell.href ? (
-                      <a href={cell.href} target="_blank" rel="noreferrer">
-                        {cell.text}
-                      </a>
+                      <ExtLink href={cell.href}>{cell.text}</ExtLink>
                     ) : (
                       cell.text
                     )}

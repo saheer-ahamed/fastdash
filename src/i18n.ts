@@ -7,12 +7,11 @@
 import enApp from "../locales/en/app.json";
 import enClaude from "../locales/en/claude.json";
 import enGithub from "../locales/en/github.json";
-import enSlack from "../locales/en/slack.json";
 
 type Catalog = Record<string, unknown>;
 
 const catalogs: Record<string, Catalog> = {
-  en: { ...enApp, ...enClaude, ...enGithub, ...enSlack },
+  en: { ...enApp, ...enClaude, ...enGithub },
 };
 
 let locale = "en";

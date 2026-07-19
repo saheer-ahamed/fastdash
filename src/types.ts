@@ -78,14 +78,9 @@ export interface GithubAccount {
   orgs: string[];
 }
 
-export interface SlackWorkspace {
-  label: string;
-}
-
 export interface AppConfig {
   timezone: string;
   locale: string;
   github: { accounts: GithubAccount[] };
-  slack: { workspaces: SlackWorkspace[] };
   filterBots: boolean;
 }
