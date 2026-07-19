@@ -655,3 +655,83 @@ a:hover {
   color: var(--bg);
   border-color: var(--fill);
 }
+
+/* GitHub "Connect" primary action sits just above the manual-token fallback. */
+.connect-actions {
+  margin-top: 0;
+  margin-bottom: 14px;
+}
+
+/* Inline text button (Replace / Copy / Cancel / open-again). */
+.link-btn {
+  background: transparent;
+  border: none;
+  color: var(--fill);
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.link-btn:hover {
+  text-decoration: underline;
+}
+
+.field-actions .link-btn {
+  margin-right: 16px;
+}
+
+/* Masked "a token is already stored" row: fixed dots + a Replace affordance. */
+.stored-token {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.stored-token input {
+  flex: 1;
+  /* Read-only masked value - the real secret is never sent to the UI. */
+  color: var(--muted);
+  cursor: default;
+}
+
+.stored-hint {
+  display: block;
+  margin-top: 5px;
+  font-size: 12px;
+}
+
+/* Device Flow panel shown while the user approves the login in the browser. */
+.device-flow {
+  border: 1px solid var(--border-bright);
+  background: var(--bg);
+  padding: 14px;
+  margin-bottom: 12px;
+}
+
+.device-flow p {
+  margin: 0 0 10px;
+  color: var(--text);
+}
+
+.device-code {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 10px;
+}
+
+.device-code code {
+  font-size: 24px;
+  letter-spacing: 4px;
+  font-weight: 600;
+  color: var(--bright);
+  background: var(--panel-2);
+  border: 1px solid var(--border-bright);
+  padding: 6px 14px;
+}
+
+.device-waiting {
+  font-size: 13px;
+}

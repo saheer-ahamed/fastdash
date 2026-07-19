@@ -31,6 +31,7 @@ keyring = { version = "3", features = ["windows-native"] }
 toml = "0.8"
 directories = "5"
 futures = "0.3"
+open = "5"
 
 # Smaller, faster release binaries.
 [profile.release]

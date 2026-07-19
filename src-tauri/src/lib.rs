@@ -43,7 +43,10 @@ pub fn run() {
             ipc::get_config,
             ipc::save_config,
             ipc::set_secret,
+            ipc::has_secret,
             ipc::delete_secret,
+            ipc::github_device_start,
+            ipc::github_device_poll,
         ])
         .setup(move |app| {
             engine::scheduler::start(app.handle().clone(), registry, cache, config);

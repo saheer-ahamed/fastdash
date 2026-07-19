@@ -14,6 +14,7 @@
 mod aggregate;
 mod client;
 mod config;
+pub mod device_flow;
 
 use std::collections::HashMap;
 
