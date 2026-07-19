@@ -1,6 +1,6 @@
 //! App-wide, non-secret configuration.
 //!
-//! Secrets (GitHub PAT, Slack user token, Claude OAuth token) never live here -
+//! Secrets (GitHub PAT, Claude OAuth token) never live here -
 //! they go in the OS keychain via `engine::secrets`. This struct is persisted as
 //! TOML at `ProjectDirs::from("co","zro","fastdash").config_dir()/config.toml`
 //! (on Windows, under `%APPDATA%`). Loading always succeeds by falling back to
@@ -12,7 +12,7 @@ use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
 /// Root, non-secret configuration. Every connector reads only the slice it needs
-/// (GitHub reads `github`, Slack reads `slack`); all of them share `timezone`.
+/// (GitHub reads `github`); all of them share `timezone`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
@@ -23,9 +23,6 @@ pub struct AppConfig {
     /// GitHub accounts and their selected orgs. The PAT for an account lives in
     /// the keychain under `github/{label}`.
     pub github: GithubConfig,
-    /// Slack workspaces. The user token for a workspace lives in the keychain
-    /// under `slack/{label}`.
-    pub slack: SlackConfig,
     /// When true, connectors that surface authors filter out bots
     /// (dependabot and similar).
     pub filter_bots: bool,
@@ -37,7 +34,6 @@ impl Default for AppConfig {
             timezone: "Asia/Kolkata".to_string(),
             locale: "en".to_string(),
             github: GithubConfig::default(),
-            slack: SlackConfig::default(),
             filter_bots: true,
         }
     }
@@ -56,19 +52,6 @@ pub struct GithubAccount {
     pub label: String,
     /// Orgs selected for this account (e.g. `["z-roworld"]`).
     pub orgs: Vec<String>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct SlackConfig {
-    pub workspaces: Vec<SlackWorkspace>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct SlackWorkspace {
-    /// Human label and keychain key suffix (secret at `slack/{label}`).
-    pub label: String,
 }
 
 #[derive(Debug, thiserror::Error)]

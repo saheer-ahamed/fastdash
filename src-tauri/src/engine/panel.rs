@@ -1,7 +1,7 @@
 //! Generic render primitives that cross the Rust -> JS boundary.
 //!
 //! Connectors emit `Panel`s; the frontend is a single dumb renderer over these
-//! shapes and never learns what "GitHub" or "Slack" is. Adding a connector that
+//! shapes and never learns what "GitHub" or "Claude" is. Adding a connector that
 //! reuses these primitives needs no frontend work.
 
 use serde::Serialize;
@@ -37,7 +37,7 @@ pub enum Panel {
         title: Option<String>,
         bars: Vec<Bar>,
     },
-    /// A vertical list of links (Slack mentions, PR list).
+    /// A vertical list of links (e.g. a PR list).
     List {
         title: Option<String>,
         items: Vec<ListItem>,

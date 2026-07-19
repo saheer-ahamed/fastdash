@@ -98,3 +98,21 @@ pub async fn github_device_poll(
 pub fn delete_secret(connector: String, label: String) -> Result<(), String> {
     secrets::delete(&connector, &label).map_err(|e| e.to_string())
 }
+
+/// Fetch the GitHub dashboard for one account, optionally scoped to a single org
+/// (`org = None` means all of the account's orgs). Drives the account sub-tabs
+/// and org filter in the UI.
+#[tauri::command]
+pub async fn github_fetch(label: String, org: Option<String>) -> Snapshot {
+    crate::connectors::github::fetch_account(label, org).await
+}
+
+/// Open a URL in the user's default external browser. Restricted to http(s) so a
+/// panel link can never be used to launch an arbitrary scheme locally.
+#[tauri::command]
+pub fn open_external(url: String) -> Result<(), String> {
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err(format!("refusing to open non-http(s) url: {url}"));
+    }
+    open::that(&url).map_err(|e| e.to_string())
+}

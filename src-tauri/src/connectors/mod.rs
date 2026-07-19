@@ -3,7 +3,6 @@
 
 pub mod claude;
 pub mod github;
-pub mod slack;
 
 // Temporary diagnostic harness: dumps the exact Snapshot each connector returns
 // using the real keychain token, config, transcripts, and live APIs. Run with:

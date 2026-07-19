@@ -15,7 +15,6 @@ impl Registry {
             connectors: vec![
                 Arc::new(connectors::claude::ClaudeConnector::new()),
                 Arc::new(connectors::github::GithubConnector::new()),
-                Arc::new(connectors::slack::SlackConnector::new()),
             ],
         }
     }

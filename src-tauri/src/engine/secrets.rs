@@ -1,7 +1,7 @@
 //! Thin wrapper over the OS keychain (`keyring`).
 //!
 //! Every secret is stored under service `fastdash` with the account key
-//! `{connector}/{label}`, e.g. `github/work` or `slack/default`. On Windows this
+//! `{connector}/{label}`, e.g. `github/work` or `github/personal`. On Windows this
 //! is the Credential Manager (the `windows-native` feature is enabled in
 //! `Cargo.toml`). Secrets NEVER touch `config.toml`.
 

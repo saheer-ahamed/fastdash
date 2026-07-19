@@ -25,14 +25,11 @@
     "saved": "{section} settings saved",
     "error": "Error: {message}",
     "github": "GitHub",
-    "slack": "Slack",
     "accountLabel": "Account label",
     "pat": "Personal access token",
     "tokenPlaceholder": "Paste to set or replace - stored in the OS keychain",
     "orgs": "Organizations",
     "orgsPlaceholder": "z-roworld, another-org",
-    "workspaceLabel": "Workspace label",
-    "slackToken": "User OAuth token (xoxp)",
     "connectGithub": "Connect with GitHub",
     "connecting": "Connecting...",
     "tokenStored": "Token stored - hidden for security",
@@ -44,6 +41,10 @@
     "copy": "Copy",
     "copied": "Copied",
     "cancel": "Cancel",
-    "connectedAs": "Connected as {login}"
+    "connectedAs": "Connected as {login}",
+    "addAccount": "Add account",
+    "removeAccount": "Remove",
+    "accountN": "Account {n}",
+    "noGithubAccounts": "No accounts yet. Add one to start tracking PRs."
   }
 }

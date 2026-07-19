@@ -29,7 +29,6 @@ fn english() -> &'static Value {
             include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../locales/en/app.json")),
             include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../locales/en/claude.json")),
             include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../locales/en/github.json")),
-            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../locales/en/slack.json")),
         ];
         let mut root = Map::new();
         for raw in FILES {

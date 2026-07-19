@@ -25,31 +25,53 @@ pub struct GithubConfig {
 }
 
 impl GithubConfig {
-    /// Resolve the configuration, or `None` if no token is available (the
-    /// connector then reports `NeedsAuth`).
+    /// Resolve the configuration for the scheduler's default view: the first
+    /// account configured in Settings (all its orgs), or `None` if no token is
+    /// available (the connector then reports `NeedsAuth`).
     pub fn resolve() -> Option<Self> {
         // Prefer the first account configured in Settings; fall back to env vars.
+        let label = crate::engine::config::load()
+            .github
+            .accounts
+            .into_iter()
+            .next()
+            .map(|a| a.label)
+            .or_else(|| std::env::var("FASTDASH_GITHUB_LABEL").ok())
+            .unwrap_or_else(|| DEFAULT_LABEL.to_string());
+        Self::for_account(&label, None)
+    }
+
+    /// Resolve the configuration for a specific account label, optionally scoped
+    /// to a single org (an org-filter sub-tab). Returns `None` when no token is
+    /// available for the label. When `org` is `None` the account's full org list
+    /// is used (the "All" sub-tab).
+    pub fn for_account(label: &str, org: Option<&str>) -> Option<Self> {
         let account = crate::engine::config::load()
             .github
             .accounts
             .into_iter()
-            .next();
-        let label = account
-            .as_ref()
-            .map(|a| a.label.clone())
-            .or_else(|| std::env::var("FASTDASH_GITHUB_LABEL").ok())
-            .unwrap_or_else(|| DEFAULT_LABEL.to_string());
+            .find(|a| a.label == label);
 
         // Prefer the keychain; fall back to the env var for local/dev use.
-        let token = token_from_keychain(&label).or_else(token_from_env)?;
+        let token = token_from_keychain(label).or_else(token_from_env)?;
 
-        // Orgs from the configured account, else the env-var default.
-        let orgs = account
+        // Full org set for the account, else the env-var default.
+        let all_orgs = account
             .map(|a| a.orgs)
             .filter(|o| !o.is_empty())
             .unwrap_or_else(orgs_from_env);
 
-        Some(GithubConfig { token, orgs, label })
+        // A specific org narrows the fetch to just that org; otherwise use all.
+        let orgs = match org {
+            Some(o) if !o.trim().is_empty() => vec![o.trim().to_string()],
+            _ => all_orgs,
+        };
+
+        Some(GithubConfig {
+            token,
+            orgs,
+            label: label.to_string(),
+        })
     }
 }
 

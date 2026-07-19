@@ -19,8 +19,8 @@ const GRAPHQL_CHUNK: usize = 50;
 pub enum GithubError {
     #[error("http error: {0}")]
     Http(String),
-    #[error("github returned status {0}")]
-    Status(u16),
+    #[error("github returned status {code}: {message}")]
+    Status { code: u16, message: String },
     #[error("rate limited")]
     RateLimited { retry_after_secs: Option<u64> },
     #[error("parse error: {0}")]
@@ -139,10 +139,13 @@ impl GithubClient {
                         retry_after_secs: retry_after(resp.headers()),
                     });
                 }
-                return Err(GithubError::Status(status.as_u16()));
+                return Err(status_error(status.as_u16(), resp).await);
             }
             if !status.is_success() {
-                return Err(GithubError::Status(status.as_u16()));
+                // e.g. 422 when an org can't be searched (missing, or the token
+                // isn't SSO/OAuth-authorized for it). Carry GitHub's own message
+                // so the UI banner explains why instead of showing a bare code.
+                return Err(status_error(status.as_u16(), resp).await);
             }
 
             let body: SearchResponse = resp
@@ -196,7 +199,7 @@ impl GithubClient {
                 });
             }
             if !status.is_success() {
-                return Err(GithubError::Status(status.as_u16()));
+                return Err(status_error(status.as_u16(), resp).await);
             }
 
             let body: GraphQlResponse = resp
@@ -295,6 +298,53 @@ fn parse_enriched(repo: &serde_json::Value) -> Option<EnrichedPr> {
             .and_then(|v| v.as_str())
             .and_then(parse_ts),
     })
+}
+
+/// Build a `Status` error, folding GitHub's JSON error body into a readable
+/// message. GitHub returns `{ "message": "...", "errors": [{ "message": ... }] }`.
+/// For a Search 422 the top-level `message` is only "Validation Failed"; the
+/// human-facing reason (e.g. "The listed users and repositories cannot be
+/// searched either because the resources do not exist or you do not have
+/// permission to view them.") lives in `errors[].message`, so we surface both.
+async fn status_error(code: u16, resp: reqwest::Response) -> GithubError {
+    let body = resp.text().await.unwrap_or_default();
+    let message = serde_json::from_str::<serde_json::Value>(&body)
+        .ok()
+        .map(|v| {
+            let top = v
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or_default()
+                .to_string();
+            // Append any per-error detail messages (deduped against the top line).
+            let details: Vec<String> = v
+                .get("errors")
+                .and_then(|e| e.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|e| e.get("message").and_then(|m| m.as_str()))
+                        .filter(|m| !m.is_empty() && *m != top)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+            if details.is_empty() {
+                top
+            } else if top.is_empty() {
+                details.join("; ")
+            } else {
+                format!("{top} - {}", details.join("; "))
+            }
+        })
+        .filter(|m| !m.is_empty())
+        .unwrap_or_else(|| {
+            if body.trim().is_empty() {
+                "no response body".to_string()
+            } else {
+                body.chars().take(300).collect()
+            }
+        });
+    GithubError::Status { code, message }
 }
 
 fn header_u64(headers: &reqwest::header::HeaderMap, name: &str) -> Option<u64> {
