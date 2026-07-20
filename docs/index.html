@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fastdash - a super-fast desktop dashboard for Claude usage</title>
+<meta name="description" content="A super-fast desktop dashboard for Claude usage, with pluggable connectors for GitHub and Slack. Free, open source, runs entirely on your machine.">
+<meta property="og:title" content="fastdash">
+<meta property="og:description" content="A super-fast desktop dashboard for Claude usage, with pluggable connectors for GitHub and Slack.">
+<meta property="og:type" content="website">
+<link rel="icon" href="favicon.png" sizes="32x32">
+<style>
+  :root {
+    --bg: #fbfbfa;
+    --bg-raised: #ffffff;
+    --bg-code: #f4f4f2;
+    --fg: #1a1a18;
+    --fg-muted: #6b6b66;
+    --fg-faint: #97978f;
+    --border: #e4e4e0;
+    --accent: #c96442;
+    --accent-fg: #ffffff;
+    --radius: 10px;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Inter, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #131312;
+      --bg-raised: #1c1c1a;
+      --bg-code: #232321;
+      --fg: #f2f2ef;
+      --fg-muted: #a3a39c;
+      --fg-faint: #75756e;
+      --border: #2e2e2b;
+      --accent: #e08160;
+      --accent-fg: #1a1a18;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 780px; margin: 0 auto; padding: 0 24px; }
+
+  /* ---- hero ---- */
+  header { padding: 88px 0 56px; text-align: center; }
+  .logo {
+    width: 76px; height: 76px; margin: 0 auto 26px;
+    border-radius: 18px; display: block;
+    box-shadow: 0 1px 2px rgba(0,0,0,.14), 0 8px 26px rgba(0,0,0,.10);
+  }
+  h1 {
+    margin: 0 0 14px;
+    font-size: clamp(2.4rem, 7vw, 3.3rem);
+    font-weight: 680;
+    letter-spacing: -0.032em;
+    line-height: 1.05;
+  }
+  .tagline {
+    margin: 0 auto 34px;
+    max-width: 30rem;
+    font-size: 1.1rem;
+    color: var(--fg-muted);
+    text-wrap: balance;
+  }
+
+  .cta { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; align-items: center; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 11px 22px;
+    border-radius: var(--radius);
+    font-size: .95rem; font-weight: 550;
+    text-decoration: none;
+    border: 1px solid transparent;
+    transition: transform .06s ease, opacity .15s ease, background .15s ease;
+  }
+  .btn:active { transform: translateY(1px); }
+  .btn-primary { background: var(--accent); color: var(--accent-fg); }
+  .btn-primary:hover { opacity: .89; }
+  .btn-ghost { background: var(--bg-raised); color: var(--fg); border-color: var(--border); }
+  .btn-ghost:hover { background: var(--bg-code); }
+  .sub { margin-top: 15px; font-size: .82rem; color: var(--fg-faint); }
+  .sub a { color: inherit; }
+
+  /* ---- sections ---- */
+  section { padding: 34px 0; }
+  h2 {
+    font-size: .78rem; font-weight: 620;
+    letter-spacing: .09em; text-transform: uppercase;
+    color: var(--fg-faint);
+    margin: 0 0 18px;
+  }
+  h3 { font-size: 1rem; font-weight: 600; margin: 0 0 6px; letter-spacing: -.01em; }
+  p { margin: 0 0 14px; color: var(--fg-muted); }
+
+  /* ---- code blocks ---- */
+  .cmd {
+    position: relative;
+    background: var(--bg-code);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 52px 14px 16px;
+    font-family: var(--mono);
+    font-size: .855rem;
+    line-height: 1.5;
+    overflow-x: auto;
+    white-space: pre;
+    color: var(--fg);
+  }
+  .cmd + h3, .note + h3 { margin-top: 32px; }
+  .copy {
+    position: absolute; top: 8px; right: 8px;
+    background: var(--bg-raised); color: var(--fg-muted);
+    border: 1px solid var(--border); border-radius: 7px;
+    padding: 4px 9px; font-size: .72rem; font-family: var(--sans);
+    cursor: pointer; transition: color .15s ease, border-color .15s ease;
+  }
+  .copy:hover { color: var(--fg); border-color: var(--fg-faint); }
+  .copy.done { color: var(--accent); border-color: var(--accent); }
+  .note { font-size: .85rem; color: var(--fg-faint); margin: 10px 0 0; }
+
+  /* ---- feature list ---- */
+  .features { display: grid; gap: 20px; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
+  .feature { background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; }
+  .feature p { margin: 0; font-size: .89rem; }
+
+  footer {
+    margin-top: 30px; padding: 30px 0 60px;
+    border-top: 1px solid var(--border);
+    font-size: .84rem; color: var(--fg-faint);
+    display: flex; flex-wrap: wrap; gap: 8px 18px; justify-content: space-between;
+  }
+  footer a { color: var(--fg-muted); text-decoration: none; }
+  footer a:hover { color: var(--fg); text-decoration: underline; }
+
+  @media (max-width: 560px) {
+    header { padding: 60px 0 40px; }
+    .btn { width: 100%; justify-content: center; }
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <header>
+    <img src="icon.png" alt="" class="logo" width="76" height="76">
+    <h1>fastdash</h1>
+    <p class="tagline">A super-fast desktop dashboard for your Claude usage, with pluggable connectors for GitHub and Slack.</p>
+
+    <div class="cta">
+      <a class="btn btn-primary" id="dl" href="https://github.com/saheer-ahamed/fastdash/releases/latest">Download for Windows</a>
+      <a class="btn btn-ghost" href="https://github.com/saheer-ahamed/fastdash">View source</a>
+    </div>
+    <p class="sub">Free and open source (MIT) &middot; Windows 10 &amp; 11, 64-bit &middot; <span id="ver">latest release</span></p>
+  </header>
+
+  <section>
+    <h2>Install from the terminal</h2>
+    <p>The quickest way, and it avoids the SmartScreen prompt that browser downloads trigger. Installs to your user profile - no admin rights needed.</p>
+
+    <div class="cmd" id="c1">irm https://saheer-ahamed.github.io/fastdash/install.ps1 | iex<button class="copy" data-for="c1">Copy</button></div>
+    <p class="note">Downloads the portable build, verifies its SHA256 against the published checksums, and adds a Start Menu shortcut. Re-run it any time to update.</p>
+
+    <h3>Or with Scoop</h3>
+    <div class="cmd" id="c2">scoop bucket add fastdash https://github.com/saheer-ahamed/fastdash
+scoop install fastdash<button class="copy" data-for="c2">Copy</button></div>
+    <p class="note">Use <code>scoop update fastdash</code> for later upgrades.</p>
+  </section>
+
+  <section>
+    <h2>What it shows</h2>
+    <div class="features">
+      <div class="feature">
+        <h3>Claude</h3>
+        <p>Token usage overall and per model, efforts used, the current 5-hour window with a reset countdown, weekly totals and cost.</p>
+      </div>
+      <div class="feature">
+        <h3>GitHub</h3>
+        <p>Today's per-contributor PR counts - opened, merged, closed without merge, still open - plus line contributions and the PR list.</p>
+      </div>
+      <div class="feature">
+        <h3>Slack</h3>
+        <p>Per workspace, the channels that mentioned you today.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Notes</h2>
+    <p><strong>Your data stays local.</strong> fastdash reads your <code>~/.claude</code> transcripts on your own machine. Nothing is uploaded anywhere.</p>
+    <p><strong>Unsigned builds.</strong> fastdash is not yet code-signed, so if you download the installer through a browser Windows will show "Windows protected your PC" - choose <em>More info &rarr; Run anyway</em>. The terminal and Scoop installs above do not hit this. Every release publishes <code>SHA256SUMS.txt</code> so you can verify what you downloaded.</p>
+    <p><strong>Requires WebView2</strong>, which ships with Windows 11 and Windows 10 21H2 or newer.</p>
+  </section>
+
+  <footer>
+    <span>MIT licensed &middot; built with Tauri</span>
+    <span>
+      <a href="https://github.com/saheer-ahamed/fastdash">GitHub</a> &middot;
+      <a href="https://github.com/saheer-ahamed/fastdash/releases">Releases</a> &middot;
+      <a href="https://github.com/saheer-ahamed/fastdash/issues">Report an issue</a>
+    </span>
+  </footer>
+
+</div>
+
+<script>
+  // Copy-to-clipboard, stripping the button's own label from the text.
+  document.querySelectorAll('.copy').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var block = document.getElementById(btn.dataset.for);
+      var text = Array.from(block.childNodes)
+        .filter(function (n) { return n.nodeType === Node.TEXT_NODE; })
+        .map(function (n) { return n.textContent; })
+        .join('').trim();
+      navigator.clipboard.writeText(text).then(function () {
+        btn.textContent = 'Copied';
+        btn.classList.add('done');
+        setTimeout(function () { btn.textContent = 'Copy'; btn.classList.remove('done'); }, 1600);
+      });
+    });
+  });
+
+  // Point the download button straight at the latest installer, and show its
+  // version. Falls back to the releases page if the API call fails.
+  fetch('https://api.github.com/repos/saheer-ahamed/fastdash/releases/latest')
+    .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+    .then(function (rel) {
+      var setup = (rel.assets || []).find(function (a) { return /-setup\.exe$/.test(a.name); });
+      if (setup) document.getElementById('dl').href = setup.browser_download_url;
+      if (rel.tag_name) document.getElementById('ver').textContent = rel.tag_name;
+    })
+    .catch(function () { /* keep the releases-page fallback */ });
+</script>
+
+</body>
+</html>

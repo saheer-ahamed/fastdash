@@ -1,0 +1,98 @@
+name: Release
+
+# Tag a version to cut a release:
+#   npm version 0.1.1 --no-git-tag-version && git commit -am "release: v0.1.1"
+#   git tag v0.1.1 && git push origin main --tags
+#
+# The release is created as a DRAFT so you can eyeball the assets before it goes
+# live. Publishing the draft is what makes the download URLs public.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and release (e.g. v0.1.1)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Rust release builds are the slow part; cache them between runs.
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - run: npm ci
+
+      - name: Build and draft release
+        uses: tauri-apps/tauri-action@action-v1.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Baked into the binary by src-tauri/build.rs. Public identifier, not a
+          # secret - it is a repo VARIABLE, not a repo secret. If unset the app
+          # still builds and reports GitHub login as "not configured".
+          FASTDASH_GITHUB_CLIENT_ID: ${{ vars.FASTDASH_GITHUB_CLIENT_ID }}
+        with:
+          tagName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseName: "fastdash ${{ github.event.inputs.tag || github.ref_name }}"
+          releaseDraft: true
+          prerelease: false
+          # No updater plugin is configured, so there is no latest.json to emit.
+          uploadUpdaterJson: false
+
+      # The portable zip is what install.ps1 and Scoop consume. It avoids the
+      # installer entirely: no UAC, no elevation, no SmartScreen.
+      - name: Build portable zip
+        shell: pwsh
+        run: |
+          $tag = "${{ github.event.inputs.tag || github.ref_name }}"
+          $version = $tag.TrimStart("v")
+          $staging = "portable/fastdash"
+          New-Item -ItemType Directory -Force -Path $staging | Out-Null
+          Copy-Item "src-tauri/target/release/fastdash.exe" $staging
+          Copy-Item "LICENSE","README.md" $staging
+          $zip = "fastdash_${version}_x64_portable.zip"
+          Compress-Archive -Path "$staging/*" -DestinationPath $zip -Force
+          "ZIP_NAME=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # SHA256 for every asset, so install.ps1 and the Scoop manifest can verify
+      # what they downloaded instead of trusting the transport alone.
+      - name: Generate checksums
+        shell: pwsh
+        run: |
+          $tag = "${{ github.event.inputs.tag || github.ref_name }}"
+          $files = @($env:ZIP_NAME) + (
+            Get-ChildItem -Recurse -File `
+              -Path "src-tauri/target/release/bundle/nsis","src-tauri/target/release/bundle/msi" `
+              -Include *.exe,*.msi -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
+          )
+          $lines = foreach ($f in $files) {
+            $h = (Get-FileHash -Algorithm SHA256 -Path $f).Hash.ToLower()
+            "$h  $(Split-Path $f -Leaf)"
+          }
+          $lines | Out-File -FilePath "SHA256SUMS.txt" -Encoding ascii
+          Get-Content SHA256SUMS.txt
+
+      - name: Attach portable zip and checksums
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ github.event.inputs.tag || github.ref_name }}"
+          gh release upload $tag $env:ZIP_NAME SHA256SUMS.txt --clobber

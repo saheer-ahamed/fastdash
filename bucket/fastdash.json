@@ -1,0 +1,37 @@
+{
+    "version": "0.0.0",
+    "description": "A super-fast desktop dashboard for Claude usage, with pluggable connectors (GitHub, Slack)",
+    "homepage": "https://saheer-ahamed.github.io/fastdash/",
+    "license": "MIT",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/saheer-ahamed/fastdash/releases/download/v0.0.0/fastdash_0.0.0_x64_portable.zip",
+            "hash": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+    },
+    "bin": "fastdash.exe",
+    "shortcuts": [
+        [
+            "fastdash.exe",
+            "fastdash"
+        ]
+    ],
+    "persist": [],
+    "checkver": {
+        "github": "https://github.com/saheer-ahamed/fastdash"
+    },
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/saheer-ahamed/fastdash/releases/download/v$version/fastdash_$version_x64_portable.zip"
+            }
+        },
+        "hash": {
+            "url": "https://github.com/saheer-ahamed/fastdash/releases/download/v$version/SHA256SUMS.txt"
+        }
+    },
+    "notes": [
+        "fastdash reads your local ~/.claude transcripts. Nothing is uploaded.",
+        "Requires the WebView2 runtime, preinstalled on Windows 10 21H2+ and Windows 11."
+    ]
+}
