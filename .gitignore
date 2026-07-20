@@ -13,6 +13,8 @@
 # secrets / local env (never commit)
 .env
 *.local
+.envrc
+.direnv/
 
 # logs / os cruft
 *.log

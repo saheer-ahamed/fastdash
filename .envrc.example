@@ -1,0 +1,9 @@
+# Copy this file to `.envrc` (gitignored), add your token, then run `direnv allow`.
+# Requires direnv (https://direnv.net) with a shell hook installed.
+#
+# Scopes a GitHub token to this repo so `gh` and `git push` here always use it,
+# regardless of your globally active gh account. Use a classic PAT with at least
+# `repo` + `workflow` scope (workflow is needed to push .github/workflows/*).
+
+export GH_TOKEN="ghp_your_personal_access_token_here"
+export GITHUB_TOKEN="$GH_TOKEN"
