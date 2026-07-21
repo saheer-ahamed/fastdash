@@ -1,30 +1,98 @@
 name: Release
 
-# Tag a version to cut a release:
-#   npm version 0.1.1 --no-git-tag-version && git commit -am "release: v0.1.1"
-#   git tag v0.1.1 && git push origin main --tags
-#
-# The release is created as a DRAFT so you can eyeball the assets before it goes
-# live. Publishing the draft is what makes the download URLs public.
+# Fully automatic releases. Every push to main is inspected: if it contains
+# releasable Conventional Commits (feat: / fix: / a `!` or BREAKING CHANGE
+# footer), the version is bumped, tagged, built, and published - and installed
+# apps pick it up via the in-app updater. Pushes with only chore/docs/refactor
+# commits produce no release.
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - main
+  # Manual escape hatch: force a release even if commit analysis wouldn't.
   workflow_dispatch:
     inputs:
-      tag:
-        description: "Tag to build and release (e.g. v0.1.1)"
-        required: true
+      bump:
+        description: "Force a release with this bump"
+        type: choice
+        default: patch
+        options: [patch, minor, major]
 
 permissions:
   contents: write
 
-jobs:
-  release:
-    runs-on: windows-latest
+# Never let two releases race (e.g. rapid merges).
+concurrency:
+  group: release
+  cancel-in-progress: false
 
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Decide the next version from Conventional Commits, bump every manifest,
+  #    commit the bump to main, and create the tag. Cheap Linux job.
+  # ---------------------------------------------------------------------------
+  version:
+    runs-on: ubuntu-latest
+    # Skip the run we ourselves push, so the bump commit can't re-trigger us.
+    if: ${{ !startsWith(github.event.head_commit.message, 'chore(release):') }}
+    outputs:
+      released: ${{ steps.decide.outputs.released }}
+      version: ${{ steps.decide.outputs.version }}
+      tag: ${{ steps.decide.outputs.tag }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # full history + tags for commit analysis
+          # RELEASE_TOKEN (a PAT) lets the bump commit + tag push past a strict
+          # ruleset on main; falls back to the default token if unset.
+          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      # Compute the next version WITHOUT creating anything (dry_run). Empty
+      # output => no releasable commits => we stop.
+      - name: Analyze commits
+        id: semver
+        uses: mathieudutour/github-tag-action@v6.2
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          default_bump: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.bump || false }}
+          tag_prefix: v
+          dry_run: true
+
+      - name: Decide whether to release
+        id: decide
+        run: |
+          v="${{ steps.semver.outputs.new_version }}"
+          if [ -z "$v" ]; then
+            echo "No releasable commits since the last tag - skipping."
+            echo "released=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "released=true" >> "$GITHUB_OUTPUT"
+            echo "version=$v" >> "$GITHUB_OUTPUT"
+            echo "tag=v$v" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Bump manifests, commit, and tag
+        if: steps.decide.outputs.released == 'true'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          bash scripts/bump-version.sh "${{ steps.decide.outputs.version }}"
+          git commit -am "chore(release): ${{ steps.decide.outputs.tag }} [skip ci]"
+          git tag "${{ steps.decide.outputs.tag }}"
+          git push origin HEAD:main --follow-tags
+
+  # ---------------------------------------------------------------------------
+  # 2. Build the signed installers + portable zip at the tagged commit and
+  #    publish the release. Only runs when step 1 actually cut a version.
+  # ---------------------------------------------------------------------------
+  build:
+    needs: version
+    if: needs.version.outputs.released == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.version.outputs.tag }} # build the bumped code
 
       - uses: actions/setup-node@v5
         with:
@@ -40,7 +108,7 @@ jobs:
 
       - run: npm ci
 
-      - name: Build and draft release
+      - name: Build and publish release
         uses: tauri-apps/tauri-action@action-v1.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -48,20 +116,26 @@ jobs:
           # secret - it is a repo VARIABLE, not a repo secret. If unset the app
           # still builds and reports GitHub login as "not configured".
           FASTDASH_GITHUB_CLIENT_ID: ${{ vars.FASTDASH_GITHUB_CLIENT_ID }}
+          # Signs the updater artifacts. The private key and its password are
+          # repo SECRETS; the matching public key is baked into tauri.conf.json.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ github.event.inputs.tag || github.ref_name }}
-          releaseName: "fastdash ${{ github.event.inputs.tag || github.ref_name }}"
-          releaseDraft: true
+          tagName: ${{ needs.version.outputs.tag }}
+          releaseName: "fastdash ${{ needs.version.outputs.tag }}"
+          # Published immediately (not a draft) so the updater endpoint,
+          # releases/latest/download/latest.json, resolves for installed apps.
+          releaseDraft: false
           prerelease: false
-          # No updater plugin is configured, so there is no latest.json to emit.
-          uploadUpdaterJson: false
+          # Emit and upload latest.json so the in-app updater can find releases.
+          uploadUpdaterJson: true
 
       # The portable zip is what install.ps1 and Scoop consume. It avoids the
       # installer entirely: no UAC, no elevation, no SmartScreen.
       - name: Build portable zip
         shell: pwsh
         run: |
-          $tag = "${{ github.event.inputs.tag || github.ref_name }}"
+          $tag = "${{ needs.version.outputs.tag }}"
           $version = $tag.TrimStart("v")
           $staging = "portable/fastdash"
           New-Item -ItemType Directory -Force -Path $staging | Out-Null
@@ -76,7 +150,6 @@ jobs:
       - name: Generate checksums
         shell: pwsh
         run: |
-          $tag = "${{ github.event.inputs.tag || github.ref_name }}"
           $files = @($env:ZIP_NAME) + (
             Get-ChildItem -Recurse -File `
               -Path "src-tauri/target/release/bundle/nsis","src-tauri/target/release/bundle/msi" `
@@ -94,5 +167,5 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $tag = "${{ github.event.inputs.tag || github.ref_name }}"
+          $tag = "${{ needs.version.outputs.tag }}"
           gh release upload $tag $env:ZIP_NAME SHA256SUMS.txt --clobber
