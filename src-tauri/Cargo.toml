@@ -1,6 +1,6 @@
 [package]
 name = "fastdash"
-version = "0.1.0"
+version = "0.0.1"
 description = "A super-fast Claude usage + connectors dashboard"
 edition = "2021"
 rust-version = "1.77"
