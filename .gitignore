@@ -16,6 +16,11 @@
 .envrc
 .direnv/
 
+# tauri updater signing keys (private key must NEVER be committed)
+fastdash.key
+fastdash.key.pub
+*.key
+
 # logs / os cruft
 *.log
 .DS_Store

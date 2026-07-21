@@ -16,6 +16,10 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+# In-app auto-update: the updater checks GitHub for a signed release and the
+# process plugin relaunches the app after the new version is installed.
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"

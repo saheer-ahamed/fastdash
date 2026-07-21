@@ -34,7 +34,18 @@ pub fn run() {
     engine::i18n::set_locale(&loaded.locale);
     let config: Arc<RwLock<AppConfig>> = Arc::new(RwLock::new(loaded));
 
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+
+    // The updater and process plugins are desktop-only; mobile has its own
+    // store-driven update path and these crates don't build for it.
+    #[cfg(desktop)]
+    {
+        builder = builder
+            .plugin(tauri_plugin_updater::Builder::new().build())
+            .plugin(tauri_plugin_process::init());
+    }
+
+    builder
         .manage(Arc::clone(&registry))
         .manage(Arc::clone(&cache))
         .manage(Arc::clone(&config))
