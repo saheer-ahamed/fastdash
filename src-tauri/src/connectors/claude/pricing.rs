@@ -25,27 +25,46 @@ pub fn pricing_for(model: &str) -> ModelPricing {
     let m = model.to_ascii_lowercase();
     // Order matters only where substrings could overlap; these do not.
     if m.contains("opus") {
-        ModelPricing { input: 5.0, output: 25.0, cache_write: 6.25, cache_read: 0.5 }
+        ModelPricing {
+            input: 5.0,
+            output: 25.0,
+            cache_write: 6.25,
+            cache_read: 0.5,
+        }
     } else if m.contains("sonnet") {
-        ModelPricing { input: 3.0, output: 15.0, cache_write: 3.75, cache_read: 0.3 }
+        ModelPricing {
+            input: 3.0,
+            output: 15.0,
+            cache_write: 3.75,
+            cache_read: 0.3,
+        }
     } else if m.contains("haiku") {
-        ModelPricing { input: 1.0, output: 5.0, cache_write: 1.25, cache_read: 0.1 }
+        ModelPricing {
+            input: 1.0,
+            output: 5.0,
+            cache_write: 1.25,
+            cache_read: 0.1,
+        }
     } else if m.contains("fable") || m.contains("mythos") {
-        ModelPricing { input: 10.0, output: 50.0, cache_write: 12.5, cache_read: 1.0 }
+        ModelPricing {
+            input: 10.0,
+            output: 50.0,
+            cache_write: 12.5,
+            cache_read: 1.0,
+        }
     } else {
         // Sane fallback for unknown / future ids: mid-tier (Sonnet) rates.
-        ModelPricing { input: 3.0, output: 15.0, cache_write: 3.75, cache_read: 0.3 }
+        ModelPricing {
+            input: 3.0,
+            output: 15.0,
+            cache_write: 3.75,
+            cache_read: 0.3,
+        }
     }
 }
 
 /// Notional USD cost for one model's token totals.
-pub fn cost_for(
-    model: &str,
-    input: u64,
-    output: u64,
-    cache_read: u64,
-    cache_write: u64,
-) -> f64 {
+pub fn cost_for(model: &str, input: u64, output: u64, cache_read: u64, cache_write: u64) -> f64 {
     let p = pricing_for(model);
     let per_million = |tokens: u64, price: f64| (tokens as f64) / 1_000_000.0 * price;
     per_million(input, p.input)

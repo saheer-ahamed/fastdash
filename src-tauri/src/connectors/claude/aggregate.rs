@@ -97,8 +97,10 @@ impl Aggregate {
 
 /// Build all rollups. `now` is injected for testability.
 pub fn build(turns: &[Turn], now: DateTime<Utc>) -> Aggregate {
-    let mut agg = Aggregate::default();
-    agg.messages = turns.len();
+    let mut agg = Aggregate {
+        messages: turns.len(),
+        ..Default::default()
+    };
 
     let mut models: HashMap<String, ModelTotals> = HashMap::new();
     let mut efforts: HashMap<String, EffortSplit> = HashMap::new();
@@ -109,8 +111,7 @@ pub fn build(turns: &[Turn], now: DateTime<Utc>) -> Aggregate {
     let ist = ist();
     let now_ist = now.with_timezone(&ist);
     let today = now_ist.date_naive();
-    let week_start =
-        today - Duration::days(today.weekday().num_days_from_monday() as i64);
+    let week_start = today - Duration::days(today.weekday().num_days_from_monday() as i64);
     let five_hour_cutoff = now - Duration::hours(5);
 
     for t in turns {
@@ -122,20 +123,24 @@ pub fn build(turns: &[Turn], now: DateTime<Utc>) -> Aggregate {
         agg.total_cache_read += t.cache_read_tokens;
         agg.total_cache_write += t.cache_write_tokens;
 
-        let m = models.entry(t.model.clone()).or_insert_with(|| ModelTotals {
-            model: t.model.clone(),
-            ..Default::default()
-        });
+        let m = models
+            .entry(t.model.clone())
+            .or_insert_with(|| ModelTotals {
+                model: t.model.clone(),
+                ..Default::default()
+            });
         m.input += t.input_tokens;
         m.output += t.output_tokens;
         m.cache_read += t.cache_read_tokens;
         m.cache_write += t.cache_write_tokens;
         m.turns += 1;
 
-        let e = efforts.entry(t.effort.clone()).or_insert_with(|| EffortSplit {
-            effort: t.effort.clone(),
-            ..Default::default()
-        });
+        let e = efforts
+            .entry(t.effort.clone())
+            .or_insert_with(|| EffortSplit {
+                effort: t.effort.clone(),
+                ..Default::default()
+            });
         e.output_tokens += t.output_tokens;
         e.turns += 1;
 
@@ -164,11 +169,11 @@ pub fn build(turns: &[Turn], now: DateTime<Utc>) -> Aggregate {
     }
 
     let mut per_model: Vec<ModelTotals> = models.into_values().collect();
-    per_model.sort_by(|a, b| b.total().cmp(&a.total()));
+    per_model.sort_by_key(|m| std::cmp::Reverse(m.total()));
     agg.per_model = per_model;
 
     let mut effort: Vec<EffortSplit> = efforts.into_values().collect();
-    effort.sort_by(|a, b| b.output_tokens.cmp(&a.output_tokens));
+    effort.sort_by_key(|e| std::cmp::Reverse(e.output_tokens));
     agg.effort = effort;
 
     agg.sessions = sessions.len();
@@ -183,7 +188,10 @@ pub fn build(turns: &[Turn], now: DateTime<Utc>) -> Aggregate {
             let label = NaiveDate::from_ymd_opt(y, m, 1)
                 .map(|d| d.format("%b %Y").to_string())
                 .unwrap_or_default();
-            MonthPoint { label, total_tokens }
+            MonthPoint {
+                label,
+                total_tokens,
+            }
         })
         .collect();
 

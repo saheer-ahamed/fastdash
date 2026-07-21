@@ -172,10 +172,7 @@ async fn run_fetch(cfg: &GithubConfig) -> Result<Snapshot, GithubError> {
 
     // Line contributions: merged-today PRs attributed to their author.
     for e in &enriched {
-        let author = e
-            .author
-            .clone()
-            .unwrap_or_else(|| "unknown".to_string());
+        let author = e.author.clone().unwrap_or_else(|| "unknown".to_string());
         if is_bot(&author) {
             continue;
         }

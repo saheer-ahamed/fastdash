@@ -150,8 +150,16 @@ fn build_panels(
         None => {
             // Official numbers unavailable (offline / rate-limited): show local
             // estimates so the section is never blank.
-            panels.push(local_meter(&i18n::t("claude.currentSessionEst"), agg.five_hour_tokens, &i18n::t("claude.inLast5h")));
-            panels.push(local_meter(&i18n::t("claude.thisWeekEst"), agg.current_week_tokens, &i18n::t("claude.thisWeek")));
+            panels.push(local_meter(
+                &i18n::t("claude.currentSessionEst"),
+                agg.five_hour_tokens,
+                &i18n::t("claude.inLast5h"),
+            ));
+            panels.push(local_meter(
+                &i18n::t("claude.thisWeekEst"),
+                agg.current_week_tokens,
+                &i18n::t("claude.thisWeek"),
+            ));
         }
     }
 
@@ -183,7 +191,10 @@ fn build_panels(
             Stat {
                 label: i18n::t("claude.allTime"),
                 value: fmt_tokens(agg.total_tokens()),
-                sub: Some(i18n::tf("claude.sessions", &[("n", &fmt_count(agg.sessions as u64))])),
+                sub: Some(i18n::tf(
+                    "claude.sessions",
+                    &[("n", &fmt_count(agg.sessions as u64))],
+                )),
             },
             Stat {
                 label: i18n::t("claude.equivalentCost"),
@@ -213,7 +224,10 @@ fn limit_meter(label: &str, w: &UsageWindow, now: DateTime<Utc>) -> Panel {
         limit: Some(100.0),
         unit: "%".into(),
         sub,
-        caption: Some(i18n::tf("claude.percentUsed", &[("p", &format!("{:.0}", w.percent))])),
+        caption: Some(i18n::tf(
+            "claude.percentUsed",
+            &[("p", &format!("{:.0}", w.percent))],
+        )),
     }
 }
 
@@ -243,8 +257,16 @@ fn local_meter(label: &str, tokens: u64, when: &str) -> Panel {
 
 fn monthly_table(agg: &Aggregate) -> Panel {
     let columns = vec![
-        Column { key: "month".into(), label: i18n::t("claude.colMonth"), numeric: false },
-        Column { key: "tokens".into(), label: i18n::t("claude.colTokens"), numeric: true },
+        Column {
+            key: "month".into(),
+            label: i18n::t("claude.colMonth"),
+            numeric: false,
+        },
+        Column {
+            key: "tokens".into(),
+            label: i18n::t("claude.colTokens"),
+            numeric: true,
+        },
     ];
     let rows = agg
         .per_month
@@ -261,12 +283,36 @@ fn monthly_table(agg: &Aggregate) -> Panel {
 
 fn tokens_by_model_table(agg: &Aggregate) -> Panel {
     let columns = vec![
-        Column { key: "model".into(), label: i18n::t("claude.colModel"), numeric: false },
-        Column { key: "input".into(), label: i18n::t("claude.colInput"), numeric: true },
-        Column { key: "output".into(), label: i18n::t("claude.colOutput"), numeric: true },
-        Column { key: "cache_read".into(), label: i18n::t("claude.colCacheRead"), numeric: true },
-        Column { key: "total".into(), label: i18n::t("claude.colTotal"), numeric: true },
-        Column { key: "cost".into(), label: i18n::t("claude.colCost"), numeric: true },
+        Column {
+            key: "model".into(),
+            label: i18n::t("claude.colModel"),
+            numeric: false,
+        },
+        Column {
+            key: "input".into(),
+            label: i18n::t("claude.colInput"),
+            numeric: true,
+        },
+        Column {
+            key: "output".into(),
+            label: i18n::t("claude.colOutput"),
+            numeric: true,
+        },
+        Column {
+            key: "cache_read".into(),
+            label: i18n::t("claude.colCacheRead"),
+            numeric: true,
+        },
+        Column {
+            key: "total".into(),
+            label: i18n::t("claude.colTotal"),
+            numeric: true,
+        },
+        Column {
+            key: "cost".into(),
+            label: i18n::t("claude.colCost"),
+            numeric: true,
+        },
     ];
 
     let rows = agg
@@ -304,7 +350,10 @@ fn effort_bars(agg: &Aggregate) -> Panel {
                 value: frac,
                 display: Some(i18n::tf(
                     "claude.effortDisplay",
-                    &[("p", &format!("{:.0}", frac * 100.0)), ("n", &fmt_count(e.turns))],
+                    &[
+                        ("p", &format!("{:.0}", frac * 100.0)),
+                        ("n", &fmt_count(e.turns)),
+                    ],
                 )),
             }
         })
@@ -333,13 +382,19 @@ fn fmt_reset(target: DateTime<Utc>, now: DateTime<Utc>) -> String {
         let hours = secs / 3600;
         let mins = (secs % 3600) / 60;
         if hours > 0 {
-            i18n::tf("claude.resetsInHm", &[("h", &hours.to_string()), ("m", &mins.to_string())])
+            i18n::tf(
+                "claude.resetsInHm",
+                &[("h", &hours.to_string()), ("m", &mins.to_string())],
+            )
         } else {
             i18n::tf("claude.resetsInMin", &[("m", &mins.to_string())])
         }
     } else {
         let local = target.with_timezone(&ist());
-        i18n::tf("claude.resetsAt", &[("when", &local.format("%a %-I:%M %p").to_string())])
+        i18n::tf(
+            "claude.resetsAt",
+            &[("when", &local.format("%a %-I:%M %p").to_string())],
+        )
     }
 }
 
@@ -410,8 +465,16 @@ mod tests {
                 resets_at: None,
             }],
         };
-        let panels = build_panels(&Aggregate::default(), Some(&official), Some("Max (5x)".into()), now);
-        println!("PANELS:\n{}", serde_json::to_string_pretty(&panels).unwrap());
+        let panels = build_panels(
+            &Aggregate::default(),
+            Some(&official),
+            Some("Max (5x)".into()),
+            now,
+        );
+        println!(
+            "PANELS:\n{}",
+            serde_json::to_string_pretty(&panels).unwrap()
+        );
         assert!(panels.len() >= 6);
     }
 }

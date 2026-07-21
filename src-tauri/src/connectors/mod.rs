@@ -22,7 +22,10 @@ mod diag {
     #[ignore]
     async fn dump_claude() {
         match ClaudeConnector::new().fetch(&ctx()).await {
-            Ok(s) => println!("CLAUDE_SNAPSHOT:\n{}", serde_json::to_string_pretty(&s).unwrap()),
+            Ok(s) => println!(
+                "CLAUDE_SNAPSHOT:\n{}",
+                serde_json::to_string_pretty(&s).unwrap()
+            ),
             Err(e) => println!("CLAUDE_ERROR: {e}"),
         }
     }
@@ -31,7 +34,10 @@ mod diag {
     #[ignore]
     async fn dump_github() {
         match GithubConnector::new().fetch(&ctx()).await {
-            Ok(s) => println!("GITHUB_SNAPSHOT:\n{}", serde_json::to_string_pretty(&s).unwrap()),
+            Ok(s) => println!(
+                "GITHUB_SNAPSHOT:\n{}",
+                serde_json::to_string_pretty(&s).unwrap()
+            ),
             Err(e) => println!("GITHUB_ERROR: {e}"),
         }
     }

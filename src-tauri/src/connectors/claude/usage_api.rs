@@ -87,7 +87,9 @@ pub fn read_plan() -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
     let oauth = &v["claudeAiOauth"];
 
-    let sub = oauth["subscriptionType"].as_str().filter(|s| !s.is_empty())?;
+    let sub = oauth["subscriptionType"]
+        .as_str()
+        .filter(|s| !s.is_empty())?;
     let name = {
         let mut chars = sub.chars();
         chars
@@ -124,7 +126,10 @@ pub async fn fetch_official_usage(token: &str) -> Result<OfficialUsage, UsageErr
         return Err(UsageError::Status(resp.status().as_u16()));
     }
 
-    let parsed: UsageResponse = resp.json().await.map_err(|e| UsageError::Parse(e.to_string()))?;
+    let parsed: UsageResponse = resp
+        .json()
+        .await
+        .map_err(|e| UsageError::Parse(e.to_string()))?;
     Ok(parsed.normalize())
 }
 

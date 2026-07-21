@@ -1,0 +1,33 @@
+#!/usr/bin/env sh
+# fastdash pre-commit gate.
+#
+# Frontend and Rust checks each run only when files of that kind are staged, so
+# a docs-only or single-side commit stays fast. Anything that fails aborts the
+# commit; fix the reported issue (or `git commit --no-verify` to bypass in a
+# genuine emergency).
+
+set -e
+
+staged() {
+  git diff --cached --name-only --diff-filter=ACMR
+}
+
+fe_files=$(staged | grep -E '\.(ts|tsx|js|jsx)$' || true)
+rs_files=$(staged | grep -E '\.rs$' || true)
+
+# Frontend: ESLint (--fix, restaged by lint-staged) then a full typecheck.
+if [ -n "$fe_files" ]; then
+  echo "pre-commit: eslint (staged) + tsc"
+  npx --no-install lint-staged
+  npm run --silent typecheck
+fi
+
+# Rust: formatting check + clippy with warnings as errors, over the whole crate.
+if [ -n "$rs_files" ]; then
+  echo "pre-commit: cargo fmt --check + clippy"
+  ( cd src-tauri && cargo fmt --all -- --check ) || {
+    echo "  Rust is not formatted. Run 'cargo fmt --all' in src-tauri/ and re-stage."
+    exit 1
+  }
+  ( cd src-tauri && cargo clippy --all-targets --all-features -- -D warnings )
+fi
