@@ -24,9 +24,6 @@ impl Registry {
     }
 
     pub fn get(&self, id: &str) -> Option<Arc<dyn Connector>> {
-        self.connectors
-            .iter()
-            .find(|c| c.meta().id == id)
-            .cloned()
+        self.connectors.iter().find(|c| c.meta().id == id).cloned()
     }
 }

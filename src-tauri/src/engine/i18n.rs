@@ -26,9 +26,18 @@ fn english() -> &'static Value {
     CELL.get_or_init(|| {
         // One JSON file per area, merged at the top level.
         const FILES: &[&str] = &[
-            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../locales/en/app.json")),
-            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../locales/en/claude.json")),
-            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../locales/en/github.json")),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../locales/en/app.json"
+            )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../locales/en/claude.json"
+            )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../locales/en/github.json"
+            )),
         ];
         let mut root = Map::new();
         for raw in FILES {

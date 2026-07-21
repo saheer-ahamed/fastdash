@@ -23,6 +23,9 @@ fn embed_build_env() {
     let dotenv = Path::new("../.env");
     println!("cargo:rerun-if-changed=../.env");
 
+    // Kept as a list so more build-env keys can be added here later; the single
+    // element today is intentional, so silence clippy's single-element-loop lint.
+    #[allow(clippy::single_element_loop)]
     for key in ["FASTDASH_GITHUB_CLIENT_ID"] {
         println!("cargo:rerun-if-env-changed={key}");
         let value = std::env::var(key)

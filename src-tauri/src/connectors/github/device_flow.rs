@@ -175,7 +175,9 @@ pub async fn poll(device_code: &str, interval: u64) -> Result<String, String> {
             // GitHub asks us to back off; adopt the new interval it returns.
             Some("slow_down") => wait = body.interval.unwrap_or(wait + 5).max(wait + 5),
             Some("expired_token") => {
-                return Err("The login code expired before it was approved. Please try again.".into())
+                return Err(
+                    "The login code expired before it was approved. Please try again.".into(),
+                )
             }
             Some("access_denied") => return Err("Access was denied on GitHub.".into()),
             Some(other) => return Err(format!("GitHub device-flow error: {other}")),

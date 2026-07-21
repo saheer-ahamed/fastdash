@@ -95,7 +95,10 @@ impl GithubClient {
             .map_err(|e| GithubError::Header(e.to_string()))?;
         auth.set_sensitive(true);
         headers.insert(AUTHORIZATION, auth);
-        headers.insert(ACCEPT, HeaderValue::from_static("application/vnd.github+json"));
+        headers.insert(
+            ACCEPT,
+            HeaderValue::from_static("application/vnd.github+json"),
+        );
         headers.insert(USER_AGENT, HeaderValue::from_static("fastdash"));
         headers.insert(
             "X-GitHub-Api-Version",
