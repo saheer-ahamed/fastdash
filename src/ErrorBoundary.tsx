@@ -50,26 +50,21 @@ export default class ErrorBoundary extends Component<Props, State> {
     const { error, info } = this.state;
     if (!error) return this.props.children;
 
-    const stack = info?.componentStack?.trim();
+    // Technical detail is kept out of the way: the screen leads with a plain,
+    // reassuring message, and the error text + component stack live inside a
+    // collapsed section for anyone filing a bug report.
+    const technical = [error.stack ?? error.message ?? String(error), info?.componentStack]
+      .map((s) => s?.trim())
+      .filter(Boolean)
+      .join("\n\n");
 
     return (
       <div className="error-screen" role="alert">
         <div className="error-box">
           <div className="brand">fastdash</div>
           <h1 className="error-title">{t("error.title")}</h1>
-          <p className="error-lede muted">{t("error.lede")}</p>
-
-          <div className="error-detail">
-            <div className="error-detail-head">## {t("error.detail")}</div>
-            <pre className="error-message">{error.message || String(error)}</pre>
-          </div>
-
-          {stack && (
-            <details className="error-stack">
-              <summary>{t("error.stack")}</summary>
-              <pre>{stack}</pre>
-            </details>
-          )}
+          <p className="error-lede">{t("error.lede")}</p>
+          <p className="error-hint muted">{t("error.hint")}</p>
 
           <div className="error-actions">
             <button className="save-btn" onClick={this.reset}>
@@ -78,10 +73,17 @@ export default class ErrorBoundary extends Component<Props, State> {
             <button className="link-btn" onClick={() => window.location.reload()}>
               {t("error.reload")}
             </button>
-            <button className="link-btn" onClick={this.copyDetails}>
-              {t("error.copy")}
-            </button>
           </div>
+
+          {technical && (
+            <details className="error-stack">
+              <summary>{t("error.details")}</summary>
+              <pre>{technical}</pre>
+              <button className="link-btn error-copy" onClick={this.copyDetails}>
+                {t("error.copy")}
+              </button>
+            </details>
+          )}
         </div>
       </div>
     );

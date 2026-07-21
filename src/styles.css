@@ -885,31 +885,20 @@ a:hover {
 }
 
 .error-lede {
-  margin: 6px 0 16px;
-}
-
-.error-detail-head {
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
-  color: var(--muted);
-  margin-bottom: 6px;
-}
-
-.error-message {
-  margin: 0;
-  padding: 10px 12px;
-  background: var(--bg);
-  border: 1px solid var(--border-bright);
+  margin: 8px 0 0;
   color: var(--bright);
-  font: inherit;
-  white-space: pre-wrap;
-  word-break: break-word;
-  overflow-x: auto;
+}
+
+.error-hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .error-stack {
-  margin-top: 12px;
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
 }
 
 .error-stack summary {
@@ -944,6 +933,10 @@ a:hover {
   max-height: 220px;
   overflow-y: auto;
   overscroll-behavior: none;
+}
+
+.error-copy {
+  margin-top: 10px;
 }
 
 .error-actions {
