@@ -1,0 +1,6 @@
+#!/usr/bin/env sh
+# Reject commit messages that don't follow Conventional Commits. The release
+# workflow reads these to compute the next version, so a malformed message
+# either breaks versioning or silently ships nothing. Bypass only in a genuine
+# emergency with `git commit --no-verify`.
+npx --no-install commitlint --edit "$1"
