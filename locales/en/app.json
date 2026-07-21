@@ -14,6 +14,15 @@
   "status": {
     "rateLimited": "Rate limited - retrying shortly"
   },
+  "error": {
+    "title": "something broke",
+    "lede": "The dashboard hit an unexpected error and stopped rendering.",
+    "detail": "error",
+    "stack": "component stack",
+    "retry": "[ retry ]",
+    "reload": "reload app",
+    "copy": "copy details"
+  },
   "settings": {
     "general": "General",
     "theme": "Theme",

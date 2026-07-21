@@ -843,3 +843,112 @@ a:hover {
 .device-waiting {
   font-size: 13px;
 }
+
+/* Error boundary crash screen - full-window, flat, terminal-styled. */
+.error-screen {
+  height: 100vh;
+  width: 100vw;
+  background: var(--bg);
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  overflow: auto;
+  overscroll-behavior: none;
+}
+
+.error-box {
+  width: 100%;
+  max-width: 560px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--err);
+  padding: 20px 22px;
+}
+
+.error-box .brand {
+  padding: 0 0 14px;
+}
+
+.error-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--err);
+  margin: 0;
+  text-transform: lowercase;
+}
+
+.error-title::before {
+  content: "// ";
+  color: var(--muted);
+}
+
+.error-lede {
+  margin: 6px 0 16px;
+}
+
+.error-detail-head {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.error-message {
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border-bright);
+  color: var(--bright);
+  font: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+
+.error-stack {
+  margin-top: 12px;
+}
+
+.error-stack summary {
+  color: var(--muted);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.error-stack summary::before {
+  content: "▸ ";
+}
+
+.error-stack[open] summary::before {
+  content: "▾ ";
+}
+
+.error-stack summary:hover {
+  color: var(--text);
+}
+
+.error-stack pre {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow-y: auto;
+  overscroll-behavior: none;
+}
+
+.error-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 18px;
+}
