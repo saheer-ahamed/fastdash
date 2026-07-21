@@ -16,11 +16,11 @@
     download is still verified by checksum below.
 
 .EXAMPLE
-    irm https://saheer-ahamed.github.io/fastdash/install.ps1 | iex
+    irm https://raw.githubusercontent.com/saheer-ahamed/fastdash/main/docs/install.ps1 | iex
 
 .EXAMPLE
     # Pin a specific version, or skip the post-install launch:
-    & ([scriptblock]::Create((irm https://saheer-ahamed.github.io/fastdash/install.ps1))) -Version v0.1.0 -NoLaunch
+    & ([scriptblock]::Create((irm https://raw.githubusercontent.com/saheer-ahamed/fastdash/main/docs/install.ps1))) -Version v0.0.1 -NoLaunch
 #>
 [CmdletBinding()]
 param(
@@ -65,7 +65,7 @@ try {
     $tag = $release.tag_name
     $zipAsset = $release.assets | Where-Object { $_.name -like '*_x64_portable.zip' } | Select-Object -First 1
     if (-not $zipAsset) {
-        throw "Release $tag has no portable zip asset. Try the installer from https://saheer-ahamed.github.io/fastdash/"
+        throw "Release $tag has no portable zip asset. Grab it from https://github.com/saheer-ahamed/fastdash/releases/latest"
     }
     $sumsAsset = $release.assets | Where-Object { $_.name -eq 'SHA256SUMS.txt' } | Select-Object -First 1
     Write-Ok "fastdash $tag"

@@ -13,12 +13,12 @@ Built with Tauri v2 (Rust core) and a React + TypeScript frontend.
 ## Install
 
 Windows 10 or 11, 64-bit.
-Download page: <https://saheer-ahamed.github.io/fastdash/>
+Latest builds: <https://github.com/saheer-ahamed/fastdash/releases/latest>
 
 From the terminal (no admin rights, no SmartScreen prompt):
 
 ```powershell
-irm https://saheer-ahamed.github.io/fastdash/install.ps1 | iex
+irm https://raw.githubusercontent.com/saheer-ahamed/fastdash/main/docs/install.ps1 | iex
 ```
 
 Or with [Scoop](https://scoop.sh):
