@@ -1,6 +1,6 @@
 # fastdash
 
-A super-fast desktop dashboard for Claude usage, with pluggable connectors (GitHub, Slack).
+A super-fast desktop dashboard for Claude usage, with pluggable connectors (GitHub, with Slack planned).
 
 Built with Tauri v2 (Rust core) and a React + TypeScript frontend.
 
@@ -8,7 +8,7 @@ Built with Tauri v2 (Rust core) and a React + TypeScript frontend.
 
 - **Claude**: token usage (total and per model), efforts used, weekly usage, the current 5-hour window, reset countdown, and cost - read from local `~/.claude` transcripts, with official `/usage` numbers overlaid when available.
 - **GitHub**: per selected org, today's per-contributor PR counts (opened / merged / closed-without-merge / open), line contributions (based on PRs merged today), and the PR list with repos.
-- **Slack**: per workspace, the channels that mentioned me today.
+- **Slack** (planned, not yet available): per workspace, the channels that mentioned me today.
 
 ## Install
 
@@ -64,5 +64,5 @@ Each connector is developed in its own worktree.
 
 ## Status
 
-Scaffold: core engine, connector trait, generic panel renderer, and three connector stubs are wired.
-Connector implementations are in progress.
+Scaffold: core engine, connector trait, generic panel renderer, and the Claude and GitHub connectors are wired.
+Connector implementations are in progress; the Slack connector is planned but not yet implemented.
