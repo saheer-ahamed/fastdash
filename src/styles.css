@@ -697,6 +697,28 @@ a:hover {
   cursor: pointer;
 }
 
+/* About: the version is a tap target (5 taps unlock dev mode) but reads as plain
+   text - no button chrome, just a subtle hover hint. */
+.version-tap {
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font: inherit;
+  padding: 0;
+  cursor: pointer;
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.version-tap:hover {
+  color: var(--bright);
+}
+
+.dev-status {
+  margin: 8px 0 0;
+  font-size: 12px;
+}
+
 .field-actions {
   margin-top: 12px;
 }
@@ -867,8 +889,24 @@ a:hover {
   padding: 20px 22px;
 }
 
-.error-box .brand {
+.error-brandline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   padding: 0 0 14px;
+}
+
+.error-box .brand {
+  padding: 0;
+}
+
+.dev-badge {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--bg);
+  background: var(--fill);
+  padding: 1px 6px;
 }
 
 .error-title {

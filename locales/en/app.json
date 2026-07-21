@@ -21,7 +21,8 @@
     "details": "technical details",
     "retry": "[ try again ]",
     "reload": "reload app",
-    "copy": "copy details"
+    "copy": "copy details",
+    "devBadge": "dev mode"
   },
   "settings": {
     "general": "General",
@@ -54,6 +55,12 @@
     "addAccount": "Add account",
     "removeAccount": "Remove",
     "accountN": "Account {n}",
-    "noGithubAccounts": "No accounts yet. Add one to start tracking PRs."
+    "noGithubAccounts": "No accounts yet. Add one to start tracking PRs.",
+    "about": "About",
+    "version": "Version",
+    "devModeCountdown": "{n} more taps to toggle developer mode",
+    "devModeOn": "Developer mode enabled",
+    "devModeOff": "Developer mode disabled",
+    "devModeActive": "Developer mode is on - crash screens show technical details."
   }
 }
