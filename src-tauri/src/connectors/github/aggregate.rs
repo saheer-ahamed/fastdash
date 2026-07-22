@@ -121,12 +121,12 @@ fn pr_activity_table(rollup: &Rollup) -> Panel {
         })
         .collect();
 
-    // Sort by total activity desc, then merged desc, then login asc.
+    // Sort by merged desc, then total activity desc, then login asc.
     rows.sort_by(|a, b| {
         let ta = a.1 + a.2 + a.3 + a.4;
         let tb = b.1 + b.2 + b.3 + b.4;
-        tb.cmp(&ta)
-            .then(b.2.cmp(&a.2))
+        b.2.cmp(&a.2)
+            .then(tb.cmp(&ta))
             .then(a.0.to_lowercase().cmp(&b.0.to_lowercase()))
     });
 
@@ -135,8 +135,8 @@ fn pr_activity_table(rollup: &Rollup) -> Panel {
         .map(|(login, opened, merged, closed, open)| {
             vec![
                 text(login),
-                num(opened),
                 num(merged),
+                num(opened),
                 num(closed),
                 num(open),
             ]
@@ -147,8 +147,8 @@ fn pr_activity_table(rollup: &Rollup) -> Panel {
         title: Some(i18n::t("github.table.prActivity")),
         columns: vec![
             col("contributor", i18n::t("github.column.contributor"), false),
-            col("opened", i18n::t("github.column.opened"), true),
             col("merged", i18n::t("github.column.merged"), true),
+            col("opened", i18n::t("github.column.opened"), true),
             col("closed", i18n::t("github.column.closedNoMerge"), true),
             col("open", i18n::t("github.column.open"), true),
         ],
@@ -171,11 +171,12 @@ fn line_contributions_table(rollup: &Rollup) -> Panel {
         .map(|(author, (adds, dels, prs))| (author, adds, dels, prs))
         .collect();
 
-    // Sort by net desc, then additions desc, then author asc.
+    // Sort by total (additions + deletions) desc, then additions desc, then
+    // author asc.
     rows.sort_by(|a, b| {
-        let na = a.1 as i64 - a.2 as i64;
-        let nb = b.1 as i64 - b.2 as i64;
-        nb.cmp(&na)
+        let ta = a.1 + a.2;
+        let tb = b.1 + b.2;
+        tb.cmp(&ta)
             .then(b.1.cmp(&a.1))
             .then(a.0.to_lowercase().cmp(&b.0.to_lowercase()))
     });
@@ -183,9 +184,11 @@ fn line_contributions_table(rollup: &Rollup) -> Panel {
     let table_rows = rows
         .into_iter()
         .map(|(author, adds, dels, prs)| {
+            let total = adds + dels;
             let net = adds as i64 - dels as i64;
             vec![
                 text(author.to_string()),
+                num(total),
                 num(adds),
                 num(dels),
                 text(format_net(net)),
@@ -198,6 +201,7 @@ fn line_contributions_table(rollup: &Rollup) -> Panel {
         title: Some(i18n::t("github.table.lineContributions")),
         columns: vec![
             col("contributor", i18n::t("github.column.contributor"), false),
+            col("total", i18n::t("github.column.total"), true),
             col("additions", i18n::t("github.column.additions"), true),
             col("deletions", i18n::t("github.column.deletions"), true),
             col("net", i18n::t("github.column.net"), true),

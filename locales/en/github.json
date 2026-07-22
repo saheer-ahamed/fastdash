@@ -17,6 +17,7 @@
       "merged": "Merged",
       "closedNoMerge": "Closed (no merge)",
       "open": "Open",
+      "total": "Total",
       "additions": "Additions",
       "deletions": "Deletions",
       "net": "Net",
