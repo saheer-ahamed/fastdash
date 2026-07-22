@@ -4,8 +4,8 @@ name: Release
 #   npm version 0.1.1 --no-git-tag-version && git commit -am "release: v0.1.1"
 #   git tag v0.1.1 && git push origin main --tags
 #
-# The release is created as a DRAFT so you can eyeball the assets before it goes
-# live. Publishing the draft is what makes the download URLs public.
+# The release is published immediately (not a draft) and marked "latest", so its
+# download URLs - including latest.json for the in-app updater - are live at once.
 on:
   push:
     tags:
@@ -48,13 +48,21 @@ jobs:
           # secret - it is a repo VARIABLE, not a repo secret. If unset the app
           # still builds and reports GitHub login as "not configured".
           FASTDASH_GITHUB_CLIENT_ID: ${{ vars.FASTDASH_GITHUB_CLIENT_ID }}
+          # Sign the updater artifacts. The public half lives in tauri.conf.json
+          # (plugins.updater.pubkey); these two are repo secrets. The password
+          # secret may be empty if the key was generated without one.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: "fastdash ${{ github.event.inputs.tag || github.ref_name }}"
-          releaseDraft: true
+          # Publish immediately (not a draft) so the release is marked "latest"
+          # and its latest.json is reachable at the /releases/latest/download/
+          # URL the installed app polls - otherwise auto-update never fires.
+          releaseDraft: false
           prerelease: false
-          # No updater plugin is configured, so there is no latest.json to emit.
-          uploadUpdaterJson: false
+          # Emit and upload latest.json so installed apps self-update.
+          uploadUpdaterJson: true
 
       # The portable zip is what install.ps1 and Scoop consume. It avoids the
       # installer entirely: no UAC, no elevation, no SmartScreen.

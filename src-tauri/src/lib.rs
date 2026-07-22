@@ -34,7 +34,19 @@ pub fn run() {
     engine::i18n::set_locale(&loaded.locale);
     let config: Arc<RwLock<AppConfig>> = Arc::new(RwLock::new(loaded));
 
-    tauri::Builder::default()
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default();
+
+    // In-app auto-update (desktop only): the frontend calls the updater plugin on
+    // launch, and the process plugin relaunches once the signed installer runs.
+    #[cfg(desktop)]
+    {
+        builder = builder
+            .plugin(tauri_plugin_updater::Builder::new().build())
+            .plugin(tauri_plugin_process::init());
+    }
+
+    builder
         .manage(Arc::clone(&registry))
         .manage(Arc::clone(&cache))
         .manage(Arc::clone(&config))
