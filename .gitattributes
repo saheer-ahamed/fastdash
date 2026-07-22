@@ -1,6 +1,13 @@
 # Normalize line endings to LF in the repo (avoids CRLF churn on Windows).
 * text=auto eol=lf
 
+# Force source files to be treated as text so diffs always render, even if a
+# stray control byte would otherwise trip git's binary auto-detection.
+*.ts text diff eol=lf
+*.tsx text diff eol=lf
+*.rs text diff eol=lf
+*.json text diff eol=lf
+
 # Binary assets - never touch line endings.
 *.png binary
 *.ico binary
