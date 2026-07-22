@@ -16,6 +16,10 @@
 .envrc
 .direnv/
 
+# updater signing key - the private half must never be committed
+fastdash.key
+fastdash.key.pub
+
 # logs / os cruft
 *.log
 .DS_Store

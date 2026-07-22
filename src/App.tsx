@@ -12,6 +12,7 @@ import type {
 } from "./types";
 import Settings from "./Settings";
 import { setLocale, t } from "./i18n";
+import { checkForUpdate, installUpdate, type Update } from "./updater";
 
 export default function App() {
   const [connectors, setConnectors] = useState<ConnectorMeta[]>([]);
@@ -92,6 +93,7 @@ export default function App() {
 
   return (
     <div className="app">
+      <UpdateBanner />
       <aside className="sidebar">
         <div className="brand">fastdash</div>
         <nav>
@@ -156,6 +158,65 @@ export default function App() {
           </>
         )}
       </main>
+    </div>
+  );
+}
+
+// A non-blocking toast that appears only when a newer signed release exists.
+// It checks once on launch (quietly ignoring offline/dev builds), then lets the
+// user install on their own schedule - the download + relaunch happens on click,
+// never automatically. Dismissing hides it until the next launch.
+function UpdateBanner() {
+  const [update, setUpdate] = useState<Update | null>(null);
+  const [installing, setInstalling] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    checkForUpdate()
+      .then((u) => {
+        if (!cancelled) setUpdate(u);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (!update || dismissed) return null;
+
+  async function install() {
+    if (!update) return;
+    setInstalling(true);
+    setFailed(false);
+    try {
+      // Resolves into a relaunch on success, so nothing runs after this.
+      await installUpdate(update);
+    } catch (e) {
+      console.error("update install failed", e);
+      setInstalling(false);
+      setFailed(true);
+    }
+  }
+
+  return (
+    <div className="update-toast" role="status">
+      <span className="update-msg">
+        {failed
+          ? t("update.failed")
+          : t("update.available", { version: `v${update.version}` })}
+      </span>
+      <div className="update-actions">
+        <button className="save-btn" onClick={install} disabled={installing}>
+          {installing ? t("update.installing") : t("update.install")}
+        </button>
+        {!installing && (
+          <button className="link-btn" onClick={() => setDismissed(true)}>
+            {t("update.dismiss")}
+          </button>
+        )}
+      </div>
     </div>
   );
 }

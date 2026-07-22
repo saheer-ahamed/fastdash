@@ -14,6 +14,13 @@
   "status": {
     "rateLimited": "Rate limited - retrying shortly"
   },
+  "update": {
+    "available": "fastdash {version} is available",
+    "install": "Install and restart",
+    "installing": "Downloading...",
+    "failed": "Update failed - try again later",
+    "dismiss": "Later"
+  },
   "error": {
     "title": "something went wrong",
     "lede": "This view ran into an unexpected hiccup and couldn't load. Your settings and data are safe - nothing was lost.",
