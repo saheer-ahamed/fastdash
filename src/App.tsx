@@ -12,6 +12,7 @@ import type {
 } from "./types";
 import Settings from "./Settings";
 import { setLocale, t } from "./i18n";
+import { useDevMode } from "./devmode";
 import { checkForUpdate, installUpdate, type Update } from "./updater";
 
 export default function App() {
@@ -410,14 +411,30 @@ function SnapshotView({ snapshot }: { snapshot: Snapshot }) {
 }
 
 function StatusBanner({ status }: { status: Health }) {
+  const devMode = useDevMode();
   if (status.state === "ok") return null;
-  const text =
-    status.state === "needsAuth"
-      ? status.message
-      : status.state === "error"
-        ? status.message
-        : t("status.rateLimited");
-  return <div className={"banner " + statusClass(status)}>{text}</div>;
+
+  // needsAuth and rateLimited already carry human-friendly, actionable copy
+  // (the backend localizes needsAuth; rateLimited is a fixed frontend string),
+  // so they read fine for everyone.
+  if (status.state === "needsAuth") {
+    return <div className={"banner " + statusClass(status)}>{status.message}</div>;
+  }
+  if (status.state === "rateLimited") {
+    return <div className={"banner " + statusClass(status)}>{t("status.rateLimited")}</div>;
+  }
+
+  // A generic fetch/parse/HTTP failure. Everyday users see a plain, reassuring
+  // message; the raw technical string (e.g. "github returned status 422: ...")
+  // is developer-only, shown as a secondary line just in developer mode.
+  return (
+    <div className={"banner " + statusClass(status)}>
+      <span className="banner-msg">{t("status.error")}</span>
+      {devMode && status.message && (
+        <span className="banner-tech">{status.message}</span>
+      )}
+    </div>
+  );
 }
 
 function PanelView({ panel }: { panel: Panel }) {

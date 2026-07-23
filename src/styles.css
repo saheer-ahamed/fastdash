@@ -412,6 +412,16 @@ button {
 .banner.err {
   border-left-color: var(--err);
 }
+/* Developer-only raw error string, shown under the friendly message in dev mode.
+   Muted and monospace so it reads as diagnostic detail, not the primary copy. */
+.banner-tech {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 .ok-banner {
   border-left: 2px solid var(--ok);
   padding: 10px 12px;

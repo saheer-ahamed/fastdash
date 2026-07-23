@@ -12,7 +12,8 @@
     "range": "{start}-{end} of {total}"
   },
   "status": {
-    "rateLimited": "Rate limited - retrying shortly"
+    "rateLimited": "Rate limited - retrying shortly",
+    "error": "Couldn't load the latest data - we'll keep trying. Anything already shown stays available."
   },
   "update": {
     "available": "fastdash {version} is available",
