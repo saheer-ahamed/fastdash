@@ -4,7 +4,9 @@
     "refresh": "Refresh",
     "refreshing": "...",
     "updated": "updated {time}",
-    "settings": "Settings"
+    "settings": "Settings",
+    "connectors": "Connectors",
+    "noConnectors": "No connectors available."
   },
   "pager": {
     "prev": "[ prev ]",

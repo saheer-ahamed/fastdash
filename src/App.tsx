@@ -11,14 +11,18 @@ import type {
   Snapshot,
 } from "./types";
 import Settings from "./Settings";
+import Connectors from "./connectors/ConnectorsPage";
 import { setLocale, t } from "./i18n";
 import { useDevMode } from "./devmode";
 import { checkForUpdate, installUpdate, type Update } from "./updater";
 
+// Which of the two pinned bottom pages is showing, if either.
+type Page = "connectors" | "settings";
+
 export default function App() {
   const [connectors, setConnectors] = useState<ConnectorMeta[]>([]);
   const [active, setActive] = useState<string | null>(null);
-  const [showSettings, setShowSettings] = useState(false);
+  const [page, setPage] = useState<Page | null>(null);
   const [snapshots, setSnapshots] = useState<Record<string, Snapshot>>({});
   const [loading, setLoading] = useState(false);
   // Bumped on language change to re-render chrome that calls t().
@@ -66,6 +70,17 @@ export default function App() {
       .finally(() => setLoading(false));
   }, []);
 
+  // After a connector's settings are saved: refetch its dashboard, and re-read
+  // the GitHub account list so an account added just now shows up as a sub-tab
+  // without restarting the app.
+  const onConnectorSaved = useCallback(
+    (id: string) => {
+      refresh(id);
+      if (id === "github") github.reloadAccounts();
+    },
+    [refresh, github],
+  );
+
   // Switch language: update the frontend catalog, re-render chrome, and re-fetch
   // every connector so backend panel strings come back in the new language.
   const onLocaleChange = useCallback(
@@ -101,9 +116,9 @@ export default function App() {
           {connectors.map((c) => (
             <button
               key={c.id}
-              className={"tab" + (!showSettings && c.id === active ? " active" : "")}
+              className={"tab" + (!page && c.id === active ? " active" : "")}
               onClick={() => {
-                setShowSettings(false);
+                setPage(null);
                 setActive(c.id);
               }}
             >
@@ -112,22 +127,33 @@ export default function App() {
             </button>
           ))}
         </nav>
-        <button
-          className={"tab settings-tab" + (showSettings ? " active" : "")}
-          onClick={() => setShowSettings(true)}
-        >
-          <span className="dot idle" />
-          {t("app.settings")}
-        </button>
+        <div className="sidebar-footer">
+          <button
+            className={"tab" + (page === "connectors" ? " active" : "")}
+            onClick={() => setPage("connectors")}
+          >
+            <span className="dot idle" />
+            {t("app.connectors")}
+          </button>
+          <button
+            className={"tab" + (page === "settings" ? " active" : "")}
+            onClick={() => setPage("settings")}
+          >
+            <span className="dot idle" />
+            {t("app.settings")}
+          </button>
+        </div>
       </aside>
 
       <main className="content">
-        {showSettings ? (
+        {page === "connectors" ? (
+          <Connectors onRefresh={onConnectorSaved} />
+        ) : page === "settings" ? (
           <>
             <header className="topbar">
               <h1>{t("app.settings")}</h1>
             </header>
-            <Settings onRefresh={refresh} onLocaleChange={onLocaleChange} />
+            <Settings onLocaleChange={onLocaleChange} />
           </>
         ) : active === "github" ? (
           <GithubView state={github} />
@@ -275,15 +301,24 @@ function useGithubState() {
   const snapsRef = useRef(snaps);
   snapsRef.current = snaps;
 
-  // Load the configured accounts once and select the first.
-  useEffect(() => {
+  // Read the configured accounts: once on startup, and again whenever they are
+  // edited on the Connectors page. Keeps the current selection if it still
+  // exists, otherwise falls back to the first account.
+  const reloadAccounts = useCallback(() => {
     invoke<AppConfig>("get_config")
       .then((cfg) => {
-        setAccounts(cfg.github.accounts);
-        setLabel((cur) => cur ?? cfg.github.accounts[0]?.label ?? null);
+        const next = cfg.github.accounts;
+        setAccounts(next);
+        setLabel((cur) =>
+          cur && next.some((a) => a.label === cur) ? cur : (next[0]?.label ?? null),
+        );
       })
       .catch((e) => console.error(e));
   }, []);
+
+  useEffect(() => {
+    reloadAccounts();
+  }, [reloadAccounts]);
 
   // Fetch one view in the background: never clears the cached snapshot, only
   // flags the view as loading and overlays the result when it arrives.
@@ -311,7 +346,7 @@ function useGithubState() {
     return () => window.clearInterval(id);
   }, [label, org, load]);
 
-  return { accounts, label, setLabel, org, setOrg, snaps, loadingKeys, load };
+  return { accounts, label, setLabel, org, setOrg, snaps, loadingKeys, load, reloadAccounts };
 }
 
 function GithubView({ state }: { state: GithubState }) {
