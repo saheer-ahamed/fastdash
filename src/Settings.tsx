@@ -1,46 +1,25 @@
 import { useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
-import type { AppConfig, GithubAccount } from "./types";
+import { getConfig, patchConfig } from "./config";
+import { useFlash } from "./flash";
 import { THEMES, getStoredTheme, setTheme, type ThemeChoice } from "./theme";
 import { LOCALES, getLocale, setLocale, t } from "./i18n";
 import { DEV_MODE_TAPS, isDevMode, setDevMode } from "./devmode";
 
-// Minimal settings UI: non-secret config goes to `save_config`; tokens go
-// straight to the OS keychain via `set_secret` and are never read back.
-// After a successful save we ask the parent to refresh that connector so the
-// user sees results immediately instead of waiting for the next scheduler tick.
+// App-wide preferences. Connector credentials and per-connector options live on
+// the Connectors page instead; this section writes only its own config slice.
 
-/// GitHub Device Flow codes returned by `github_device_start`.
-type DeviceCode = {
-  deviceCode: string;
-  userCode: string;
-  verificationUri: string;
-  expiresIn: number;
-  interval: number;
-};
-
-export default function Settings({
-  onRefresh,
-  onLocaleChange,
-}: {
-  onRefresh: (connectorId: string) => void;
-  onLocaleChange: (locale: string) => void;
-}) {
-  const [config, setConfig] = useState<AppConfig | null>(null);
-
-  // General
+export default function Settings({ onLocaleChange }: { onLocaleChange: (locale: string) => void }) {
   const [timezone, setTimezone] = useState("");
   const [filterBots, setFilterBots] = useState(true);
   const [theme, setThemeChoice] = useState<ThemeChoice>(getStoredTheme());
   const [locale, setLocaleChoice] = useState(getLocale());
 
-  const [savedMsg, setSavedMsg] = useState<string | null>(null);
+  const { message, flash, error } = useFlash();
 
   useEffect(() => {
-    invoke<AppConfig>("get_config")
+    getConfig()
       .then((cfg) => {
-        setConfig(cfg);
         setTimezone(cfg.timezone);
         setFilterBots(cfg.filterBots);
         setLocaleChoice(cfg.locale);
@@ -49,41 +28,19 @@ export default function Settings({
       .catch((e) => console.error(e));
   }, []);
 
-  const flash = (msg: string) => {
-    setSavedMsg(msg);
-    window.setTimeout(() => setSavedMsg(null), 2500);
-  };
-
-  const error = (e: unknown) => flash(t("settings.error", { message: String(e) }));
-
   async function changeLocale(next: string) {
     setLocaleChoice(next);
     try {
-      await persist({ locale: next });
+      await patchConfig({ locale: next });
       onLocaleChange(next);
     } catch (e) {
       error(e);
     }
   }
 
-  // Persist the config plus whatever slices the caller overrides in one write,
-  // keeping the in-memory `config` state in sync.
-  async function persist(patch: Partial<AppConfig>): Promise<AppConfig> {
-    const base = config ?? {
-      timezone,
-      locale: "en",
-      github: { accounts: [] },
-      filterBots,
-    };
-    const next: AppConfig = { ...base, timezone, filterBots, ...patch };
-    await invoke("save_config", { config: next });
-    setConfig(next);
-    return next;
-  }
-
   async function saveGeneral() {
     try {
-      await persist({});
+      await patchConfig({ timezone, filterBots });
       flash(t("settings.saved", { section: t("settings.general") }));
     } catch (e) {
       error(e);
@@ -92,7 +49,7 @@ export default function Settings({
 
   return (
     <div className="panels settings">
-      {savedMsg && <div className="banner ok-banner">{savedMsg}</div>}
+      {message && <div className="banner ok-banner">{message}</div>}
 
       <section className="card">
         <h2>{t("settings.general")}</h2>
@@ -153,15 +110,6 @@ export default function Settings({
         </div>
       </section>
 
-      <GithubAccounts
-        key={config ? "loaded" : "loading"}
-        initial={config?.github.accounts ?? []}
-        saveAccounts={(accounts) => persist({ github: { accounts } })}
-        onRefresh={() => onRefresh("github")}
-        flash={flash}
-        error={error}
-      />
-
       <AboutCard flash={flash} />
     </div>
   );
@@ -218,323 +166,6 @@ function AboutCard({ flash }: { flash: (msg: string) => void }) {
         </button>
       </div>
       {devMode && <p className="muted dev-status">{t("settings.devModeActive")}</p>}
-    </section>
-  );
-}
-
-const parseOrgs = (raw: string): string[] =>
-  raw
-    .split(/[\s,]+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-
-// One editable row: keeps orgs as a raw string while typing; `key` is stable so
-// per-row token/device state survives reordering and removals.
-type AccountRow = { key: number; label: string; orgs: string };
-
-// Manages the full list of GitHub accounts: add/remove, per-account token (paste
-// or Device Flow), and orgs. Tokens go straight to the keychain via `set_secret`;
-// the account list (labels + orgs) is persisted through `saveAccounts`.
-function GithubAccounts({
-  initial,
-  saveAccounts,
-  onRefresh,
-  flash,
-  error,
-}: {
-  initial: GithubAccount[];
-  saveAccounts: (accounts: GithubAccount[]) => Promise<unknown>;
-  onRefresh: () => void;
-  flash: (msg: string) => void;
-  error: (e: unknown) => void;
-}) {
-  const nextKey = useRef(0);
-  const [rows, setRows] = useState<AccountRow[]>(() =>
-    initial.map((a) => ({ key: nextKey.current++, label: a.label, orgs: a.orgs.join(", ") })),
-  );
-  // Newly typed tokens, per row key (only sent to the keychain on save).
-  const [tokenInput, setTokenInput] = useState<Record<number, string>>({});
-  const [replacing, setReplacing] = useState<Record<number, boolean>>({});
-  // Whether a token exists in the keychain, per account label.
-  const [stored, setStored] = useState<Record<string, boolean>>({});
-  // The single in-flight Device Flow login, tagged with its row key.
-  const [connect, setConnect] = useState<{
-    key: number;
-    device: DeviceCode | null;
-    copied: boolean;
-  } | null>(null);
-  const connectId = useRef(0);
-
-  // Refresh the "token stored" flags whenever the set of labels changes. We only
-  // ever ask whether a secret exists, never read it back.
-  const labelsKey = rows.map((r) => r.label.trim()).join(" ");
-  useEffect(() => {
-    let cancelled = false;
-    const labels = Array.from(new Set(rows.map((r) => r.label.trim()).filter(Boolean)));
-    Promise.all(
-      labels.map(
-        async (label) =>
-          [label, await hasSecret(label)] as const,
-      ),
-    )
-      .then((pairs) => {
-        if (!cancelled) setStored(Object.fromEntries(pairs));
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [labelsKey]);
-
-  async function hasSecret(label: string): Promise<boolean> {
-    try {
-      return await invoke<boolean>("has_secret", { connector: "github", label });
-    } catch {
-      return false;
-    }
-  }
-
-  function patchRow(key: number, patch: Partial<AccountRow>) {
-    setRows((rs) => rs.map((r) => (r.key === key ? { ...r, ...patch } : r)));
-  }
-
-  function addAccount() {
-    setRows((rs) => [...rs, { key: nextKey.current++, label: "", orgs: "" }]);
-  }
-
-  // Rows -> persisted accounts, dropping any without a label.
-  function toAccounts(rs: AccountRow[]): GithubAccount[] {
-    return rs
-      .map((r) => ({ label: r.label.trim(), orgs: parseOrgs(r.orgs) }))
-      .filter((a) => a.label);
-  }
-
-  async function removeAccount(key: number) {
-    const row = rows.find((r) => r.key === key);
-    const remaining = rows.filter((r) => r.key !== key);
-    setRows(remaining);
-    try {
-      if (row?.label.trim()) {
-        await invoke("delete_secret", { connector: "github", label: row.label.trim() }).catch(
-          () => {},
-        );
-      }
-      await saveAccounts(toAccounts(remaining));
-      onRefresh();
-      flash(t("settings.saved", { section: t("settings.github") }));
-    } catch (e) {
-      error(e);
-    }
-  }
-
-  async function saveAll() {
-    try {
-      // Push any freshly typed tokens to the keychain first, keyed by label.
-      for (const r of rows) {
-        const token = tokenInput[r.key]?.trim();
-        const label = r.label.trim();
-        if (token && label) {
-          await invoke("set_secret", { connector: "github", label, value: token });
-        }
-      }
-      const justStored = rows.filter((r) => tokenInput[r.key]?.trim() && r.label.trim());
-      setTokenInput({});
-      setReplacing({});
-      await saveAccounts(toAccounts(rows));
-      if (justStored.length) {
-        setStored((s) => {
-          const next = { ...s };
-          for (const r of justStored) next[r.label.trim()] = true;
-          return next;
-        });
-      }
-      onRefresh();
-      flash(t("settings.saved", { section: t("settings.github") }));
-    } catch (e) {
-      error(e);
-    }
-  }
-
-  // Device Flow for one row: fetch a code, show it while the user approves in the
-  // browser, then persist the account so the connector picks it up.
-  async function connectAccount(key: number) {
-    const label = rows.find((r) => r.key === key)?.label.trim();
-    if (!label) {
-      error(new Error("Set an account label first"));
-      return;
-    }
-    const id = ++connectId.current;
-    setConnect({ key, device: null, copied: false });
-    try {
-      const dc = await invoke<DeviceCode>("github_device_start");
-      if (connectId.current !== id) return; // cancelled while starting
-      setConnect({ key, device: dc, copied: false });
-      const login = await invoke<string>("github_device_poll", {
-        deviceCode: dc.deviceCode,
-        interval: dc.interval,
-        label,
-      });
-      if (connectId.current !== id) return; // cancelled while polling
-      setConnect(null);
-      setStored((s) => ({ ...s, [label]: true }));
-      setReplacing((r) => ({ ...r, [key]: false }));
-      await saveAccounts(toAccounts(rows));
-      onRefresh();
-      flash(t("settings.connectedAs", { login }));
-    } catch (e) {
-      if (connectId.current === id) {
-        setConnect(null);
-        error(e);
-      }
-    }
-  }
-
-  function cancelConnect() {
-    connectId.current++; // invalidate the in-flight poll
-    setConnect(null);
-  }
-
-  async function copyCode(code: string) {
-    try {
-      await navigator.clipboard.writeText(code);
-      setConnect((c) => (c ? { ...c, copied: true } : c));
-      window.setTimeout(() => setConnect((c) => (c ? { ...c, copied: false } : c)), 1500);
-    } catch {
-      /* clipboard may be unavailable; the code is still shown to type manually */
-    }
-  }
-
-  return (
-    <section className="card">
-      <h2>{t("settings.github")}</h2>
-
-      {rows.length === 0 && <p className="muted">{t("app.noGithubAccounts")}</p>}
-
-      {rows.map((row, i) => {
-        const label = row.label.trim();
-        const tokenStored = !!label && !!stored[label];
-        const isReplacing = !!replacing[row.key];
-        const connecting = connect?.key === row.key;
-        const device = connecting ? connect?.device : null;
-        return (
-          <div className="account-card" key={row.key}>
-            <div className="account-head">
-              <span className="muted">{t("app.accountN", { n: i + 1 })}</span>
-              <button type="button" className="link-btn" onClick={() => removeAccount(row.key)}>
-                {t("app.removeAccount")}
-              </button>
-            </div>
-
-            <div className="field">
-              <label>{t("settings.accountLabel")}</label>
-              <input
-                value={row.label}
-                onChange={(e) => patchRow(row.key, { label: e.target.value })}
-              />
-            </div>
-
-            {device ? (
-              <div className="device-flow">
-                <p>{t("settings.deviceInstructions")}</p>
-                <div className="device-code">
-                  <code>{device.userCode}</code>
-                  <button
-                    type="button"
-                    className="link-btn"
-                    onClick={() => copyCode(device.userCode)}
-                  >
-                    {connect?.copied ? t("settings.copied") : t("settings.copy")}
-                  </button>
-                </div>
-                <p className="muted device-waiting">{t("settings.deviceWaiting")}</p>
-                <div className="field-actions">
-                  <a
-                    className="link-btn"
-                    href={device.verificationUri}
-                    onClick={(e) => {
-                      e.preventDefault();
-                      invoke("open_external", { url: device.verificationUri }).catch(() => {});
-                    }}
-                  >
-                    {t("settings.deviceOpen")}
-                  </a>
-                  <button type="button" className="link-btn" onClick={cancelConnect}>
-                    {t("settings.cancel")}
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <>
-                <div className="field-actions connect-actions">
-                  <button
-                    className="save-btn"
-                    onClick={() => connectAccount(row.key)}
-                    disabled={connecting}
-                  >
-                    {connecting ? t("settings.connecting") : t("settings.connectGithub")}
-                  </button>
-                </div>
-
-                <div className="field">
-                  <label>{tokenStored ? t("settings.orPasteToken") : t("settings.pat")}</label>
-                  {tokenStored && !isReplacing ? (
-                    <div className="stored-token">
-                      <input
-                        type="password"
-                        value="storedtoken"
-                        readOnly
-                        aria-label={t("settings.tokenStored")}
-                      />
-                      <button
-                        type="button"
-                        className="link-btn"
-                        onClick={() => {
-                          setReplacing((r) => ({ ...r, [row.key]: true }));
-                          setTokenInput((ti) => ({ ...ti, [row.key]: "" }));
-                        }}
-                      >
-                        {t("settings.replace")}
-                      </button>
-                    </div>
-                  ) : (
-                    <input
-                      type="password"
-                      value={tokenInput[row.key] ?? ""}
-                      onChange={(e) =>
-                        setTokenInput((ti) => ({ ...ti, [row.key]: e.target.value }))
-                      }
-                      placeholder={t("settings.tokenPlaceholder")}
-                      autoComplete="off"
-                    />
-                  )}
-                  {tokenStored && (
-                    <span className="muted stored-hint">{t("settings.tokenStored")}</span>
-                  )}
-                </div>
-              </>
-            )}
-
-            <div className="field">
-              <label>{t("settings.orgs")}</label>
-              <input
-                value={row.orgs}
-                onChange={(e) => patchRow(row.key, { orgs: e.target.value })}
-                placeholder={t("settings.orgsPlaceholder")}
-              />
-            </div>
-          </div>
-        );
-      })}
-
-      <div className="field-actions account-actions">
-        <button className="save-btn" onClick={addAccount}>
-          {t("app.addAccount")}
-        </button>
-        <button className="save-btn" onClick={saveAll}>
-          {t("settings.save")}
-        </button>
-      </div>
     </section>
   );
 }

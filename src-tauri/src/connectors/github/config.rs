@@ -2,7 +2,7 @@
 //!
 //! Resolution: the first GitHub account configured in the shared `engine::config`
 //! (its label + selected orgs), with the token read from the OS keychain via
-//! `engine::secrets` (key `github/<label>`, written by the Settings UI). The env
+//! `engine::secrets` (key `github/<label>`, written by the Connectors UI). The env
 //! vars `GITHUB_TOKEN` / `FASTDASH_GITHUB_ORGS` / `FASTDASH_GITHUB_LABEL` act as
 //! fallbacks for local/dev use.
 //!
@@ -26,10 +26,10 @@ pub struct GithubConfig {
 
 impl GithubConfig {
     /// Resolve the configuration for the scheduler's default view: the first
-    /// account configured in Settings (all its orgs), or `None` if no token is
+    /// account configured under Connectors (all its orgs), or `None` if no token is
     /// available (the connector then reports `NeedsAuth`).
     pub fn resolve() -> Option<Self> {
-        // Prefer the first account configured in Settings; fall back to env vars.
+        // Prefer the first account configured under Connectors; fall back to env vars.
         let label = crate::engine::config::load()
             .github
             .accounts
@@ -79,7 +79,7 @@ impl GithubConfig {
 /// missing entry) yields `None` so the caller can fall back to the env var.
 fn token_from_keychain(label: &str) -> Option<String> {
     // Read through the shared keychain wrapper so this matches exactly what the
-    // Settings UI writes via `set_secret` (service `fastdash`, key `github/<label>`).
+    // Connectors UI writes via `set_secret` (service `fastdash`, key `github/<label>`).
     let token = crate::engine::secrets::get("github", label).ok()??;
     let token = token.trim().to_string();
     if token.is_empty() {

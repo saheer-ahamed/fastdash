@@ -210,10 +210,14 @@ body {
   border-left: 2px solid var(--fill);
 }
 
-/* Settings pinned to the bottom of the sidebar */
-.settings-tab {
+/* Connectors + Settings pinned as a group to the bottom of the sidebar */
+.sidebar-footer {
   margin-top: auto;
+  padding-top: 8px;
   border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
 }
 
 .dot {
