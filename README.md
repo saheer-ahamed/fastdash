@@ -34,6 +34,13 @@ Builds are not yet code-signed, so the browser-downloaded installer trips SmartS
 The terminal and Scoop paths above are unaffected, because only browsers apply the Mark-of-the-Web that SmartScreen keys off.
 Every release ships `SHA256SUMS.txt` so downloads can be verified.
 
+## Updating
+
+fastdash updates itself.
+On launch it checks the GitHub releases feed and, if a newer signed build exists, downloads and installs it - no need to re-run the installer or the Scoop command.
+
+Scoop users can still update through Scoop if they prefer (`scoop update fastdash`); both paths pull from the same release.
+
 ## Prerequisites
 
 These are for building from source; installing a release needs none of them.
