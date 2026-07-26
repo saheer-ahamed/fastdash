@@ -82,8 +82,53 @@ pub struct EnrichedPr {
     pub merged_at: Option<DateTime<Utc>>,
 }
 
+/// A window of the viewer's contribution calendar, as GitHub itself buckets it.
+#[derive(Debug, Clone)]
+pub struct ContributionCalendar {
+    pub total: u64,
+    /// Ascending, contiguous, one entry per day in the requested window.
+    pub days: Vec<ContributionDay>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ContributionDay {
+    /// ISO `YYYY-MM-DD` (GitHub's own calendar day for the viewer).
+    pub date: String,
+    pub count: u64,
+    /// GitHub's own quartile bucket, 0 (none) ..= 4 (fourth quartile).
+    pub level: u8,
+}
+
+/// A calendar window to request: RFC3339 and at most a year apart. Leaving both
+/// ends unset asks GitHub for its own default window - the rolling last year the
+/// profile page shows - so the current-year grid can never drift from github.com.
+#[derive(Debug, Clone)]
+pub struct CalendarWindow {
+    pub label: String,
+    pub from: Option<String>,
+    pub to: Option<String>,
+}
+
+impl CalendarWindow {
+    /// The `(from: ..., to: ...)` argument list, empty for the default window.
+    fn args(&self) -> String {
+        match (&self.from, &self.to) {
+            (Some(from), Some(to)) => format!(
+                "(from: \"{}\", to: \"{}\")",
+                escape_gql(from),
+                escape_gql(to)
+            ),
+            _ => String::new(),
+        }
+    }
+}
+
 pub struct GithubClient {
     http: reqwest::Client,
+    /// `x-oauth-scopes` from the last response that carried it. Classic tokens
+    /// advertise their scopes on every response; fine-grained PATs send none,
+    /// so this stays `None` and callers must not infer anything from that.
+    scopes: std::sync::Mutex<Option<String>>,
 }
 
 impl GithubClient {
@@ -110,7 +155,24 @@ impl GithubClient {
             .build()
             .map_err(|e| GithubError::Http(e.to_string()))?;
 
-        Ok(Self { http })
+        Ok(Self {
+            http,
+            scopes: std::sync::Mutex::new(None),
+        })
+    }
+
+    /// Scopes GitHub reported for this token, once any request has been made.
+    /// `None` means "not advertised" (fine-grained PAT), never "no scopes".
+    pub fn seen_scopes(&self) -> Option<String> {
+        self.scopes.lock().ok()?.clone()
+    }
+
+    fn record_scopes(&self, headers: &reqwest::header::HeaderMap) {
+        if let Some(value) = headers.get("x-oauth-scopes").and_then(|v| v.to_str().ok()) {
+            if let Ok(mut slot) = self.scopes.lock() {
+                *slot = Some(value.to_string());
+            }
+        }
     }
 
     /// Run a Search API query, following pagination. `query` is the raw `q`
@@ -186,39 +248,11 @@ impl GithubClient {
         let mut out = Vec::with_capacity(prs.len());
 
         for chunk in prs.chunks(GRAPHQL_CHUNK) {
-            let query = build_graphql_query(chunk);
-            let resp = self
-                .http
-                .post(GRAPHQL_URL)
-                .json(&serde_json::json!({ "query": query }))
-                .send()
-                .await
-                .map_err(|e| GithubError::Http(e.to_string()))?;
-
-            let status = resp.status();
-            if status.as_u16() == 403 || status.as_u16() == 429 {
-                return Err(GithubError::RateLimited {
-                    retry_after_secs: retry_after(resp.headers()),
-                });
-            }
-            if !status.is_success() {
-                return Err(status_error(status.as_u16(), resp).await);
-            }
-
-            let body: GraphQlResponse = resp
-                .json()
-                .await
-                .map_err(|e| GithubError::Parse(e.to_string()))?;
-
-            if let Some(errors) = body.errors {
-                // Node-not-found style errors are non-fatal (repo/PR moved);
-                // only bail if no data came back at all.
-                if body.data.is_none() {
-                    return Err(GithubError::GraphQl(errors.to_string()));
-                }
-            }
-
-            let Some(data) = body.data else { continue };
+            // Node-not-found style errors are non-fatal (repo/PR moved), so
+            // partial data is kept; `graphql` only bails when nothing came back.
+            let Some(data) = self.graphql(&build_graphql_query(chunk)).await? else {
+                continue;
+            };
             for i in 0..chunk.len() {
                 let alias = format!("r{i}");
                 let Some(repo) = data.get(&alias) else {
@@ -235,6 +269,221 @@ impl GithubClient {
 
         Ok(out)
     }
+
+    /// The viewer's login and the year they joined, used to decide how many
+    /// year tabs the contribution heatmap can offer.
+    pub async fn viewer_profile(&self) -> Result<ViewerProfile, GithubError> {
+        let data = self
+            .graphql("query { viewer { login createdAt } }")
+            .await?
+            .ok_or_else(|| GithubError::GraphQl("viewer query returned no data".into()))?;
+
+        let viewer = data
+            .get("viewer")
+            .ok_or_else(|| GithubError::GraphQl("viewer missing".into()))?;
+        Ok(ViewerProfile {
+            login: viewer
+                .get("login")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            created_at: viewer
+                .get("createdAt")
+                .and_then(|v| v.as_str())
+                .and_then(parse_ts),
+        })
+    }
+
+    /// The viewer's contribution calendar for each window, in one batched call.
+    /// Counts and shade levels are GitHub's own - the same numbers the profile
+    /// page shows - so the grid never disagrees with github.com.
+    pub async fn contribution_calendars(
+        &self,
+        windows: &[CalendarWindow],
+    ) -> Result<Vec<(String, ContributionCalendar)>, GithubError> {
+        if windows.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut q = String::from("query {\n  viewer {\n");
+        for (i, w) in windows.iter().enumerate() {
+            q.push_str(&format!(
+                "    c{i}: contributionsCollection{args} {{ \
+                    contributionCalendar {{ \
+                        totalContributions \
+                        weeks {{ contributionDays {{ date contributionCount contributionLevel }} }} \
+                    }} \
+                }}\n",
+                i = i,
+                args = w.args(),
+            ));
+        }
+        q.push_str("  }\n}");
+
+        let Some(data) = self.graphql(&q).await? else {
+            return Ok(Vec::new());
+        };
+        let Some(viewer) = data.get("viewer") else {
+            return Ok(Vec::new());
+        };
+
+        let mut out = Vec::with_capacity(windows.len());
+        for (i, w) in windows.iter().enumerate() {
+            let Some(cal) = viewer
+                .get(format!("c{i}"))
+                .and_then(|c| c.get("contributionCalendar"))
+            else {
+                continue;
+            };
+            out.push((w.label.clone(), parse_calendar(cal)));
+        }
+        Ok(out)
+    }
+
+    /// Diagnostic: what GitHub counts for the viewer over the default (last
+    /// year) window, split by kind. An all-zero breakdown with a non-zero
+    /// `restricted` means the token can see the activity but not its contents;
+    /// all-zero with `restricted: 0` means GitHub itself attributes nothing.
+    #[cfg(test)]
+    pub async fn contribution_breakdown(&self) -> Result<ContributionBreakdown, GithubError> {
+        let data = self
+            .graphql(
+                "query { viewer { contributionsCollection { \
+                    hasAnyContributions \
+                    restrictedContributionsCount \
+                    totalCommitContributions \
+                    totalIssueContributions \
+                    totalPullRequestContributions \
+                    totalPullRequestReviewContributions \
+                    totalRepositoryContributions \
+                    contributionCalendar { totalContributions } \
+                } } }",
+            )
+            .await?
+            .ok_or_else(|| GithubError::GraphQl("no data".into()))?;
+
+        let c = data
+            .get("viewer")
+            .and_then(|v| v.get("contributionsCollection"))
+            .ok_or_else(|| GithubError::GraphQl("collection missing".into()))?;
+        let n = |k: &str| c.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
+        Ok(ContributionBreakdown {
+            has_any: c
+                .get("hasAnyContributions")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            restricted: n("restrictedContributionsCount"),
+            commits: n("totalCommitContributions"),
+            issues: n("totalIssueContributions"),
+            pull_requests: n("totalPullRequestContributions"),
+            reviews: n("totalPullRequestReviewContributions"),
+            repositories: n("totalRepositoryContributions"),
+            calendar_total: c
+                .get("contributionCalendar")
+                .and_then(|v| v.get("totalContributions"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+        })
+    }
+
+    /// POST a GraphQL query, mapping transport/status/`errors` onto
+    /// `GithubError`. Partial data with errors is kept (a missing node is not
+    /// fatal); `None` means the response carried no `data` at all.
+    async fn graphql(
+        &self,
+        query: &str,
+    ) -> Result<Option<HashMap<String, serde_json::Value>>, GithubError> {
+        let resp = self
+            .http
+            .post(GRAPHQL_URL)
+            .json(&serde_json::json!({ "query": query }))
+            .send()
+            .await
+            .map_err(|e| GithubError::Http(e.to_string()))?;
+
+        let status = resp.status();
+        self.record_scopes(resp.headers());
+        if status.as_u16() == 403 || status.as_u16() == 429 {
+            return Err(GithubError::RateLimited {
+                retry_after_secs: retry_after(resp.headers()),
+            });
+        }
+        if !status.is_success() {
+            return Err(status_error(status.as_u16(), resp).await);
+        }
+
+        let body: GraphQlResponse = resp
+            .json()
+            .await
+            .map_err(|e| GithubError::Parse(e.to_string()))?;
+
+        if let Some(errors) = body.errors {
+            if body.data.is_none() {
+                return Err(GithubError::GraphQl(errors.to_string()));
+            }
+        }
+        Ok(body.data)
+    }
+}
+
+/// Diagnostic breakdown of the viewer's contribution calendar.
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub struct ContributionBreakdown {
+    pub has_any: bool,
+    pub restricted: u64,
+    pub commits: u64,
+    pub issues: u64,
+    pub pull_requests: u64,
+    pub reviews: u64,
+    pub repositories: u64,
+    pub calendar_total: u64,
+}
+
+/// The authenticated user behind the token.
+#[derive(Debug, Clone)]
+pub struct ViewerProfile {
+    pub login: String,
+    pub created_at: Option<DateTime<Utc>>,
+}
+
+fn parse_calendar(cal: &serde_json::Value) -> ContributionCalendar {
+    let total = cal
+        .get("totalContributions")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    let days = cal
+        .get("weeks")
+        .and_then(|w| w.as_array())
+        .map(|weeks| {
+            weeks
+                .iter()
+                .filter_map(|w| w.get("contributionDays").and_then(|d| d.as_array()))
+                .flatten()
+                .filter_map(parse_contribution_day)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    ContributionCalendar { total, days }
+}
+
+fn parse_contribution_day(day: &serde_json::Value) -> Option<ContributionDay> {
+    Some(ContributionDay {
+        date: day.get("date")?.as_str()?.to_string(),
+        count: day
+            .get("contributionCount")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+        level: match day.get("contributionLevel").and_then(|v| v.as_str()) {
+            Some("FIRST_QUARTILE") => 1,
+            Some("SECOND_QUARTILE") => 2,
+            Some("THIRD_QUARTILE") => 3,
+            Some("FOURTH_QUARTILE") => 4,
+            _ => 0,
+        },
+    })
 }
 
 /// Build a batched GraphQL query aliasing each PR as `r0`, `r1`, ....
