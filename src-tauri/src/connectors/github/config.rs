@@ -23,8 +23,6 @@
 
 /// Default account label when none is configured.
 const DEFAULT_LABEL: &str = "default";
-/// Default org when `FASTDASH_GITHUB_ORGS` is unset.
-const DEFAULT_ORG: &str = "z-roworld";
 
 /// Resolved, ready-to-use GitHub configuration.
 #[derive(Debug, Clone)]
@@ -111,18 +109,17 @@ fn token_from_env() -> Option<String> {
     }
 }
 
-/// Parse `FASTDASH_GITHUB_ORGS` (comma-separated), defaulting to `z-roworld`.
+/// Parse `FASTDASH_GITHUB_ORGS` (comma-separated).
+///
+/// An empty result stays empty on purpose. This used to fall back to a
+/// hardcoded org, which meant anyone who cleared the field silently queried
+/// somebody else's org and got an opaque 422; the caller now reports "nothing
+/// configured" instead.
 fn orgs_from_env() -> Vec<String> {
     let raw = std::env::var("FASTDASH_GITHUB_ORGS").unwrap_or_default();
-    let orgs: Vec<String> = raw
-        .split(',')
+    raw.split(',')
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
-        .collect();
-    if orgs.is_empty() {
-        vec![DEFAULT_ORG.to_string()]
-    } else {
-        orgs
-    }
+        .collect()
 }

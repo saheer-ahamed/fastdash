@@ -4,6 +4,7 @@ export type Health =
   | { state: "ok" }
   | { state: "needsAuth"; message: string }
   | { state: "rateLimited"; retryAfterSecs: number | null }
+  | { state: "misconfigured"; message: string }
   | { state: "error"; message: string };
 
 export interface Stat {

@@ -23,6 +23,10 @@ pub enum GithubError {
     Status { code: u16, message: String },
     #[error("rate limited")]
     RateLimited { retry_after_secs: Option<u64> },
+    /// Settings the user must fix (unsearchable scope, nothing configured).
+    /// Carries finished user-facing copy, not a technical string.
+    #[error("{0}")]
+    Misconfigured(String),
     #[error("parse error: {0}")]
     Parse(String),
     #[error("invalid token header: {0}")]

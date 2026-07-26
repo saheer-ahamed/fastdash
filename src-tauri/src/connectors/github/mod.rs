@@ -73,6 +73,7 @@ impl Connector for GithubConnector {
             Err(GithubError::RateLimited { retry_after_secs }) => {
                 Ok(rate_limited_snapshot(retry_after_secs))
             }
+            Err(GithubError::Misconfigured(message)) => Err(ConnectorError::Misconfigured(message)),
             Err(e) => Err(ConnectorError::Other(e.to_string())),
         }
     }
@@ -92,6 +93,12 @@ pub async fn fetch_account(label: String, org: Option<String>, range: DateRange)
         Err(GithubError::RateLimited { retry_after_secs }) => {
             rate_limited_snapshot(retry_after_secs)
         }
+        Err(GithubError::Misconfigured(message)) => Snapshot {
+            status: Health::Misconfigured { message },
+            panels: vec![],
+            fetched_at: Utc::now(),
+            next_refresh_secs: None,
+        },
         Err(e) => Snapshot {
             status: Health::Error {
                 message: e.to_string(),
@@ -104,6 +111,12 @@ pub async fn fetch_account(label: String, org: Option<String>, range: DateRange)
 }
 
 async fn run_fetch(cfg: &GithubConfig, range: &DateRange) -> Result<Snapshot, GithubError> {
+    // Nothing to search. Caught here rather than falling through to an empty
+    // dashboard, which reads as "no activity" instead of "not set up yet".
+    if cfg.orgs.is_empty() {
+        return Err(GithubError::Misconfigured(i18n::t("github.noScopes")));
+    }
+
     let ist = range::ist();
     let range = range.normalized();
     let bounds = range.ist_bounds();
@@ -112,14 +125,25 @@ async fn run_fetch(cfg: &GithubConfig, range: &DateRange) -> Result<Snapshot, Gi
     let mut rollup = Rollup::default();
     // PRs deduped across all four sets, with per-set outcome flags.
     let mut seen: HashMap<(String, String, u64), SeenPr> = HashMap::new();
+    // Scopes GitHub refused, kept aside so one bad entry cannot sink the others.
+    let mut failed: Vec<String> = Vec::new();
 
-    for org in &cfg.orgs {
-        // `None` means the Search API refused the org outright; that is an access
-        // problem the user can act on, not a transient fetch failure.
-        let Some(sets) = search_org(&client, org, &bounds).await? else {
-            return Ok(Snapshot::needs_auth(org_unsearchable_message(
-                &cfg.token, org,
-            )));
+    for entry in &cfg.orgs {
+        let scope = scope_qualifier(entry);
+        // `None` means the Search API answered 422: this scope is unsearchable
+        // for this token, which the user can act on. It is specific to the
+        // scope, so it is set aside rather than sinking the ones that do work.
+        //
+        // Every other failure propagates untouched. A 401 from a revoked token,
+        // a 5xx, a DNS blip - none of those are attributable to this scope, and
+        // most are transient, so they must stay `Error` ("we'll keep trying")
+        // rather than being reported as a settings mistake that retrying cannot
+        // fix. A rate limit is global too: trying the remaining scopes would
+        // only burn more quota.
+        let Some(sets) = search_scope(&client, &scope, &bounds).await? else {
+            eprintln!("github: scope {scope} is unsearchable with this token");
+            failed.push(scope);
+            continue;
         };
 
         // Independent per-contributor counts (a PR may fall in several buckets).
@@ -141,6 +165,14 @@ async fn run_fetch(cfg: &GithubConfig, range: &DateRange) -> Result<Snapshot, Gi
         for it in sets.still_open {
             upsert(&mut seen, it, false, false, true);
         }
+    }
+
+    // Nothing searchable at all: say which scopes were refused rather than
+    // rendering an empty dashboard that looks like a quiet day.
+    if failed.len() == cfg.orgs.len() {
+        return Err(GithubError::Misconfigured(unsearchable_message(
+            &cfg.token, &failed,
+        )));
     }
 
     // Enrich only the MERGED set (line contributions are merged-based).
@@ -222,37 +254,45 @@ async fn run_fetch(cfg: &GithubConfig, range: &DateRange) -> Result<Snapshot, Gi
     // heatmap, never the dashboard.
     let contributions = contributions_panels(&client).await;
 
-    let panels = aggregate::build_panels(&rollup, ist, &range, contributions);
+    let mut panels = aggregate::build_panels(&rollup, ist, &range, contributions);
+    // Some scopes worked and some did not: the numbers below are real but
+    // incomplete, so say which scopes are missing rather than letting the
+    // dashboard imply it covers everything.
+    if !failed.is_empty() {
+        panels.insert(0, aggregate::scopes_failed_note(&failed));
+    }
     Ok(Snapshot::ok(panels, Some(REFRESH_SECS)))
 }
 
-/// The four date-filtered PR sets for one org over the selected range
+/// The four date-filtered PR sets for one scope over the selected range
 /// (`still_open` is derived from `opened`, not searched separately).
-struct OrgSets {
+struct ScopeSets {
     opened: Vec<SearchItem>,
     merged: Vec<SearchItem>,
     closed: Vec<SearchItem>,
     still_open: Vec<SearchItem>,
 }
 
-/// Run one org's searches over `bounds`. `Ok(None)` means the Search API
-/// answered 422 - GitHub's way of saying this token cannot see the org, whether
-/// because it does not exist or because the token is not allowed to view it.
+/// Run one scope's searches over `bounds`. `scope` is an already-resolved search
+/// qualifier (`org:acme`, `user:octocat`, `author:octocat`), never a raw config
+/// entry. `Ok(None)` means the Search API answered 422 - GitHub's way of saying
+/// this token cannot see the scope, whether because it does not exist or because
+/// the token is not allowed to view it.
 ///
 /// Only three queries are issued: "still open" is `created:{bounds} is:open`,
 /// which is exactly the subset of the `created` results that carry no
 /// `closed_at`, so it is derived locally. Search is budgeted at 30 requests a
 /// minute and every query here paginates, so dropping a whole redundant set
 /// matters as soon as the range is wider than a day.
-async fn search_org(
+async fn search_scope(
     client: &GithubClient,
-    org: &str,
+    scope: &str,
     bounds: &str,
-) -> Result<Option<OrgSets>, GithubError> {
+) -> Result<Option<ScopeSets>, GithubError> {
     let queries = [
-        format!("org:{org} type:pr created:{bounds}"),
-        format!("org:{org} type:pr merged:{bounds}"),
-        format!("org:{org} type:pr closed:{bounds} is:unmerged"),
+        format!("{scope} type:pr created:{bounds}"),
+        format!("{scope} type:pr merged:{bounds}"),
+        format!("{scope} type:pr closed:{bounds} is:unmerged"),
     ];
 
     let mut sets = Vec::with_capacity(queries.len());
@@ -273,12 +313,30 @@ async fn search_org(
         .cloned()
         .collect();
 
-    Ok(Some(OrgSets {
+    Ok(Some(ScopeSets {
         opened,
         merged: sets.next().unwrap_or_default(),
         closed: sets.next().unwrap_or_default(),
         still_open,
     }))
+}
+
+/// Why every configured scope came back unsearchable, phrased for whoever has
+/// to fix it.
+///
+/// A lone `org:` scope gets the token-kind-aware explanation below: the
+/// third-party-application grant it talks about is an org policy, so it is only
+/// meaningful there. Several failed scopes, or a personal `user:` / `author:`
+/// one, get the generic list instead - naming each refused scope, since the
+/// remedy may differ per entry.
+fn unsearchable_message(token: &str, failed: &[String]) -> String {
+    match failed {
+        [only] => match only.strip_prefix("org:") {
+            Some(org) => org_unsearchable_message(token, org),
+            None => i18n::tf("github.scopesFailed", &[("scopes", only)]),
+        },
+        many => i18n::tf("github.scopesFailed", &[("scopes", &many.join(", "))]),
+    }
 }
 
 /// Why an org came back unsearchable, phrased for whoever has to fix it.
@@ -433,6 +491,24 @@ fn count_authors(items: &[SearchItem], counts: &mut HashMap<String, u64>) {
     }
 }
 
+/// Turn one configured scope entry into a GitHub search qualifier.
+///
+/// A bare name is an organization (`z-roworld` -> `org:z-roworld`), which is what
+/// the Connectors UI has always written. An entry that already carries an
+/// `org:` or `user:` qualifier is passed through, so `user:octocat` scopes the
+/// fetch to a personal account's own repos - a personal account is not an org,
+/// and `org:<login>` on one is a 422 from the Search API rather than an empty
+/// result.
+fn scope_qualifier(entry: &str) -> String {
+    let entry = entry.trim();
+    match entry.split_once(':') {
+        Some((kind, name)) if matches!(kind.trim(), "org" | "user") && !name.trim().is_empty() => {
+            format!("{}:{}", kind.trim(), name.trim())
+        }
+        _ => format!("org:{entry}"),
+    }
+}
+
 /// Filter obvious bot authors (dependabot and any `...[bot]` account).
 fn is_bot(login: &str) -> bool {
     let l = login.to_ascii_lowercase();
@@ -474,6 +550,86 @@ mod tests {
             assert!(!msg.contains("{org}"), "unsubstituted: {msg}");
             assert!(!msg.contains("{url}"), "unsubstituted: {msg}");
         }
+    }
+
+    /// A lone org scope keeps the richer org-grant copy; a personal scope, which
+    /// no org policy applies to, must not claim an org is withholding access.
+    #[test]
+    fn lone_org_scope_keeps_the_org_explanation() {
+        let org = unsearchable_message("gho_abc123", &["org:z-roworld".to_string()]);
+        assert!(org.contains("third-party OAuth apps"), "{org}");
+
+        let user = unsearchable_message("gho_abc123", &["user:octocat".to_string()]);
+        assert!(!user.contains("third-party OAuth apps"), "{user}");
+        assert!(user.contains("user:octocat"), "{user}");
+    }
+
+    /// Several refused scopes are all named, so the user knows which entries to
+    /// fix rather than just the first one.
+    #[test]
+    fn multiple_failed_scopes_are_all_listed() {
+        let msg = unsearchable_message(
+            "ghp_x",
+            &["org:acme".to_string(), "user:octocat".to_string()],
+        );
+        assert!(msg.contains("org:acme"), "{msg}");
+        assert!(msg.contains("user:octocat"), "{msg}");
+    }
+
+    #[test]
+    fn bare_name_is_an_org() {
+        assert_eq!(scope_qualifier("z-roworld"), "org:z-roworld");
+    }
+
+    #[test]
+    fn explicit_qualifiers_pass_through() {
+        assert_eq!(scope_qualifier("user:octocat"), "user:octocat");
+        assert_eq!(scope_qualifier("org:z-roworld"), "org:z-roworld");
+    }
+
+    #[test]
+    fn surrounding_whitespace_is_trimmed() {
+        assert_eq!(scope_qualifier("  acme "), "org:acme");
+        assert_eq!(scope_qualifier(" user: octocat "), "user:octocat");
+    }
+
+    /// An unknown qualifier is not silently honored: treating `repo:a/b` as a
+    /// raw pass-through would let any search qualifier be injected through the
+    /// org field, so it falls back to the org reading instead.
+    #[test]
+    fn unknown_qualifier_is_not_passed_through() {
+        assert_eq!(scope_qualifier("repo:acme/widget"), "org:repo:acme/widget");
+    }
+
+    #[test]
+    fn empty_name_after_qualifier_falls_back() {
+        assert_eq!(scope_qualifier("user:"), "org:user:");
+    }
+
+    /// `i18n::t` returns the key itself when a string is missing, so a typo in a
+    /// locale key ships silently as `github.scopesFailed` in the user's banner.
+    /// These assert the keys resolve and that the placeholder is substituted.
+    #[test]
+    fn misconfigured_copy_resolves() {
+        let no_scopes = i18n::t("github.noScopes");
+        assert_ne!(no_scopes, "github.noScopes");
+        assert!(!no_scopes.is_empty());
+
+        let failed = i18n::tf("github.scopesFailed", &[("scopes", "org:Personal")]);
+        assert_ne!(failed, "github.scopesFailed");
+        assert!(failed.contains("org:Personal"));
+        assert!(!failed.contains("{scopes}"));
+    }
+
+    #[test]
+    fn partial_note_copy_resolves() {
+        let title = i18n::t("github.scopesFailedTitle");
+        assert_ne!(title, "github.scopesFailedTitle");
+
+        let body = i18n::tf("github.scopesPartial", &[("scopes", "org:Personal")]);
+        assert_ne!(body, "github.scopesPartial");
+        assert!(body.contains("org:Personal"));
+        assert!(!body.contains("{scopes}"));
     }
 }
 

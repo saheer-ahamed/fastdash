@@ -121,6 +121,15 @@ pub fn contributions_heatmap(
     })
 }
 
+/// Warn that the numbers below exclude scopes GitHub refused to search, so a
+/// partial dashboard is not mistaken for a complete one.
+pub fn scopes_failed_note(failed: &[String]) -> Panel {
+    Panel::Note {
+        title: Some(i18n::t("github.scopesFailedTitle")),
+        message: i18n::tf("github.scopesPartial", &[("scopes", &failed.join(", "))]),
+    }
+}
+
 /// Shown above the grid when the token lacks `read:user`: GitHub then counts
 /// only public activity, so an otherwise busy year can render near-empty.
 pub fn contributions_partial_note(login: &str, scopes: &str) -> Panel {

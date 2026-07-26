@@ -45,6 +45,9 @@ fn error_snapshot(err: &ConnectorError) -> Snapshot {
         ConnectorError::RateLimited => Health::RateLimited {
             retry_after_secs: None,
         },
+        ConnectorError::Misconfigured(message) => Health::Misconfigured {
+            message: message.clone(),
+        },
         ConnectorError::Other(message) => Health::Error {
             message: message.clone(),
         },
