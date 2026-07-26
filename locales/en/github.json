@@ -28,6 +28,17 @@
       "delta": "+/-",
       "time": "Time"
     },
+    "contributions": {
+      "title": "Contribution activity - @{login}",
+      "summaryLastYear": "{n} contributions in the last year",
+      "summaryLastYearOne": "1 contribution in the last year",
+      "summaryYear": "{n} contributions in {year}",
+      "summaryYearOne": "1 contribution in {year}",
+      "tooltipNone": "No contributions on {date}",
+      "tooltipOne": "1 contribution on {date}",
+      "tooltipMany": "{n} contributions on {date}",
+      "publicOnly": "Public contributions only. This account's token has the scopes [{scopes}], and without read:user GitHub leaves private activity out of the calendar instead of reporting an error - so a busy year can look empty. Fix it by reconnecting the account under Connectors (\"Connect with GitHub\" requests read:user), or by replacing the token with one that includes read:user. If it still looks empty afterwards, turn on \"Include private contributions on my profile\" in your GitHub profile settings."
+    },
     "state": {
       "merged": "Merged",
       "closed": "Closed",

@@ -20,17 +20,20 @@ pub mod device_flow;
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use chrono::{FixedOffset, Utc};
+use chrono::{DateTime, Datelike, Duration, FixedOffset, NaiveDate, Utc};
 
 use crate::engine::connector::Health;
 use crate::engine::connector::{Connector, ConnectorError, ConnectorMeta, FetchCtx, Snapshot};
 use crate::engine::i18n;
 
 use aggregate::{LineContrib, PrEntry, PrState, Rollup};
-use client::{EnrichedPr, GithubClient, GithubError, PrRef, SearchItem};
+use client::{CalendarWindow, EnrichedPr, GithubClient, GithubError, PrRef, SearchItem};
 use config::GithubConfig;
 
 const REFRESH_SECS: u64 = 60;
+/// Year tabs on the contribution heatmap (current year plus the previous four),
+/// clamped to the years the account has actually existed.
+const HEATMAP_YEARS: i32 = 5;
 
 pub struct GithubConnector;
 
@@ -225,8 +228,104 @@ async fn run_fetch(cfg: &GithubConfig) -> Result<Snapshot, GithubError> {
         });
     }
 
-    let panels = aggregate::build_panels(&rollup, ist);
+    // The contribution calendar is viewer-scoped, not org-scoped, so it is the
+    // same on every org sub-tab. Best-effort: a GraphQL failure drops the
+    // heatmap, never the dashboard.
+    let contributions = contributions_panels(&client).await;
+
+    let panels = aggregate::build_panels(&rollup, ist, contributions);
     Ok(Snapshot::ok(panels, Some(REFRESH_SECS)))
+}
+
+/// Fetch the viewer's contribution calendars and build the heatmap panel,
+/// preceded by a note when the token can only see part of the calendar.
+/// Returns an empty vec (and logs) if GitHub won't give them to this token.
+async fn contributions_panels(client: &GithubClient) -> Vec<crate::engine::panel::Panel> {
+    let profile = match client.viewer_profile().await {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("github: contribution heatmap unavailable: {e}");
+            return Vec::new();
+        }
+    };
+
+    let now = Utc::now();
+    let windows = calendar_windows(profile.created_at, now);
+    let calendars = match client.contribution_calendars(&windows).await {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("github: contribution calendar fetch failed: {e}");
+            return Vec::new();
+        }
+    };
+
+    let mut panels = Vec::new();
+    // Without `read:user` GitHub quietly drops private activity from the
+    // calendar and returns a near-empty year rather than an error, which reads
+    // as "you did nothing". Only a classic token advertises its scopes, so the
+    // warning is shown only when we positively know one is missing.
+    if let Some(scopes) = incomplete_scopes(client) {
+        panels.push(aggregate::contributions_partial_note(
+            &profile.login,
+            &scopes,
+        ));
+    }
+    panels.extend(aggregate::contributions_heatmap(
+        &profile.login,
+        &calendars,
+        now.year(),
+    ));
+    panels
+}
+
+/// The token's advertised scopes, but only when `read:user` - the scope the
+/// contribution calendar needs to include private activity - is missing.
+fn incomplete_scopes(client: &GithubClient) -> Option<String> {
+    let scopes = client.seen_scopes()?;
+    if scopes.split(',').any(|s| s.trim() == "read:user") {
+        None
+    } else {
+        Some(scopes)
+    }
+}
+
+/// One window per year tab, most recent first. The current year is the rolling
+/// last 12 months (what github.com shows for it); earlier years are Jan 1 to
+/// Dec 31. Years before the account existed are dropped.
+fn calendar_windows(created_at: Option<DateTime<Utc>>, now: DateTime<Utc>) -> Vec<CalendarWindow> {
+    let this_year = now.year();
+    let first_year = created_at
+        .map(|c| c.year())
+        .unwrap_or(this_year - HEATMAP_YEARS + 1)
+        .max(this_year - HEATMAP_YEARS + 1);
+
+    (first_year..=this_year)
+        .rev()
+        .filter_map(|year| {
+            // The current year asks for GitHub's default window, which is
+            // exactly what the profile page renders.
+            let (from, to) = if year == this_year {
+                (None, None)
+            } else {
+                (
+                    Some(year_start(year)?.to_rfc3339()),
+                    Some((year_start(year + 1)? - Duration::seconds(1)).to_rfc3339()),
+                )
+            };
+            Some(CalendarWindow {
+                label: year.to_string(),
+                from,
+                to,
+            })
+        })
+        .collect()
+}
+
+fn year_start(year: i32) -> Option<DateTime<Utc>> {
+    NaiveDate::from_ymd_opt(year, 1, 1)?
+        .and_hms_opt(0, 0, 0)?
+        .and_local_timezone(Utc)
+        .single()
 }
 
 /// A PR seen across one or more search sets, with its outcome flags.
@@ -301,5 +400,45 @@ mod live_test {
         eprintln!("panels: {}", snapshot.panels.len());
         let json = serde_json::to_string_pretty(&snapshot.panels).unwrap();
         eprintln!("{json}");
+    }
+
+    /// Why a contribution heatmap is empty for a given account: prints the token's
+    /// OAuth scopes, the calendar totals GitHub reports for the viewer, and the
+    /// PR counts the Search API can see for the same login. Run with:
+    ///   cargo test --lib github::live_test::contributions_diag -- --ignored --nocapture
+    /// Set FASTDASH_GITHUB_LABEL to pick an account (defaults to the first one).
+    #[ignore = "hits the live GitHub API; run with --ignored"]
+    #[tokio::test]
+    async fn contributions_diag() {
+        let label = std::env::var("FASTDASH_GITHUB_LABEL").unwrap_or_default();
+        let cfg = if label.is_empty() {
+            GithubConfig::resolve()
+        } else {
+            GithubConfig::for_account(&label, None)
+        }
+        .expect("no token for that account");
+        eprintln!("account: {} orgs: {:?}", cfg.label, cfg.orgs);
+
+        let client = GithubClient::new(&cfg.token).expect("client");
+        let profile = client.viewer_profile().await.expect("viewer");
+        eprintln!("viewer: {} created {:?}", profile.login, profile.created_at);
+        eprintln!("token scopes: {:?}", client.seen_scopes());
+        eprintln!("scopes missing read:user: {:?}", incomplete_scopes(&client));
+
+        let breakdown = client
+            .contribution_breakdown()
+            .await
+            .expect("contribution breakdown");
+        eprintln!("calendar breakdown: {breakdown:#?}");
+
+        let authored = client
+            .search_issues(&format!("author:{} type:pr", profile.login))
+            .await
+            .map(|v| v.len())
+            .unwrap_or(0);
+        eprintln!(
+            "PRs authored by {} (search, all time): {authored}",
+            profile.login
+        );
     }
 }

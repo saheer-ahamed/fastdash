@@ -42,6 +42,42 @@ pub enum Panel {
         title: Option<String>,
         items: Vec<ListItem>,
     },
+    /// A short explanatory card, e.g. why a panel can't be shown yet.
+    Note {
+        title: Option<String>,
+        message: String,
+    },
+    /// A GitHub-style year grid of daily activity, with a year selector.
+    Heatmap {
+        title: Option<String>,
+        /// Most recent year first; the frontend selects the first by default.
+        years: Vec<HeatmapYear>,
+    },
+}
+
+/// One selectable year of a [`Panel::Heatmap`].
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeatmapYear {
+    /// Year-rail label, e.g. "2026".
+    pub label: String,
+    /// Headline above the grid, e.g. "104 contributions in the last year".
+    pub summary: String,
+    /// Every day of the window, ascending and contiguous (zero days included).
+    pub days: Vec<HeatDay>,
+}
+
+/// A single day cell. `level` is the shade bucket, so each connector decides
+/// how its own unit maps onto the five shades; the frontend only paints.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeatDay {
+    /// ISO `YYYY-MM-DD`.
+    pub date: String,
+    /// Shade bucket, 0 (empty) ..= 4 (most active).
+    pub level: u8,
+    /// Hover text, e.g. "5 contributions on Jul 24, 2026".
+    pub tooltip: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
