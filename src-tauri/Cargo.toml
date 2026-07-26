@@ -31,11 +31,20 @@ thiserror = "2"
 # --- collide on Cargo.toml. Each connector uses the subset it needs.
 reqwest = { version = "0.12", features = ["json"] }
 notify = "6"
-keyring = { version = "3", features = ["windows-native"] }
 toml = "0.8"
 directories = "5"
 futures = "0.3"
 open = "5"
+
+# `keyring` needs a per-platform backend feature, so it is declared per target
+# rather than in `[dependencies]`: Credential Manager on Windows, Keychain
+# Services on macOS. Enabling the wrong one compiles to a no-op store that
+# silently loses secrets, hence the split.
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
 
 # Smaller, faster release binaries.
 [profile.release]

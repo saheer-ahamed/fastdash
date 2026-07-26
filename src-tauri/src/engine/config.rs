@@ -3,7 +3,8 @@
 //! Secrets (GitHub PAT, Claude OAuth token) never live here -
 //! they go in the OS keychain via `engine::secrets`. This struct is persisted as
 //! TOML at `ProjectDirs::from("co","zro","fastdash").config_dir()/config.toml`
-//! (on Windows, under `%APPDATA%`). Loading always succeeds by falling back to
+//! (`%APPDATA%` on Windows, `~/Library/Application Support` on macOS). Loading
+//! always succeeds by falling back to
 //! defaults, and saving is atomic (write-temp-then-rename).
 
 use std::path::PathBuf;
