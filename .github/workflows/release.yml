@@ -1,20 +1,33 @@
 name: Release
 
-# Tag a version to cut a release:
-#   npm version 0.1.1 --no-git-tag-version && git commit -am "release: v0.1.1"
-#   git tag v0.1.1 && git push origin main --tags
+# Fully automatic releases on merge to main:
+#   1. Analyze the Conventional Commits since the last v* tag and compute the
+#      next version (no releasable commit -> no release).
+#   2. Bump every manifest via scripts/bump-version.sh (the single source of
+#      truth for a bump).
+#   3. Commit `chore(release): vX.Y.Z [skip ci]`, tag it, and push both to main.
+#   4. Build the signed installers + portable zip and publish the GitHub release
+#      (not a draft, so it is immediately marked "latest").
+#   5. Upload latest.json so installed apps self-update via the in-app updater.
 #
-# The release is published immediately (not a draft) and marked "latest", so its
-# download URLs - including latest.json for the in-app updater - are live at once.
+# Never tag or bump by hand - let the merge do it. workflow_dispatch is the only
+# manual escape hatch: it forces a chosen bump even with no releasable commits.
+#
+# The release commit carries [skip ci] so pushing it back does not retrigger this
+# workflow (GitHub natively skips such pushes).
 on:
   push:
-    tags:
-      - "v*"
+    branches: [main]
   workflow_dispatch:
     inputs:
-      tag:
-        description: "Tag to build and release (e.g. v0.1.1)"
+      bump:
+        description: "Force a release with this bump level"
         required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
 
 permissions:
   contents: write
@@ -24,23 +37,114 @@ jobs:
     runs-on: windows-latest
 
     steps:
+      # Full history + tags so version computation can see the last release, and
+      # RELEASE_TOKEN so the release commit can be pushed back to protected main.
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN }}
+
+      # Decide the next version from Conventional Commits since the last tag.
+      # Sets outputs: release (true/false), version (X.Y.Z), tag (vX.Y.Z).
+      - name: Compute next version
+        id: version
+        shell: bash
+        env:
+          FORCE_BUMP: ${{ github.event.inputs.bump }}
+        run: |
+          set -euo pipefail
+
+          last_tag="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
+          if [ -z "$last_tag" ]; then
+            range=""
+            base="0.0.0"
+            echo "no previous v* tag; scanning full history"
+          else
+            range="${last_tag}..HEAD"
+            base="${last_tag#v}"
+            echo "scanning ${range}"
+          fi
+
+          if [ -n "${FORCE_BUMP:-}" ]; then
+            # Manual dispatch overrides commit analysis.
+            bump="$FORCE_BUMP"
+          else
+            has_break=0; has_feat=0; has_fix=0
+            # Type detection from subjects (feat / fix / perf and the `!` marker).
+            while IFS= read -r s; do
+              [ -z "$s" ] && continue
+              [[ "$s" =~ ^[a-z]+(\([^\)]*\))?!: ]] && has_break=1
+              [[ "$s" =~ ^feat(\([^\)]*\))?: ]] && has_feat=1
+              [[ "$s" =~ ^(fix|perf)(\([^\)]*\))?: ]] && has_fix=1
+            done < <(git log ${range:+$range} --format='%s')
+            # A BREAKING CHANGE footer anywhere in a body also forces major.
+            if git log ${range:+$range} --format='%b' | grep -q 'BREAKING CHANGE'; then
+              has_break=1
+            fi
+
+            if [ "$has_break" = 1 ]; then bump="major"
+            elif [ "$has_feat" = 1 ]; then bump="minor"
+            elif [ "$has_fix" = 1 ]; then bump="patch"
+            else bump="none"
+            fi
+          fi
+
+          if [ "$bump" = "none" ]; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "No releasable commits since ${last_tag:-<start>} - skipping release."
+            exit 0
+          fi
+
+          IFS=. read -r MA MI PA <<< "$base"
+          case "$bump" in
+            major) MA=$((MA + 1)); MI=0; PA=0 ;;
+            minor) MI=$((MI + 1)); PA=0 ;;
+            patch) PA=$((PA + 1)) ;;
+          esac
+          next="${MA}.${MI}.${PA}"
+
+          echo "release=true" >> "$GITHUB_OUTPUT"
+          echo "version=${next}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${next}" >> "$GITHUB_OUTPUT"
+          echo "Next version: v${next} (${bump} bump from ${base})"
 
       - uses: actions/setup-node@v5
+        if: steps.version.outputs.release == 'true'
         with:
           node-version: 20
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
+        if: steps.version.outputs.release == 'true'
 
       # Rust release builds are the slow part; cache them between runs.
       - uses: swatinem/rust-cache@v2
+        if: steps.version.outputs.release == 'true'
         with:
           workspaces: src-tauri -> target
 
       - run: npm ci
+        if: steps.version.outputs.release == 'true'
 
-      - name: Build and draft release
+      # Bump every manifest, then commit + tag + push back to main. Done before
+      # the build so the artifacts carry the new version, and pushed as its own
+      # commit so main always reflects what was released.
+      - name: Bump, commit, and tag
+        if: steps.version.outputs.release == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/bump-version.sh "${{ steps.version.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "chore(release): ${{ steps.version.outputs.tag }} [skip ci]"
+          git tag "${{ steps.version.outputs.tag }}"
+          git push origin HEAD:main
+          git push origin "${{ steps.version.outputs.tag }}"
+
+      - name: Build and publish release
+        if: steps.version.outputs.release == 'true'
         uses: tauri-apps/tauri-action@action-v1.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -54,8 +158,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ github.event.inputs.tag || github.ref_name }}
-          releaseName: "fastdash ${{ github.event.inputs.tag || github.ref_name }}"
+          tagName: ${{ steps.version.outputs.tag }}
+          releaseName: "fastdash ${{ steps.version.outputs.tag }}"
           # Publish immediately (not a draft) so the release is marked "latest"
           # and its latest.json is reachable at the /releases/latest/download/
           # URL the installed app polls - otherwise auto-update never fires.
@@ -67,10 +171,10 @@ jobs:
       # The portable zip is what install.ps1 and Scoop consume. It avoids the
       # installer entirely: no UAC, no elevation, no SmartScreen.
       - name: Build portable zip
+        if: steps.version.outputs.release == 'true'
         shell: pwsh
         run: |
-          $tag = "${{ github.event.inputs.tag || github.ref_name }}"
-          $version = $tag.TrimStart("v")
+          $version = "${{ steps.version.outputs.version }}"
           $staging = "portable/fastdash"
           New-Item -ItemType Directory -Force -Path $staging | Out-Null
           Copy-Item "src-tauri/target/release/fastdash.exe" $staging
@@ -82,9 +186,9 @@ jobs:
       # SHA256 for every asset, so install.ps1 and the Scoop manifest can verify
       # what they downloaded instead of trusting the transport alone.
       - name: Generate checksums
+        if: steps.version.outputs.release == 'true'
         shell: pwsh
         run: |
-          $tag = "${{ github.event.inputs.tag || github.ref_name }}"
           $files = @($env:ZIP_NAME) + (
             Get-ChildItem -Recurse -File `
               -Path "src-tauri/target/release/bundle/nsis","src-tauri/target/release/bundle/msi" `
@@ -98,9 +202,9 @@ jobs:
           Get-Content SHA256SUMS.txt
 
       - name: Attach portable zip and checksums
+        if: steps.version.outputs.release == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $tag = "${{ github.event.inputs.tag || github.ref_name }}"
-          gh release upload $tag $env:ZIP_NAME SHA256SUMS.txt --clobber
+          gh release upload "${{ steps.version.outputs.tag }}" $env:ZIP_NAME SHA256SUMS.txt --clobber
