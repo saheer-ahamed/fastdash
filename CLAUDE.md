@@ -65,17 +65,21 @@ Wire the `pr-checks` jobs in as **required status checks** (Settings -> Branches
 `.github/workflows/release.yml` runs on every push to `main`:
 
 1. Analyzes the Conventional Commits since the last tag and computes the next version (no releasable commits -> no release).
+   The version comes from the highest `v*` tag, not the committed manifests.
 2. Bumps `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, and `src-tauri/tauri.conf.json` via `scripts/bump-version.sh` - the single source of truth for a bump.
-3. Commits `chore(release): vX.Y.Z [skip ci]` and pushes the tag to `main`.
+3. Makes the `chore(release): vX.Y.Z` bump commit locally and pushes **only the tag** - never a commit to `main`.
+   The `Protect main` ruleset forbids direct pushes to the branch, but tag refs are unrestricted, and the tag carries the bumped manifests so each release is internally consistent.
 4. Builds the signed installers + portable zip and publishes the GitHub release (not a draft).
 5. Uploads `latest.json` so installed apps self-update via the in-app updater.
 
+Because nothing is pushed to `main`, the manifests on the branch are **not** bumped between releases - that drift is cosmetic, since the version is always derived from the tags.
 Never bump the version or push a `v*` tag manually; let the merge do it.
-`workflow_dispatch` on the workflow is the only manual escape hatch (forces a chosen bump).
+`workflow_dispatch` on the workflow is the only manual escape hatch (forces a chosen `patch`/`minor`/`major` bump, even with no releasable commits).
 
 ### In-app auto-update
 
-The app checks GitHub on launch (`src/updater.ts`) and self-updates from the signed release.
+The app checks GitHub on launch (`src/updater.ts`, surfaced by the `UpdateBanner` in `src/App.tsx`) and, if a newer signed release exists, shows a non-blocking toast to install and restart - the download never happens without the user clicking.
+The check runs once at startup, so an already-running app only notices a new release on its next launch.
 Update artifacts are signed with a keypair: the **public** key lives in `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`); the **private** key and its password are the GitHub repo secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
 The private key (`fastdash.key`) must never be committed - it is gitignored.
 Updates ride the signed NSIS installer; Scoop and `install.ps1` keep using the portable zip from the same release.
