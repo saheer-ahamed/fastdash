@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
@@ -6,13 +13,14 @@ import type {
   ConnectorMeta,
   ConnectorUpdate,
   GithubAccount,
+  HeatDay,
   Health,
   Panel,
   Snapshot,
 } from "./types";
 import Settings from "./Settings";
 import Connectors from "./connectors/ConnectorsPage";
-import { setLocale, t } from "./i18n";
+import { getLocale, setLocale, t } from "./i18n";
 import { useDevMode } from "./devmode";
 import { checkForUpdate, installUpdate, type Update } from "./updater";
 
@@ -532,6 +540,15 @@ function PanelView({ panel }: { panel: Panel }) {
           </div>
         </section>
       );
+    case "note":
+      return (
+        <section className="card">
+          {panel.title && <h2>{panel.title}</h2>}
+          <p className="note-msg muted">{panel.message}</p>
+        </section>
+      );
+    case "heatmap":
+      return <HeatmapView panel={panel} />;
     case "list":
       return (
         <section className="card">
@@ -554,6 +571,154 @@ function PanelView({ panel }: { panel: Panel }) {
         </section>
       );
   }
+}
+
+// A GitHub-style year grid: one column per week (Sunday-first, as GitHub lays
+// it out), one row per weekday, with month labels above and a year rail on the
+// right. The backend supplies the shade level per day, so this only paints.
+const MS_PER_DAY = 86_400_000;
+// Which weekday rows get a label (Mon / Wed / Fri, like GitHub).
+const LABELLED_ROWS = [1, 3, 5];
+
+function HeatmapView({ panel }: { panel: Extract<Panel, { kind: "heatmap" }> }) {
+  const [label, setLabel] = useState<string | null>(null);
+  const active = panel.years.find((y) => y.label === label) ?? panel.years[0];
+  const grid = useMemo(() => layoutHeatmap(active?.days ?? []), [active]);
+
+  if (!active) return null;
+
+  return (
+    <section className="card heatmap-card">
+      {panel.title && <h2>{panel.title}</h2>}
+      <div className="heatmap-body">
+        <div className="heatmap-main">
+          <div className="heatmap-summary">{active.summary}</div>
+          <div className="heatmap-scroll">
+            <div className="heatmap-chart">
+              <div className="heatmap-corner" />
+              <div
+                className="heatmap-months"
+                style={{ gridTemplateColumns: `repeat(${grid.columns}, var(--heat-cell))` }}
+              >
+                {grid.months.map((m) => (
+                  <span key={m.col} style={{ gridColumn: m.col + 1 }}>
+                    {m.label}
+                  </span>
+                ))}
+              </div>
+              <div className="heatmap-weekdays">
+                {LABELLED_ROWS.map((row) => (
+                  <span key={row} style={{ gridRow: row + 1 }}>
+                    {weekdayLabel(row)}
+                  </span>
+                ))}
+              </div>
+              <div
+                className="heatmap-cells"
+                style={{ gridTemplateColumns: `repeat(${grid.columns}, var(--heat-cell))` }}
+              >
+                {grid.cells.map((c) => (
+                  <span
+                    key={c.day.date}
+                    className={"heat-cell l" + c.day.level}
+                    style={{ gridColumn: c.col + 1, gridRow: c.row + 1 }}
+                    title={c.day.tooltip}
+                  />
+                ))}
+              </div>
+            </div>
+          </div>
+          <div className="heatmap-legend muted">
+            <span>{t("heatmap.less")}</span>
+            {[0, 1, 2, 3, 4].map((l) => (
+              <span key={l} className={"heat-cell l" + l} />
+            ))}
+            <span>{t("heatmap.more")}</span>
+          </div>
+        </div>
+
+        {panel.years.length > 1 && (
+          <div className="heatmap-years">
+            {panel.years.map((y) => (
+              <button
+                key={y.label}
+                className={"heatmap-year" + (y.label === active.label ? " active" : "")}
+                onClick={() => setLabel(y.label)}
+              >
+                {y.label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+interface HeatCell {
+  day: HeatDay;
+  /** 0-based week column. */
+  col: number;
+  /** 0-based weekday row, Sunday first. */
+  row: number;
+}
+
+// Place every day on the (week, weekday) grid and derive the month labels.
+// The grid starts on the Sunday of the first day's week, so a window that
+// begins mid-week leaves the leading cells of column 0 empty, as GitHub does.
+function layoutHeatmap(days: HeatDay[]): {
+  cells: HeatCell[];
+  columns: number;
+  months: { col: number; label: string }[];
+} {
+  if (days.length === 0) return { cells: [], columns: 0, months: [] };
+
+  const first = parseDay(days[0].date);
+  const start = new Date(first);
+  start.setDate(start.getDate() - start.getDay());
+
+  const cells = days.map((day) => {
+    const index = Math.round((parseDay(day.date).getTime() - start.getTime()) / MS_PER_DAY);
+    return { day, col: Math.floor(index / 7), row: index % 7 };
+  });
+  const columns = cells[cells.length - 1].col + 1;
+
+  // Label a column when its first day starts a new month; drop labels that
+  // would sit on top of the next one (the leading partial month).
+  const months: { col: number; label: string }[] = [];
+  let seen = -1;
+  for (const cell of cells) {
+    const month = parseDay(cell.day.date).getMonth();
+    if (month !== seen) {
+      seen = month;
+      if (months[months.length - 1]?.col !== cell.col) {
+        months.push({ col: cell.col, label: monthLabel(cell.day.date) });
+      }
+    }
+  }
+  const spaced = months.filter(
+    (m, i) => i === months.length - 1 || months[i + 1].col - m.col >= 3,
+  );
+
+  return { cells, columns, months: spaced };
+}
+
+// Parse `YYYY-MM-DD` as a local calendar date. `new Date(iso)` would read it as
+// UTC midnight and shift the day west of Greenwich.
+function parseDay(iso: string): Date {
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(y, m - 1, d);
+}
+
+function monthLabel(iso: string): string {
+  return parseDay(iso).toLocaleDateString(getLocale(), { month: "short" });
+}
+
+// Short weekday name for a Sunday-first row index.
+function weekdayLabel(row: number): string {
+  // 2026-07-26 is a Sunday; offset from it to name the row.
+  const d = new Date(2026, 6, 26 + row);
+  return d.toLocaleDateString(getLocale(), { weekday: "short" });
 }
 
 const PAGE_SIZE = 15;
