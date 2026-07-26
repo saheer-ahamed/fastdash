@@ -73,7 +73,7 @@
     "patFineGrained": "Fine-grained token: set the resource owner to the org, then grant Metadata, Pull requests, Issues, and Contents as read-only. It has no equivalent of read:user, so the heatmap stays public-only.",
     "patDocs": "Token permissions, explained",
     "orgs": "Organizations",
-    "orgsPlaceholder": "acme-inc, user:your-login for personal repos",
+    "orgsPlaceholder": "acme-inc, author:your-login for your own PRs anywhere",
     "connectGithub": "Connect with GitHub",
     "connecting": "Connecting...",
     "tokenStored": "Token stored - hidden for security",

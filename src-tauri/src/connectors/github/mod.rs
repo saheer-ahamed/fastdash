@@ -494,15 +494,25 @@ fn count_authors(items: &[SearchItem], counts: &mut HashMap<String, u64>) {
 /// Turn one configured scope entry into a GitHub search qualifier.
 ///
 /// A bare name is an organization (`z-roworld` -> `org:z-roworld`), which is what
-/// the Connectors UI has always written. An entry that already carries an
-/// `org:` or `user:` qualifier is passed through, so `user:octocat` scopes the
-/// fetch to a personal account's own repos - a personal account is not an org,
-/// and `org:<login>` on one is a 422 from the Search API rather than an empty
-/// result.
+/// the Connectors UI has always written. An entry that already carries a
+/// qualifier is passed through, and the three that are honored answer different
+/// questions - picking the wrong one silently returns the wrong PRs rather than
+/// erroring:
+///
+/// - `org:acme` - PRs in an organization's repos.
+/// - `user:octocat` - PRs in a personal account's *own* repos. A personal
+///   account is not an org, so `org:<login>` on one is a 422 from the Search
+///   API rather than an empty result.
+/// - `author:octocat` - PRs *written by* someone, in any repo. This is the one
+///   that catches contributions to other people's projects: a PR opened against
+///   an upstream repo lives in that repo, never in the author's account or
+///   fork, so `user:` structurally cannot see it.
 fn scope_qualifier(entry: &str) -> String {
     let entry = entry.trim();
     match entry.split_once(':') {
-        Some((kind, name)) if matches!(kind.trim(), "org" | "user") && !name.trim().is_empty() => {
+        Some((kind, name))
+            if matches!(kind.trim(), "org" | "user" | "author") && !name.trim().is_empty() =>
+        {
             format!("{}:{}", kind.trim(), name.trim())
         }
         _ => format!("org:{entry}"),
@@ -585,6 +595,7 @@ mod tests {
     fn explicit_qualifiers_pass_through() {
         assert_eq!(scope_qualifier("user:octocat"), "user:octocat");
         assert_eq!(scope_qualifier("org:z-roworld"), "org:z-roworld");
+        assert_eq!(scope_qualifier("author:octocat"), "author:octocat");
     }
 
     #[test]
