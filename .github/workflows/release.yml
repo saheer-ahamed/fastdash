@@ -5,7 +5,10 @@ name: Release
 #      next version (no releasable commit -> no release).
 #   2. Bump every manifest via scripts/bump-version.sh (the single source of
 #      truth for a bump).
-#   3. Commit `chore(release): vX.Y.Z [skip ci]`, tag it, and push both to main.
+#   3. Make the `chore(release): vX.Y.Z` bump commit locally and push ONLY the
+#      tag - never a commit to main. main's ruleset forbids direct pushes to the
+#      branch, but tag refs are unrestricted, and the tag carries the bumped
+#      manifests so each release is internally consistent.
 #   4. Build the signed installers + portable zip and publish the GitHub release
 #      (not a draft, so it is immediately marked "latest").
 #   5. Upload latest.json so installed apps self-update via the in-app updater.
@@ -13,8 +16,11 @@ name: Release
 # Never tag or bump by hand - let the merge do it. workflow_dispatch is the only
 # manual escape hatch: it forces a chosen bump even with no releasable commits.
 #
-# The release commit carries [skip ci] so pushing it back does not retrigger this
-# workflow (GitHub natively skips such pushes).
+# Because nothing is pushed to main, the manifests on the branch are NOT bumped
+# between releases - that drift is cosmetic. The version is always computed from
+# the tags (highest v* tag), not from the committed manifests, so it stays
+# correct regardless. The tag push does not retrigger this workflow (it triggers
+# on branch pushes only).
 on:
   push:
     branches: [main]
@@ -54,7 +60,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          last_tag="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
+          # Highest v* tag by version, NOT `git describe`: release tags point at
+          # off-main bump commits, so they are not reachable from HEAD and
+          # describe would miss them. `${last_tag}..HEAD` still yields exactly the
+          # main commits added since that release (the tag's parent is on main).
+          last_tag="$(git tag -l 'v*' --sort=-v:refname | head -n 1)"
           if [ -z "$last_tag" ]; then
             range=""
             base="0.0.0"
@@ -126,10 +136,11 @@ jobs:
       - run: npm ci
         if: steps.version.outputs.release == 'true'
 
-      # Bump every manifest, then commit + tag + push back to main. Done before
-      # the build so the artifacts carry the new version, and pushed as its own
-      # commit so main always reflects what was released.
-      - name: Bump, commit, and tag
+      # Bump every manifest, commit locally, and push ONLY the tag. Done before
+      # the build so the artifacts carry the new version. The bump commit is not
+      # pushed to main (the ruleset forbids it) - it exists solely as the tag's
+      # target, which keeps the tagged tree consistent with the built artifacts.
+      - name: Bump and tag
         if: steps.version.outputs.release == 'true'
         shell: bash
         run: |
@@ -138,9 +149,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "chore(release): ${{ steps.version.outputs.tag }} [skip ci]"
+          git commit -m "chore(release): ${{ steps.version.outputs.tag }}"
           git tag "${{ steps.version.outputs.tag }}"
-          git push origin HEAD:main
           git push origin "${{ steps.version.outputs.tag }}"
 
       - name: Build and publish release
