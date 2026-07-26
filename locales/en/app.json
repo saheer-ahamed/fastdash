@@ -8,6 +8,10 @@
     "connectors": "Connectors",
     "noConnectors": "No connectors available."
   },
+  "heatmap": {
+    "less": "Less",
+    "more": "More"
+  },
   "pager": {
     "prev": "[ prev ]",
     "next": "[ next ]",

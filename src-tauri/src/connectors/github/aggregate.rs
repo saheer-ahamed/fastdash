@@ -2,10 +2,12 @@
 
 use std::collections::HashMap;
 
-use chrono::{DateTime, FixedOffset, Utc};
+use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
 
 use crate::engine::i18n;
-use crate::engine::panel::{Cell, Column, Panel, Stat, TableSpec};
+use crate::engine::panel::{Cell, Column, HeatDay, HeatmapYear, Panel, Stat, TableSpec};
+
+use super::client::ContributionCalendar;
 
 /// Outcome of a PR within the day's window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,14 +63,102 @@ pub struct LineContrib {
     pub deletions: u64,
 }
 
-/// Build the connector's panels: a `StatCards` header plus the three tables.
-pub fn build_panels(rollup: &Rollup, ist: FixedOffset) -> Vec<Panel> {
-    vec![
-        stat_cards(rollup),
-        pr_activity_table(rollup),
-        line_contributions_table(rollup),
-        pr_list_table(rollup, ist),
-    ]
+/// Build the connector's panels: a `StatCards` header, the contribution
+/// heatmap (when available), plus the three tables.
+pub fn build_panels(rollup: &Rollup, ist: FixedOffset, contributions: Vec<Panel>) -> Vec<Panel> {
+    let mut panels = vec![stat_cards(rollup)];
+    panels.extend(contributions);
+    panels.push(pr_activity_table(rollup));
+    panels.push(line_contributions_table(rollup));
+    panels.push(pr_list_table(rollup, ist));
+    panels
+}
+
+/// The year grid of the viewer's contributions. Counts and shade levels are
+/// GitHub's own, so this matches the calendar on the profile page exactly.
+/// `current_year` gets the rolling last-12-months window GitHub itself shows.
+pub fn contributions_heatmap(
+    login: &str,
+    calendars: &[(String, ContributionCalendar)],
+    current_year: i32,
+) -> Option<Panel> {
+    let years: Vec<HeatmapYear> = calendars
+        .iter()
+        .filter(|(_, cal)| !cal.days.is_empty())
+        .map(|(label, cal)| {
+            let n = fmt_count(cal.total);
+            let rolling = label == &current_year.to_string();
+            let key = match (rolling, cal.total) {
+                (true, 1) => "github.contributions.summaryLastYearOne",
+                (true, _) => "github.contributions.summaryLastYear",
+                (false, 1) => "github.contributions.summaryYearOne",
+                (false, _) => "github.contributions.summaryYear",
+            };
+            let summary = i18n::tf(key, &[("n", &n), ("year", label)]);
+            HeatmapYear {
+                label: label.clone(),
+                summary,
+                days: cal.days.iter().map(heat_day).collect(),
+            }
+        })
+        .collect();
+
+    if years.is_empty() {
+        return None;
+    }
+    Some(Panel::Heatmap {
+        title: Some(i18n::tf("github.contributions.title", &[("login", login)])),
+        years,
+    })
+}
+
+/// Shown above the grid when the token lacks `read:user`: GitHub then counts
+/// only public activity, so an otherwise busy year can render near-empty.
+pub fn contributions_partial_note(login: &str, scopes: &str) -> Panel {
+    Panel::Note {
+        title: Some(i18n::tf("github.contributions.title", &[("login", login)])),
+        message: i18n::tf(
+            "github.contributions.publicOnly",
+            &[("scopes", scopes.trim())],
+        ),
+    }
+}
+
+fn heat_day(day: &super::client::ContributionDay) -> HeatDay {
+    let when = pretty_date(&day.date);
+    let tooltip = match day.count {
+        0 => i18n::tf("github.contributions.tooltipNone", &[("date", &when)]),
+        1 => i18n::tf("github.contributions.tooltipOne", &[("date", &when)]),
+        n => i18n::tf(
+            "github.contributions.tooltipMany",
+            &[("n", &fmt_count(n)), ("date", &when)],
+        ),
+    };
+    HeatDay {
+        date: day.date.clone(),
+        level: day.level.min(4),
+        tooltip,
+    }
+}
+
+/// `2026-07-24` -> `Jul 24, 2026`; falls back to the raw string if unparseable.
+fn pretty_date(iso: &str) -> String {
+    NaiveDate::parse_from_str(iso, "%Y-%m-%d")
+        .map(|d| d.format("%b %-d, %Y").to_string())
+        .unwrap_or_else(|_| iso.to_string())
+}
+
+/// Thousands separators, e.g. `1234` -> `1,234`.
+fn fmt_count(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }
 
 fn stat_cards(rollup: &Rollup) -> Panel {

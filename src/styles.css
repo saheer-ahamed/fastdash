@@ -687,6 +687,158 @@ a:hover {
   font-variant-numeric: tabular-nums;
 }
 
+/* Note - a short explanation in place of a panel that can't render yet. */
+.note-msg {
+  margin: 0;
+  max-width: 72ch;
+  line-height: 1.6;
+}
+
+/* Heatmap - a year of daily activity, one column per week.
+   Shades are the theme's --fill mixed toward --panel, so the grid reads as part
+   of the theme instead of importing GitHub's green. */
+.heatmap-card {
+  --heat-cell: 11px;
+  --heat-gap: 3px;
+}
+
+.heatmap-body {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.heatmap-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.heatmap-summary {
+  color: var(--bright);
+  margin-bottom: 10px;
+}
+
+.heatmap-scroll {
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.heatmap-chart {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 4px 6px;
+  width: max-content;
+}
+
+.heatmap-months,
+.heatmap-cells {
+  display: grid;
+  gap: var(--heat-gap);
+}
+
+.heatmap-months {
+  font-size: 10px;
+  color: var(--muted);
+  height: 12px;
+  align-items: end;
+}
+
+.heatmap-months span {
+  grid-row: 1;
+  white-space: nowrap;
+}
+
+.heatmap-weekdays {
+  display: grid;
+  grid-template-rows: repeat(7, var(--heat-cell));
+  gap: var(--heat-gap);
+  font-size: 10px;
+  color: var(--muted);
+  text-align: right;
+}
+
+.heatmap-weekdays span {
+  line-height: var(--heat-cell);
+}
+
+.heatmap-cells {
+  grid-template-rows: repeat(7, var(--heat-cell));
+}
+
+/* Empty days sit just above the card, so an idle year still reads as a grid;
+   each level then steps clearly toward the full --fill. */
+.heat-cell {
+  display: block;
+  width: var(--heat-cell);
+  height: var(--heat-cell);
+  background: var(--panel-2);
+  outline: 1px solid var(--border);
+  outline-offset: -1px;
+}
+
+.heat-cell.l1 {
+  background: color-mix(in srgb, var(--fill) 28%, var(--panel));
+  outline-color: transparent;
+}
+.heat-cell.l2 {
+  background: color-mix(in srgb, var(--fill) 50%, var(--panel));
+  outline-color: transparent;
+}
+.heat-cell.l3 {
+  background: color-mix(in srgb, var(--fill) 74%, var(--panel));
+  outline-color: transparent;
+}
+.heat-cell.l4 {
+  background: var(--fill);
+  outline-color: transparent;
+}
+
+.heatmap-legend {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--heat-gap);
+  margin-top: 10px;
+  font-size: 11px;
+}
+
+.heatmap-legend span:first-child {
+  margin-right: 3px;
+}
+
+.heatmap-legend span:last-child {
+  margin-left: 3px;
+}
+
+.heatmap-years {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.heatmap-year {
+  background: none;
+  border: 1px solid transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.heatmap-year:hover {
+  border-color: var(--border);
+  color: var(--bright);
+}
+
+.heatmap-year.active {
+  background: var(--panel-2);
+  border-color: var(--border-bright);
+  color: var(--bright);
+}
+
 /* List */
 .list {
   list-style: none;
