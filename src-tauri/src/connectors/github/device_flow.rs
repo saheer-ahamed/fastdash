@@ -61,6 +61,20 @@ fn client_id() -> Option<String> {
         .map(str::to_string)
 }
 
+/// Where the user manages this OAuth App's access to their organizations.
+///
+/// Scopes and org access are separate gates on GitHub: the Device Flow approval
+/// screen grants the *scopes*, but an org with third-party application
+/// restrictions still hides itself from the token until an owner grants (or the
+/// member requests) access to the app on this page. Without the client id we
+/// cannot deep-link, so fall back to the applications list.
+pub fn app_grant_url() -> String {
+    match client_id() {
+        Some(id) => format!("https://github.com/settings/connections/applications/{id}"),
+        None => "https://github.com/settings/applications".to_string(),
+    }
+}
+
 /// What the UI needs to guide the user through approval. Serialized camelCase
 /// for the frontend; `deviceCode` is handed straight back to `poll`.
 #[derive(Debug, Clone, Serialize)]
