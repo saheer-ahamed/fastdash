@@ -6,6 +6,18 @@
 //! vars `GITHUB_TOKEN` / `FASTDASH_GITHUB_ORGS` / `FASTDASH_GITHUB_LABEL` act as
 //! fallbacks for local/dev use.
 //!
+//! What the token has to carry (the README's "Connecting GitHub" section says the
+//! same thing to users, and the Connectors UI repeats it at the token field):
+//!
+//! * **Classic PAT / Device Flow**: `repo` for private org PRs, `read:org` to
+//!   resolve the account's orgs, and `read:user` for private activity in the
+//!   contribution heatmap. Missing `read:user` is silent - GitHub reports a total
+//!   of 0 rather than an error - so `incomplete_scopes` in `mod.rs` warns instead.
+//! * **Fine-grained PAT**: resource owner set to the org, plus read-only
+//!   Metadata, Pull requests, Issues, and Contents. There is no fine-grained
+//!   equivalent of `read:user`, so the heatmap stays public-only, and one token
+//!   covers exactly one resource owner - several orgs need several accounts.
+//!
 //! TODO: support multiple accounts at once (work `saheer-zro` + personal
 //! `saheer-ahamed`) and populate the org checklist from `/user/orgs`.
 
