@@ -19,6 +19,10 @@ type DeviceCode = {
   interval: number;
 };
 
+/// The README section spelling out the scopes and fine-grained permissions each
+/// panel needs; linked from the token field so the answer is one click away.
+const TOKEN_DOCS_URL = "https://github.com/saheer-ahamed/fastdash#connecting-github";
+
 const parseOrgs = (raw: string): string[] =>
   raw
     .split(/[\s,]+/)
@@ -309,6 +313,25 @@ export default function GithubConnector({ onRefresh, flash, error }: ConnectorTa
                   )}
                   {tokenStored && (
                     <span className="muted stored-hint">{t("settings.tokenStored")}</span>
+                  )}
+                  {/* Which permissions to tick, at the moment the token is being
+                      made - the two kinds need different ones, and only the
+                      classic scopes can fill the contribution heatmap. */}
+                  {(!tokenStored || isReplacing) && (
+                    <div className="token-help muted">
+                      <p>{t("settings.patScopes")}</p>
+                      <p>{t("settings.patFineGrained")}</p>
+                      <a
+                        className="link-btn"
+                        href={TOKEN_DOCS_URL}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          invoke("open_external", { url: TOKEN_DOCS_URL }).catch(() => {});
+                        }}
+                      >
+                        {t("settings.patDocs")}
+                      </a>
+                    </div>
                   )}
                 </div>
               </>

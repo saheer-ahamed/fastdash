@@ -1003,6 +1003,21 @@ a:hover {
   font-size: 12px;
 }
 
+/* Which permissions a new token needs, shown only while one is being entered. */
+.token-help {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.token-help p {
+  margin: 0 0 4px;
+}
+
+.token-help .link-btn {
+  font-size: 12px;
+}
+
 /* One GitHub account block inside the multi-account editor. */
 .account-card {
   border: 1px solid var(--border);
