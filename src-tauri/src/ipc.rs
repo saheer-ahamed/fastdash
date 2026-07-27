@@ -7,6 +7,7 @@ use tauri::{AppHandle, State};
 use crate::engine::cache::SnapshotCache;
 use crate::engine::config::AppConfig;
 use crate::engine::connector::{ConnectorMeta, Snapshot};
+use crate::engine::range::DateRange;
 use crate::engine::registry::Registry;
 use crate::engine::{scheduler, secrets};
 
@@ -22,8 +23,9 @@ pub fn get_cached(cache: State<'_, Arc<SnapshotCache>>, id: String) -> Option<Sn
     cache.get(&id)
 }
 
-/// Manually refresh one connector now. Fetches, updates the cache, emits
-/// `connector:update`, and returns the fresh snapshot for the caller.
+/// Manually refresh one connector now, over `range` (defaults to today).
+/// Fetches, updates the cache, emits `connector:update`, and returns the fresh
+/// snapshot for the caller.
 #[tauri::command]
 pub async fn fetch_connector(
     app: AppHandle,
@@ -31,13 +33,15 @@ pub async fn fetch_connector(
     cache: State<'_, Arc<SnapshotCache>>,
     config: State<'_, Arc<RwLock<AppConfig>>>,
     id: String,
+    range: Option<DateRange>,
 ) -> Result<Snapshot, String> {
     let connector = registry
         .get(&id)
         .ok_or_else(|| format!("unknown connector: {id}"))?;
     let timezone = config.read().unwrap().timezone.clone();
     let cache = Arc::clone(cache.inner());
-    Ok(scheduler::refresh_one(&app, &connector, &cache, timezone).await)
+    let range = range.unwrap_or_default();
+    Ok(scheduler::refresh_one(&app, &connector, &cache, timezone, range).await)
 }
 
 #[tauri::command]
@@ -100,11 +104,15 @@ pub fn delete_secret(connector: String, label: String) -> Result<(), String> {
 }
 
 /// Fetch the GitHub dashboard for one account, optionally scoped to a single org
-/// (`org = None` means all of the account's orgs). Drives the account sub-tabs
-/// and org filter in the UI.
+/// (`org = None` means all of the account's orgs) and to a day range (`None`
+/// means today). Drives the account sub-tabs, org filter, and date filter.
 #[tauri::command]
-pub async fn github_fetch(label: String, org: Option<String>) -> Snapshot {
-    crate::connectors::github::fetch_account(label, org).await
+pub async fn github_fetch(
+    label: String,
+    org: Option<String>,
+    range: Option<DateRange>,
+) -> Snapshot {
+    crate::connectors::github::fetch_account(label, org, range.unwrap_or_default()).await
 }
 
 /// Open a URL in the user's default external browser. Restricted to http(s) so a

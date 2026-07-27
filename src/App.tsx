@@ -12,6 +12,7 @@ import type {
   AppConfig,
   ConnectorMeta,
   ConnectorUpdate,
+  DateRange,
   GithubAccount,
   HeatDay,
   Health,
@@ -20,6 +21,8 @@ import type {
 } from "./types";
 import Settings from "./Settings";
 import Connectors from "./connectors/ConnectorsPage";
+import RangeFilter from "./RangeFilter";
+import { rangeKey, todayRange, type PresetId } from "./range";
 import { getLocale, setLocale, t } from "./i18n";
 import { useDevMode } from "./devmode";
 import { checkForUpdate, installUpdate, type Update } from "./updater";
@@ -27,18 +30,30 @@ import { checkForUpdate, installUpdate, type Update } from "./updater";
 // Which of the two pinned bottom pages is showing, if either.
 type Page = "connectors" | "settings";
 
+// Cache slot for a connector's snapshot: one per (connector, date range), so
+// flipping between ranges shows what was already fetched instead of a blank.
+const snapKey = (id: string, range: DateRange) => `${id}|${rangeKey(range)}`;
+
 export default function App() {
   const [connectors, setConnectors] = useState<ConnectorMeta[]>([]);
   const [active, setActive] = useState<string | null>(null);
   const [page, setPage] = useState<Page | null>(null);
   const [snapshots, setSnapshots] = useState<Record<string, Snapshot>>({});
+  // Latest snapshots, readable inside the seeding effect without making it a
+  // dependency (which would re-run it on every fetch).
+  const snapshotsRef = useRef(snapshots);
+  snapshotsRef.current = snapshots;
   const [loading, setLoading] = useState(false);
+  // The date filter, shared by every connector so switching tabs keeps showing
+  // the same days. Defaults to today; `preset` is only which chip is lit.
+  const [range, setRange] = useState<DateRange>(todayRange);
+  const [preset, setPreset] = useState<PresetId>("today");
   // Bumped on language change to re-render chrome that calls t().
   const [, setLang] = useState("en");
   // GitHub view state lives here, not in <GithubView>, so it survives tab
   // switches. Otherwise leaving and re-entering the GitHub tab unmounts the
   // component, drops its cache, and flashes "Loading..." on every return.
-  const github = useGithubState();
+  const github = useGithubState(range);
 
   useEffect(() => {
     invoke<ConnectorMeta[]>("list_connectors")
@@ -63,17 +78,20 @@ export default function App() {
   // panels update on their own cadence without the UI polling.
   useEffect(() => {
     const unlisten = listen<ConnectorUpdate>("connector:update", (e) => {
-      setSnapshots((s) => ({ ...s, [e.payload.id]: e.payload.snapshot }));
+      // File it under the range it actually covers. The scheduler only ever
+      // refreshes today, so this never disturbs a historical range on screen.
+      const key = snapKey(e.payload.id, e.payload.range);
+      setSnapshots((s) => ({ ...s, [key]: e.payload.snapshot }));
     });
     return () => {
       unlisten.then((f) => f());
     };
   }, []);
 
-  const refresh = useCallback((id: string) => {
+  const refresh = useCallback((id: string, r: DateRange) => {
     setLoading(true);
-    invoke<Snapshot>("fetch_connector", { id })
-      .then((snap) => setSnapshots((s) => ({ ...s, [id]: snap })))
+    invoke<Snapshot>("fetch_connector", { id, range: r })
+      .then((snap) => setSnapshots((s) => ({ ...s, [snapKey(id, r)]: snap })))
       .catch((e) => console.error(e))
       .finally(() => setLoading(false));
   }, []);
@@ -83,10 +101,10 @@ export default function App() {
   // without restarting the app.
   const onConnectorSaved = useCallback(
     (id: string) => {
-      refresh(id);
+      refresh(id, range);
       if (id === "github") github.reloadAccounts();
     },
-    [refresh, github],
+    [refresh, range, github],
   );
 
   // Switch language: update the frontend catalog, re-render chrome, and re-fetch
@@ -95,24 +113,36 @@ export default function App() {
     (next: string) => {
       setLocale(next);
       setLang(next);
-      connectors.forEach((c) => refresh(c.id));
+      connectors.forEach((c) => refresh(c.id, range));
     },
-    [connectors, refresh],
+    [connectors, refresh, range],
   );
 
-  // On first showing a connector, seed instantly from the warm cache, then let
-  // the live event stream keep it fresh.
+  // On showing a connector - or moving the date filter - seed instantly from
+  // whatever is already cached and fetch otherwise. The warm backend cache only
+  // holds today, so any other range goes straight to a fetch.
   useEffect(() => {
     if (!active) return;
+    const key = snapKey(active, range);
+    if (snapshotsRef.current[key]) return;
+    if (rangeKey(range) !== rangeKey(todayRange())) {
+      refresh(active, range);
+      return;
+    }
     invoke<Snapshot | null>("get_cached", { id: active })
       .then((snap) => {
-        if (snap) setSnapshots((s) => ({ ...s, [active]: snap }));
-        else refresh(active);
+        if (snap) setSnapshots((s) => ({ ...s, [key]: snap }));
+        else refresh(active, range);
       })
-      .catch(() => refresh(active));
-  }, [active, refresh]);
+      .catch(() => refresh(active, range));
+  }, [active, range, refresh]);
 
-  const snap = active ? snapshots[active] : undefined;
+  const onRange = useCallback((next: DateRange, p: PresetId) => {
+    setRange(next);
+    setPreset(p);
+  }, []);
+
+  const snap = active ? snapshots[snapKey(active, range)] : undefined;
   const activeName = connectors.find((c) => c.id === active)?.name ?? "";
 
   return (
@@ -130,7 +160,7 @@ export default function App() {
                 setActive(c.id);
               }}
             >
-              <span className={"dot " + statusClass(snapshots[c.id]?.status)} />
+              <span className={"dot " + statusClass(snapshots[snapKey(c.id, range)]?.status)} />
               {c.name}
             </button>
           ))}
@@ -164,7 +194,7 @@ export default function App() {
             <Settings onLocaleChange={onLocaleChange} />
           </>
         ) : active === "github" ? (
-          <GithubView state={github} />
+          <GithubView state={github} range={range} preset={preset} onRange={onRange} />
         ) : (
           <>
             <header className="topbar">
@@ -178,12 +208,14 @@ export default function App() {
                 <button
                   className="refresh"
                   disabled={loading || !active}
-                  onClick={() => active && refresh(active)}
+                  onClick={() => active && refresh(active, range)}
                 >
                   {loading ? t("app.refreshing") : t("app.refresh")}
                 </button>
               </div>
             </header>
+
+            <RangeFilter range={range} preset={preset} onChange={onRange} />
 
             {snap ? (
               <SnapshotView snapshot={snap} />
@@ -283,9 +315,10 @@ function ExtLink({ href, children }: { href: string; children: ReactNode }) {
 // `github_fetch` and self-refreshes on the connector cadence.
 const GITHUB_REFRESH_MS = 60_000;
 
-// Stable cache key for an (account, org) view. ` ` can't appear in a label
-// or org, so it's a safe separator.
-const viewKey = (label: string, org: string | null) => `${label} ${org ?? ""}`;
+// Stable cache key for an (account, org, range) view. ` ` can't appear in a
+// label or org, so it's a safe separator.
+const viewKey = (label: string, org: string | null, range: DateRange) =>
+  `${label} ${org ?? ""} ${rangeKey(range)}`;
 
 // The GitHub view's persistent state. Held above <GithubView> (in <App>) so it
 // outlives tab switches: the cached snapshots, the loading flags, and the
@@ -294,7 +327,7 @@ const viewKey = (label: string, org: string | null) => `${label} ${org ?? ""}`;
 // button instead of flashing "Loading...".
 type GithubState = ReturnType<typeof useGithubState>;
 
-function useGithubState() {
+function useGithubState(range: DateRange) {
   const [accounts, setAccounts] = useState<GithubAccount[]>([]);
   const [label, setLabel] = useState<string | null>(null);
   // null = the account's "All orgs" view.
@@ -330,10 +363,10 @@ function useGithubState() {
 
   // Fetch one view in the background: never clears the cached snapshot, only
   // flags the view as loading and overlays the result when it arrives.
-  const load = useCallback((lbl: string, o: string | null) => {
-    const key = viewKey(lbl, o);
+  const load = useCallback((lbl: string, o: string | null, r: DateRange) => {
+    const key = viewKey(lbl, o, r);
     setLoadingKeys((l) => ({ ...l, [key]: true }));
-    invoke<Snapshot>("github_fetch", { label: lbl, org: o })
+    invoke<Snapshot>("github_fetch", { label: lbl, org: o, range: r })
       .then((s) => setSnaps((m) => ({ ...m, [key]: s })))
       .catch((e) => console.error(e))
       .finally(() => setLoadingKeys((l) => ({ ...l, [key]: false })));
@@ -341,27 +374,47 @@ function useGithubState() {
 
   // Keep the selected view fresh: refetch if its cached snapshot is missing or
   // older than the refresh cadence - flipping between recently-loaded views (or
-  // tabs) then costs nothing. A periodic interval keeps the active view fresh,
-  // and the manual Refresh button always forces a fetch. This runs while the
-  // GitHub tab is mounted; the cache above persists even when it isn't.
+  // tabs, or ranges) then costs nothing. A periodic interval keeps the active
+  // view fresh, and the manual Refresh button always forces a fetch. This runs
+  // while the GitHub tab is mounted; the cache above persists even when it isn't.
+  //
+  // Only the live view - today - polls. A past day can no longer change, and a
+  // multi-day range costs several paginated Search queries per org, which would
+  // eat GitHub's 30-requests-a-minute search budget if re-run every minute. Those
+  // are fetched once, and the Refresh button is always there.
+  const key = rangeKey(range);
   useEffect(() => {
     if (!label) return;
-    const cached = snapsRef.current[viewKey(label, org)];
+    const cached = snapsRef.current[viewKey(label, org, range)];
     const fresh =
       cached && Date.now() - new Date(cached.fetchedAt).getTime() < GITHUB_REFRESH_MS;
-    if (!fresh) load(label, org);
-    const id = window.setInterval(() => load(label, org), GITHUB_REFRESH_MS);
+    if (!fresh) load(label, org, range);
+    if (key !== rangeKey(todayRange())) return;
+    const id = window.setInterval(() => load(label, org, range), GITHUB_REFRESH_MS);
     return () => window.clearInterval(id);
-  }, [label, org, load]);
+    // `range` is compared by its stable key, so a new object with the same days
+    // does not restart the interval.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [label, org, key, load]);
 
   return { accounts, label, setLabel, org, setOrg, snaps, loadingKeys, load, reloadAccounts };
 }
 
-function GithubView({ state }: { state: GithubState }) {
+function GithubView({
+  state,
+  range,
+  preset,
+  onRange,
+}: {
+  state: GithubState;
+  range: DateRange;
+  preset: PresetId;
+  onRange: (next: DateRange, preset: PresetId) => void;
+}) {
   const { accounts, label, setLabel, org, setOrg, snaps, loadingKeys, load } = state;
 
   const activeAccount = accounts.find((a) => a.label === label);
-  const key = label ? viewKey(label, org) : null;
+  const key = label ? viewKey(label, org, range) : null;
   const snap = key ? snaps[key] : undefined;
   const loading = key ? !!loadingKeys[key] : false;
 
@@ -389,7 +442,7 @@ function GithubView({ state }: { state: GithubState }) {
           <button
             className="refresh"
             disabled={loading || !label}
-            onClick={() => label && load(label, org)}
+            onClick={() => label && load(label, org, range)}
             aria-label={t("app.refresh")}
           >
             {loading && <span className="spinner" aria-hidden />}
@@ -432,6 +485,8 @@ function GithubView({ state }: { state: GithubState }) {
           ))}
         </div>
       )}
+
+      <RangeFilter range={range} preset={preset} onChange={onRange} />
 
       {snap ? (
         <SnapshotView snapshot={snap} />

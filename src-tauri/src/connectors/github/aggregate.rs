@@ -6,10 +6,11 @@ use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
 
 use crate::engine::i18n;
 use crate::engine::panel::{Cell, Column, HeatDay, HeatmapYear, Panel, Stat, TableSpec};
+use crate::engine::range::DateRange;
 
 use super::client::ContributionCalendar;
 
-/// Outcome of a PR within the day's window.
+/// Outcome of a PR within the selected window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrState {
     Merged,
@@ -27,7 +28,7 @@ impl PrState {
     }
 }
 
-/// One row of the "PRs today" list (union of all four search sets).
+/// One row of the PR list (union of all four search sets).
 #[derive(Debug, Clone)]
 pub struct PrEntry {
     pub name_with_owner: String,
@@ -49,13 +50,13 @@ pub struct Rollup {
     pub merged: HashMap<String, u64>,
     pub closed: HashMap<String, u64>,
     pub open: HashMap<String, u64>,
-    /// Merged-today PRs, per author, with line counts (from GraphQL).
+    /// PRs merged in the range, per author, with line counts (from GraphQL).
     pub line_contribs: Vec<LineContrib>,
-    /// Union of PRs seen today, for the "PRs today" table.
+    /// Union of PRs seen in the range, for the PR list table.
     pub pr_list: Vec<PrEntry>,
 }
 
-/// A merged-today PR's line contribution, attributed to its author.
+/// The line contribution of a PR merged in the range, attributed to its author.
 #[derive(Debug, Clone)]
 pub struct LineContrib {
     pub author: String,
@@ -64,13 +65,21 @@ pub struct LineContrib {
 }
 
 /// Build the connector's panels: a `StatCards` header, the contribution
-/// heatmap (when available), plus the three tables.
-pub fn build_panels(rollup: &Rollup, ist: FixedOffset, contributions: Vec<Panel>) -> Vec<Panel> {
-    let mut panels = vec![stat_cards(rollup)];
+/// heatmap (when available), plus the three tables. Every range-scoped panel
+/// names the range in its title, so a screenshot is never ambiguous about which
+/// days it covers.
+pub fn build_panels(
+    rollup: &Rollup,
+    ist: FixedOffset,
+    range: &DateRange,
+    contributions: Vec<Panel>,
+) -> Vec<Panel> {
+    let label = range.label();
+    let mut panels = vec![stat_cards(rollup, &label)];
     panels.extend(contributions);
-    panels.push(pr_activity_table(rollup));
-    panels.push(line_contributions_table(rollup));
-    panels.push(pr_list_table(rollup, ist));
+    panels.push(pr_activity_table(rollup, &label));
+    panels.push(line_contributions_table(rollup, &label));
+    panels.push(pr_list_table(rollup, ist, range, &label));
     panels
 }
 
@@ -161,7 +170,7 @@ fn fmt_count(n: u64) -> String {
     out
 }
 
-fn stat_cards(rollup: &Rollup) -> Panel {
+fn stat_cards(rollup: &Rollup, range_label: &str) -> Panel {
     let total_opened: u64 = rollup.opened.values().sum();
     let total_merged: u64 = rollup.merged.values().sum();
 
@@ -172,7 +181,7 @@ fn stat_cards(rollup: &Rollup) -> Panel {
     }
 
     Panel::StatCards {
-        title: Some(i18n::t("github.stats.title")),
+        title: Some(range_label.to_string()),
         stats: vec![
             Stat {
                 label: i18n::t("github.stats.prsOpened"),
@@ -193,7 +202,7 @@ fn stat_cards(rollup: &Rollup) -> Panel {
     }
 }
 
-fn pr_activity_table(rollup: &Rollup) -> Panel {
+fn pr_activity_table(rollup: &Rollup, range_label: &str) -> Panel {
     // Union of contributors across every bucket.
     let mut logins: std::collections::HashSet<&String> = std::collections::HashSet::new();
     for map in [&rollup.opened, &rollup.merged, &rollup.closed, &rollup.open] {
@@ -234,7 +243,10 @@ fn pr_activity_table(rollup: &Rollup) -> Panel {
         .collect();
 
     Panel::Table(TableSpec {
-        title: Some(i18n::t("github.table.prActivity")),
+        title: Some(i18n::tf(
+            "github.table.prActivity",
+            &[("range", range_label)],
+        )),
         columns: vec![
             col("contributor", i18n::t("github.column.contributor"), false),
             col("merged", i18n::t("github.column.merged"), true),
@@ -246,8 +258,8 @@ fn pr_activity_table(rollup: &Rollup) -> Panel {
     })
 }
 
-fn line_contributions_table(rollup: &Rollup) -> Panel {
-    // Aggregate the merged-today PRs per author.
+fn line_contributions_table(rollup: &Rollup, range_label: &str) -> Panel {
+    // Aggregate the PRs merged in the range, per author.
     let mut by_author: HashMap<&str, (u64, u64, u64)> = HashMap::new();
     for lc in &rollup.line_contribs {
         let e = by_author.entry(lc.author.as_str()).or_insert((0, 0, 0));
@@ -288,7 +300,10 @@ fn line_contributions_table(rollup: &Rollup) -> Panel {
         .collect();
 
     Panel::Table(TableSpec {
-        title: Some(i18n::t("github.table.lineContributions")),
+        title: Some(i18n::tf(
+            "github.table.lineContributions",
+            &[("range", range_label)],
+        )),
         columns: vec![
             col("contributor", i18n::t("github.column.contributor"), false),
             col("total", i18n::t("github.column.total"), true),
@@ -301,7 +316,14 @@ fn line_contributions_table(rollup: &Rollup) -> Panel {
     })
 }
 
-fn pr_list_table(rollup: &Rollup, ist: FixedOffset) -> Panel {
+fn pr_list_table(rollup: &Rollup, ist: FixedOffset, range: &DateRange, range_label: &str) -> Panel {
+    // A single day needs only the clock; a wider range would be unreadable
+    // without the date, so the column carries it.
+    let time_format = if range.is_single_day() {
+        "%H:%M"
+    } else {
+        "%b %-d, %H:%M"
+    };
     let mut entries: Vec<&PrEntry> = rollup.pr_list.iter().collect();
     // Grouped by contributor: sort by author (case-insensitive), then most
     // recent event first within each author. Unknown authors sink to the bottom.
@@ -321,7 +343,7 @@ fn pr_list_table(rollup: &Rollup, ist: FixedOffset) -> Panel {
             };
             let time = pr
                 .at
-                .map(|t| t.with_timezone(&ist).format("%H:%M").to_string())
+                .map(|t| t.with_timezone(&ist).format(time_format).to_string())
                 .unwrap_or_else(|| "-".into());
             vec![
                 text(author),
@@ -335,7 +357,7 @@ fn pr_list_table(rollup: &Rollup, ist: FixedOffset) -> Panel {
         .collect();
 
     Panel::Table(TableSpec {
-        title: Some(i18n::t("github.table.prList")),
+        title: Some(i18n::tf("github.table.prList", &[("range", range_label)])),
         columns: vec![
             col("author", i18n::t("github.column.contributor"), false),
             col("repo", i18n::t("github.column.repo"), false),
@@ -382,5 +404,61 @@ fn link(text: String, href: String) -> Cell {
     Cell {
         text,
         href: Some(href),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::range::{self, DateRange};
+
+    fn day(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    /// One merged PR at 2026-07-24 14:30 IST.
+    fn rollup() -> Rollup {
+        Rollup {
+            pr_list: vec![PrEntry {
+                name_with_owner: "acme/api".into(),
+                title: "fix: thing".into(),
+                url: "https://github.com/acme/api/pull/1".into(),
+                author: Some("dev".into()),
+                state: PrState::Merged,
+                additions: Some(10),
+                deletions: Some(2),
+                at: Some(
+                    DateTime::parse_from_rfc3339("2026-07-24T14:30:00+05:30")
+                        .unwrap()
+                        .with_timezone(&Utc),
+                ),
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn time_cell(range: &DateRange) -> String {
+        let panel = pr_list_table(&rollup(), range::ist(), range, "x");
+        let Panel::Table(spec) = panel else {
+            panic!("expected a table")
+        };
+        spec.rows[0].last().unwrap().text.clone()
+    }
+
+    /// Within one day the clock is enough; across days the row would be
+    /// ambiguous without its date.
+    #[test]
+    fn time_column_carries_the_date_only_for_multi_day_ranges() {
+        let one_day = DateRange {
+            start: day(2026, 7, 24),
+            end: day(2026, 7, 24),
+        };
+        assert_eq!(time_cell(&one_day), "14:30");
+
+        let week = DateRange {
+            start: day(2026, 7, 21),
+            end: day(2026, 7, 27),
+        };
+        assert_eq!(time_cell(&week), "Jul 24, 14:30");
     }
 }

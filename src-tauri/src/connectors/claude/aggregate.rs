@@ -1,20 +1,28 @@
-//! Rollups over parsed turns: totals, per-model, per-effort, per-day, current
-//! week, and a rolling 5-hour block.
+//! Rollups over parsed turns.
 //!
-//! Day/week boundaries use IST (fixed +05:30, no DST) so "today" and "this
-//! week" line up with the user's local calendar without pulling in chrono-tz.
-//! The rolling 5-hour block is timezone-independent (last 5h of wall clock).
+//! Three scopes live side by side, because the panels mean different things:
+//!
+//! * **range-scoped** (`per_model`, `effort`, `sessions`, `messages`,
+//!   `per_day`, `range_tokens`) - only turns whose IST day falls inside the
+//!   selected date filter. This is what the token-usage panels report on.
+//! * **all-time** (`all_time_tokens`, `all_time_sessions`, `per_month`) - the
+//!   full history, so the headline totals and the month table stay stable while
+//!   the filter moves.
+//! * **now-relative** (`five_hour_tokens`, `current_week_tokens`,
+//!   `current_month_tokens`) - live windows that back the plan-limit meters and
+//!   ignore the filter entirely, exactly like Claude's own usage page.
+//!
+//! Day/week/month boundaries use IST (fixed +05:30, no DST) so they line up with
+//! the user's local calendar without pulling in chrono-tz. The rolling 5-hour
+//! block is timezone-independent (last 5h of wall clock).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use chrono::{DateTime, Datelike, Duration, FixedOffset, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
+
+use crate::engine::range::{self, DateRange};
 
 use super::parse::Turn;
-
-/// IST offset: +05:30, fixed year-round.
-fn ist() -> FixedOffset {
-    FixedOffset::east_opt(5 * 3600 + 30 * 60).expect("IST offset is valid")
-}
 
 /// Per-model token totals.
 #[derive(Debug, Clone, Default)]
@@ -56,59 +64,57 @@ pub struct MonthPoint {
     pub total_tokens: u64,
 }
 
-/// Everything the panels need, derived from local transcripts.
+/// Everything the panels need, derived from local transcripts. See the module
+/// docs for which fields follow the date filter and which do not.
 #[derive(Debug, Clone, Default)]
 pub struct Aggregate {
-    pub total_input: u64,
-    pub total_output: u64,
-    pub total_cache_read: u64,
-    pub total_cache_write: u64,
-    /// Sorted by [`ModelTotals::total`] descending.
+    /// Total tokens in the selected range.
+    pub range_tokens: u64,
+    /// Sorted by [`ModelTotals::total`] descending. Range-scoped.
     pub per_model: Vec<ModelTotals>,
-    /// Sorted by output tokens descending.
+    /// Sorted by output tokens descending. Range-scoped.
     pub effort: Vec<EffortSplit>,
+    /// Distinct sessions touched in the range.
     pub sessions: usize,
-    /// Total assistant turns (messages) seen.
+    /// Assistant turns (messages) in the range.
     pub messages: usize,
-    /// Sorted by date ascending.
+    /// Range days with usage, ascending.
     pub per_day: Vec<DayPoint>,
-    /// Sum of all tokens for turns in the current IST week (from Monday 00:00).
-    pub current_week_tokens: u64,
-    /// Sum of all tokens for turns in the last rolling 5 hours.
-    pub five_hour_tokens: u64,
-    /// Sum of tokens in the current IST calendar month.
-    pub current_month_tokens: u64,
-    /// Sum of tokens today (IST).
-    pub today_tokens: u64,
-    /// IST calendar-month totals, most recent month first.
+
+    /// Tokens across every transcript, ignoring the filter.
+    pub all_time_tokens: u64,
+    /// Distinct sessions across every transcript.
+    pub all_time_sessions: usize,
+    /// IST calendar-month totals, most recent month first. All-time history.
     pub per_month: Vec<MonthPoint>,
+
+    /// Tokens in the current IST week (from Monday 00:00).
+    pub current_week_tokens: u64,
+    /// Tokens in the last rolling 5 hours.
+    pub five_hour_tokens: u64,
+    /// Tokens in the current IST calendar month.
+    pub current_month_tokens: u64,
 }
 
 impl Aggregate {
-    pub fn total_tokens(&self) -> u64 {
-        self.total_input + self.total_output + self.total_cache_read + self.total_cache_write
-    }
-
     /// Total output tokens across all efforts (denominator for effort shares).
     pub fn total_effort_output(&self) -> u64 {
         self.effort.iter().map(|e| e.output_tokens).sum()
     }
 }
 
-/// Build all rollups. `now` is injected for testability.
-pub fn build(turns: &[Turn], now: DateTime<Utc>) -> Aggregate {
-    let mut agg = Aggregate {
-        messages: turns.len(),
-        ..Default::default()
-    };
+/// Build all rollups for `range`. `now` is injected for testability.
+pub fn build(turns: &[Turn], now: DateTime<Utc>, range: &DateRange) -> Aggregate {
+    let mut agg = Aggregate::default();
 
     let mut models: HashMap<String, ModelTotals> = HashMap::new();
     let mut efforts: HashMap<String, EffortSplit> = HashMap::new();
     let mut sessions: HashSet<&str> = HashSet::new();
+    let mut all_sessions: HashSet<&str> = HashSet::new();
     let mut days: BTreeMap<NaiveDate, u64> = BTreeMap::new();
     let mut months: BTreeMap<(i32, u32), u64> = BTreeMap::new();
 
-    let ist = ist();
+    let ist = range::ist();
     let now_ist = now.with_timezone(&ist);
     let today = now_ist.date_naive();
     let week_start = today - Duration::days(today.weekday().num_days_from_monday() as i64);
@@ -117,11 +123,34 @@ pub fn build(turns: &[Turn], now: DateTime<Utc>) -> Aggregate {
     for t in turns {
         let line_total =
             t.input_tokens + t.output_tokens + t.cache_read_tokens + t.cache_write_tokens;
+        let turn_ist_date = t.timestamp.with_timezone(&ist).date_naive();
 
-        agg.total_input += t.input_tokens;
-        agg.total_output += t.output_tokens;
-        agg.total_cache_read += t.cache_read_tokens;
-        agg.total_cache_write += t.cache_write_tokens;
+        // --- all-time and now-relative: every turn counts ---
+        agg.all_time_tokens += line_total;
+        if !t.session_id.is_empty() {
+            all_sessions.insert(t.session_id.as_str());
+        }
+
+        let (ty, tm) = (turn_ist_date.year(), turn_ist_date.month());
+        *months.entry((ty, tm)).or_insert(0) += line_total;
+
+        if turn_ist_date >= week_start {
+            agg.current_week_tokens += line_total;
+        }
+        if t.timestamp >= five_hour_cutoff {
+            agg.five_hour_tokens += line_total;
+        }
+        if ty == now_ist.year() && tm == now_ist.month() {
+            agg.current_month_tokens += line_total;
+        }
+
+        // --- range-scoped: only turns inside the date filter ---
+        if !range.contains(turn_ist_date) {
+            continue;
+        }
+
+        agg.range_tokens += line_total;
+        agg.messages += 1;
 
         let m = models
             .entry(t.model.clone())
@@ -148,24 +177,7 @@ pub fn build(turns: &[Turn], now: DateTime<Utc>) -> Aggregate {
             sessions.insert(t.session_id.as_str());
         }
 
-        let turn_ist_date = t.timestamp.with_timezone(&ist).date_naive();
         *days.entry(turn_ist_date).or_insert(0) += line_total;
-
-        let (ty, tm) = (turn_ist_date.year(), turn_ist_date.month());
-        *months.entry((ty, tm)).or_insert(0) += line_total;
-
-        if turn_ist_date >= week_start {
-            agg.current_week_tokens += line_total;
-        }
-        if t.timestamp >= five_hour_cutoff {
-            agg.five_hour_tokens += line_total;
-        }
-        if turn_ist_date == today {
-            agg.today_tokens += line_total;
-        }
-        if ty == now_ist.year() && tm == now_ist.month() {
-            agg.current_month_tokens += line_total;
-        }
     }
 
     let mut per_model: Vec<ModelTotals> = models.into_values().collect();
@@ -177,6 +189,7 @@ pub fn build(turns: &[Turn], now: DateTime<Utc>) -> Aggregate {
     agg.effort = effort;
 
     agg.sessions = sessions.len();
+    agg.all_time_sessions = all_sessions.len();
     agg.per_day = days
         .into_iter()
         .map(|(date, total_tokens)| DayPoint { date, total_tokens })
@@ -196,4 +209,76 @@ pub fn build(turns: &[Turn], now: DateTime<Utc>) -> Aggregate {
         .collect();
 
     agg
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn turn(day: &str, session: &str, output: u64) -> Turn {
+        Turn {
+            timestamp: DateTime::parse_from_rfc3339(day)
+                .unwrap()
+                .with_timezone(&Utc),
+            session_id: session.to_string(),
+            model: "claude-opus-5".to_string(),
+            effort: "high".to_string(),
+            input_tokens: 0,
+            output_tokens: output,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            cache_write_1h_tokens: 0,
+            cache_write_5m_tokens: 0,
+            service_tier: None,
+        }
+    }
+
+    fn range(start: &str, end: &str) -> DateRange {
+        DateRange {
+            start: NaiveDate::parse_from_str(start, "%Y-%m-%d").unwrap(),
+            end: NaiveDate::parse_from_str(end, "%Y-%m-%d").unwrap(),
+        }
+    }
+
+    fn now() -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2026-07-27T12:00:00+05:30")
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    /// The filter drives the per-model/session rollups; the all-time totals and
+    /// the month history stay whole regardless of what is selected.
+    #[test]
+    fn range_scopes_usage_but_not_all_time() {
+        let turns = vec![
+            turn("2026-07-27T10:00:00+05:30", "s1", 100), // today
+            turn("2026-07-26T10:00:00+05:30", "s2", 30),  // yesterday
+            turn("2026-05-02T10:00:00+05:30", "s3", 7),   // months back
+        ];
+
+        let today = build(&turns, now(), &range("2026-07-27", "2026-07-27"));
+        assert_eq!(today.range_tokens, 100);
+        assert_eq!(today.messages, 1);
+        assert_eq!(today.sessions, 1);
+        assert_eq!(today.all_time_tokens, 137);
+        assert_eq!(today.all_time_sessions, 3);
+        // Jul 2026 (both recent turns) and May 2026 - month history is all-time.
+        assert_eq!(today.per_month.len(), 2);
+
+        let week = build(&turns, now(), &range("2026-07-21", "2026-07-27"));
+        assert_eq!(week.range_tokens, 130);
+        assert_eq!(week.sessions, 2);
+        assert_eq!(week.all_time_tokens, 137);
+    }
+
+    /// A range in the past must not disturb the live plan-limit windows.
+    #[test]
+    fn live_windows_ignore_the_range() {
+        let turns = vec![turn("2026-07-27T10:00:00+05:30", "s1", 100)];
+        let past = build(&turns, now(), &range("2026-05-01", "2026-05-31"));
+        assert_eq!(past.range_tokens, 0);
+        assert_eq!(past.current_month_tokens, 100);
+        assert_eq!(past.current_week_tokens, 100);
+        assert_eq!(past.five_hour_tokens, 100);
+    }
 }

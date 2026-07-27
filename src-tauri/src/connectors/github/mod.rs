@@ -1,11 +1,17 @@
 //! GitHub connector.
 //!
 //! Per selected org, uses the REST Search API for the date-filtered PR sets
-//! (opened / merged / closed-without-merge / still-open for the IST day), then
-//! a single batched GraphQL enrichment for additions/deletions/state on the
-//! MERGED-today set. Emits a `StatCards` header plus three tables: PR counts
-//! per contributor, line contributions per contributor (based on PRs MERGED
-//! today), and the PR list with repos.
+//! (opened / merged / closed-without-merge / still-open over the selected IST
+//! day range), then a single batched GraphQL enrichment for
+//! additions/deletions/state on the MERGED set. Emits a `StatCards` header plus
+//! three tables: PR counts per contributor, line contributions per contributor
+//! (based on PRs MERGED in the range), and the PR list with repos.
+//!
+//! The range comes from the UI's date filter and is applied the way GitHub
+//! itself filters - as `created:` / `merged:` / `closed:` qualifiers on the
+//! Search API - so the numbers match what the same query shows on github.com.
+//! It defaults to today. The contribution heatmap is deliberately exempt: it is
+//! GitHub's own rolling calendar, not a range report.
 //!
 //! Supports multiple accounts (work `saheer-zro`, personal `saheer-ahamed`),
 //! each with its own PAT in the OS keychain. The scheduler's `fetch` renders the
@@ -20,11 +26,12 @@ pub mod device_flow;
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use chrono::{DateTime, Datelike, Duration, FixedOffset, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
 
 use crate::engine::connector::Health;
 use crate::engine::connector::{Connector, ConnectorError, ConnectorMeta, FetchCtx, Snapshot};
 use crate::engine::i18n;
+use crate::engine::range::{self, DateRange};
 
 use aggregate::{LineContrib, PrEntry, PrState, Rollup};
 use client::{CalendarWindow, EnrichedPr, GithubClient, GithubError, PrRef, SearchItem};
@@ -54,14 +61,14 @@ impl Connector for GithubConnector {
         }
     }
 
-    async fn fetch(&self, _ctx: &FetchCtx) -> Result<Snapshot, ConnectorError> {
-        // "Today" is fixed to the IST day per the design (PRs near midnight are
-        // attributed by IST datetime bounds). `_ctx.timezone` is ignored for now.
+    async fn fetch(&self, ctx: &FetchCtx) -> Result<Snapshot, ConnectorError> {
+        // Days are fixed to IST per the design (PRs near midnight are attributed
+        // by IST datetime bounds). `ctx.timezone` is ignored for now.
         let Some(cfg) = GithubConfig::resolve() else {
             return Ok(Snapshot::needs_auth(i18n::t("github.needsAuth")));
         };
 
-        match run_fetch(&cfg).await {
+        match run_fetch(&cfg, &ctx.range).await {
             Ok(snapshot) => Ok(snapshot),
             Err(GithubError::RateLimited { retry_after_secs }) => {
                 Ok(rate_limited_snapshot(retry_after_secs))
@@ -72,14 +79,15 @@ impl Connector for GithubConnector {
 }
 
 /// Fetch a specific account's dashboard, optionally scoped to a single org
-/// (an org-filter sub-tab; `None` means all of the account's orgs). Always
-/// returns a `Snapshot` carrying the right `Health` (needsAuth / rateLimited /
-/// error) so the UI can render a banner instead of surfacing a raw error.
-pub async fn fetch_account(label: String, org: Option<String>) -> Snapshot {
+/// (an org-filter sub-tab; `None` means all of the account's orgs), over the
+/// selected day range. Always returns a `Snapshot` carrying the right `Health`
+/// (needsAuth / rateLimited / error) so the UI can render a banner instead of
+/// surfacing a raw error.
+pub async fn fetch_account(label: String, org: Option<String>, range: DateRange) -> Snapshot {
     let Some(cfg) = GithubConfig::for_account(&label, org.as_deref()) else {
         return Snapshot::needs_auth(i18n::t("github.needsAuth"));
     };
-    match run_fetch(&cfg).await {
+    match run_fetch(&cfg, &range).await {
         Ok(snapshot) => snapshot,
         Err(GithubError::RateLimited { retry_after_secs }) => {
             rate_limited_snapshot(retry_after_secs)
@@ -95,24 +103,10 @@ pub async fn fetch_account(label: String, org: Option<String>) -> Snapshot {
     }
 }
 
-/// The IST fixed offset (UTC+05:30); `east_opt` only fails on out-of-range.
-fn ist_offset() -> FixedOffset {
-    FixedOffset::east_opt(5 * 3600 + 30 * 60).expect("IST offset is in range")
-}
-
-/// RFC3339 bounds for the current IST day, e.g.
-/// `2026-07-18T00:00:00+05:30..2026-07-18T23:59:59+05:30`.
-fn ist_day_bounds(ist: FixedOffset) -> String {
-    let today = Utc::now().with_timezone(&ist).date_naive();
-    format!(
-        "{day}T00:00:00+05:30..{day}T23:59:59+05:30",
-        day = today.format("%Y-%m-%d")
-    )
-}
-
-async fn run_fetch(cfg: &GithubConfig) -> Result<Snapshot, GithubError> {
-    let ist = ist_offset();
-    let bounds = ist_day_bounds(ist);
+async fn run_fetch(cfg: &GithubConfig, range: &DateRange) -> Result<Snapshot, GithubError> {
+    let ist = range::ist();
+    let range = range.normalized();
+    let bounds = range.ist_bounds();
     let client = GithubClient::new(&cfg.token)?;
 
     let mut rollup = Rollup::default();
@@ -149,7 +143,7 @@ async fn run_fetch(cfg: &GithubConfig) -> Result<Snapshot, GithubError> {
         }
     }
 
-    // Enrich only the MERGED-today set (line contributions are merged-based).
+    // Enrich only the MERGED set (line contributions are merged-based).
     let merged_refs: Vec<PrRef> = seen
         .values()
         .filter(|s| s.merged)
@@ -168,7 +162,7 @@ async fn run_fetch(cfg: &GithubConfig) -> Result<Snapshot, GithubError> {
         enrich_by_key.insert((e.name_with_owner.clone(), e.number), e);
     }
 
-    // Line contributions: merged-today PRs attributed to their author.
+    // Line contributions: PRs merged in the range, attributed to their author.
     for e in &enriched {
         let author = e.author.clone().unwrap_or_else(|| "unknown".to_string());
         if is_bot(&author) {
@@ -181,7 +175,7 @@ async fn run_fetch(cfg: &GithubConfig) -> Result<Snapshot, GithubError> {
         });
     }
 
-    // Build the "PRs today" union list.
+    // Build the union PR list for the range.
     for s in seen.values() {
         let author = s.item.author.clone();
         if author.as_deref().map(is_bot).unwrap_or(false) {
@@ -228,11 +222,12 @@ async fn run_fetch(cfg: &GithubConfig) -> Result<Snapshot, GithubError> {
     // heatmap, never the dashboard.
     let contributions = contributions_panels(&client).await;
 
-    let panels = aggregate::build_panels(&rollup, ist, contributions);
+    let panels = aggregate::build_panels(&rollup, ist, &range, contributions);
     Ok(Snapshot::ok(panels, Some(REFRESH_SECS)))
 }
 
-/// The four date-filtered PR sets for one org.
+/// The four date-filtered PR sets for one org over the selected range
+/// (`still_open` is derived from `opened`, not searched separately).
 struct OrgSets {
     opened: Vec<SearchItem>,
     merged: Vec<SearchItem>,
@@ -240,9 +235,15 @@ struct OrgSets {
     still_open: Vec<SearchItem>,
 }
 
-/// Run one org's four searches for the day. `Ok(None)` means the Search API
+/// Run one org's searches over `bounds`. `Ok(None)` means the Search API
 /// answered 422 - GitHub's way of saying this token cannot see the org, whether
 /// because it does not exist or because the token is not allowed to view it.
+///
+/// Only three queries are issued: "still open" is `created:{bounds} is:open`,
+/// which is exactly the subset of the `created` results that carry no
+/// `closed_at`, so it is derived locally. Search is budgeted at 30 requests a
+/// minute and every query here paginates, so dropping a whole redundant set
+/// matters as soon as the range is wider than a day.
 async fn search_org(
     client: &GithubClient,
     org: &str,
@@ -252,7 +253,6 @@ async fn search_org(
         format!("org:{org} type:pr created:{bounds}"),
         format!("org:{org} type:pr merged:{bounds}"),
         format!("org:{org} type:pr closed:{bounds} is:unmerged"),
-        format!("org:{org} type:pr created:{bounds} is:open"),
     ];
 
     let mut sets = Vec::with_capacity(queries.len());
@@ -265,11 +265,19 @@ async fn search_org(
     }
 
     let mut sets = sets.into_iter();
+    let opened = sets.next().unwrap_or_default();
+    // A merged PR is closed too, so "no closed_at" is precisely `is:open`.
+    let still_open: Vec<SearchItem> = opened
+        .iter()
+        .filter(|it| it.closed_at.is_none())
+        .cloned()
+        .collect();
+
     Ok(Some(OrgSets {
-        opened: sets.next().unwrap_or_default(),
+        opened,
         merged: sets.next().unwrap_or_default(),
         closed: sets.next().unwrap_or_default(),
-        still_open: sets.next().unwrap_or_default(),
+        still_open,
     }))
 }
 
@@ -480,10 +488,11 @@ mod live_test {
     #[tokio::test]
     async fn live_fetch_smoke() {
         let cfg = GithubConfig::resolve().expect("set GITHUB_TOKEN for the live test");
+        let range = DateRange::today();
         eprintln!("orgs: {:?}", cfg.orgs);
-        eprintln!("bounds: {}", ist_day_bounds(ist_offset()));
+        eprintln!("bounds: {}", range.ist_bounds());
 
-        let snapshot = run_fetch(&cfg).await.expect("fetch failed");
+        let snapshot = run_fetch(&cfg, &range).await.expect("fetch failed");
         eprintln!("status: {:?}", snapshot.status);
         eprintln!("panels: {}", snapshot.panels.len());
         let json = serde_json::to_string_pretty(&snapshot.panels).unwrap();

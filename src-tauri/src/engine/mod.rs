@@ -5,6 +5,7 @@ pub mod config;
 pub mod connector;
 pub mod i18n;
 pub mod panel;
+pub mod range;
 pub mod registry;
 pub mod scheduler;
 pub mod secrets;

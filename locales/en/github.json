@@ -1,15 +1,14 @@
 {
   "github": {
     "stats": {
-      "title": "Today",
       "prsOpened": "PRs opened",
       "prsMerged": "PRs merged",
       "contributorsActive": "Contributors active"
     },
     "table": {
-      "prActivity": "PR activity today",
-      "lineContributions": "Line contributions (merged today)",
-      "prList": "PRs today (by contributor)"
+      "prActivity": "PR activity - {range}",
+      "lineContributions": "Line contributions - merged ({range})",
+      "prList": "PRs by contributor - {range}"
     },
     "column": {
       "contributor": "Contributor",

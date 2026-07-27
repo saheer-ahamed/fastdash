@@ -68,6 +68,12 @@ export type Panel =
   | { kind: "note"; title: string | null; message: string }
   | { kind: "heatmap"; title: string | null; years: HeatmapYear[] };
 
+// Inclusive span of calendar days (`YYYY-MM-DD`), mirroring `engine::range::DateRange`.
+export interface DateRange {
+  start: string;
+  end: string;
+}
+
 export interface Snapshot {
   status: Health;
   panels: Panel[];
@@ -82,9 +88,12 @@ export interface ConnectorMeta {
   defaultRefreshSecs: number;
 }
 
-// Payload of the `connector:update` Tauri event emitted by the scheduler.
+// Payload of the `connector:update` Tauri event emitted by the scheduler. The
+// range says which days the snapshot covers, so a background refresh is filed
+// under the right cache slot instead of overwriting another range on screen.
 export interface ConnectorUpdate {
   id: string;
+  range: DateRange;
   snapshot: Snapshot;
 }
 
