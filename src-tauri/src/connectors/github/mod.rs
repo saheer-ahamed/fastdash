@@ -120,36 +120,31 @@ async fn run_fetch(cfg: &GithubConfig) -> Result<Snapshot, GithubError> {
     let mut seen: HashMap<(String, String, u64), SeenPr> = HashMap::new();
 
     for org in &cfg.orgs {
-        let opened = client
-            .search_issues(&format!("org:{org} type:pr created:{bounds}"))
-            .await?;
-        let merged = client
-            .search_issues(&format!("org:{org} type:pr merged:{bounds}"))
-            .await?;
-        let closed = client
-            .search_issues(&format!("org:{org} type:pr closed:{bounds} is:unmerged"))
-            .await?;
-        let still_open = client
-            .search_issues(&format!("org:{org} type:pr created:{bounds} is:open"))
-            .await?;
+        // `None` means the Search API refused the org outright; that is an access
+        // problem the user can act on, not a transient fetch failure.
+        let Some(sets) = search_org(&client, org, &bounds).await? else {
+            return Ok(Snapshot::needs_auth(org_unsearchable_message(
+                &cfg.token, org,
+            )));
+        };
 
         // Independent per-contributor counts (a PR may fall in several buckets).
-        count_authors(&opened, &mut rollup.opened);
-        count_authors(&merged, &mut rollup.merged);
-        count_authors(&closed, &mut rollup.closed);
-        count_authors(&still_open, &mut rollup.open);
+        count_authors(&sets.opened, &mut rollup.opened);
+        count_authors(&sets.merged, &mut rollup.merged);
+        count_authors(&sets.closed, &mut rollup.closed);
+        count_authors(&sets.still_open, &mut rollup.open);
 
         // Fold every set into the deduped union with outcome flags.
-        for it in opened {
+        for it in sets.opened {
             upsert(&mut seen, it, false, false, false);
         }
-        for it in merged {
+        for it in sets.merged {
             upsert(&mut seen, it, true, false, false);
         }
-        for it in closed {
+        for it in sets.closed {
             upsert(&mut seen, it, false, true, false);
         }
-        for it in still_open {
+        for it in sets.still_open {
             upsert(&mut seen, it, false, false, true);
         }
     }
@@ -235,6 +230,70 @@ async fn run_fetch(cfg: &GithubConfig) -> Result<Snapshot, GithubError> {
 
     let panels = aggregate::build_panels(&rollup, ist, contributions);
     Ok(Snapshot::ok(panels, Some(REFRESH_SECS)))
+}
+
+/// The four date-filtered PR sets for one org.
+struct OrgSets {
+    opened: Vec<SearchItem>,
+    merged: Vec<SearchItem>,
+    closed: Vec<SearchItem>,
+    still_open: Vec<SearchItem>,
+}
+
+/// Run one org's four searches for the day. `Ok(None)` means the Search API
+/// answered 422 - GitHub's way of saying this token cannot see the org, whether
+/// because it does not exist or because the token is not allowed to view it.
+async fn search_org(
+    client: &GithubClient,
+    org: &str,
+    bounds: &str,
+) -> Result<Option<OrgSets>, GithubError> {
+    let queries = [
+        format!("org:{org} type:pr created:{bounds}"),
+        format!("org:{org} type:pr merged:{bounds}"),
+        format!("org:{org} type:pr closed:{bounds} is:unmerged"),
+        format!("org:{org} type:pr created:{bounds} is:open"),
+    ];
+
+    let mut sets = Vec::with_capacity(queries.len());
+    for q in queries {
+        match client.search_issues(&q).await {
+            Ok(items) => sets.push(items),
+            Err(GithubError::Status { code: 422, .. }) => return Ok(None),
+            Err(e) => return Err(e),
+        }
+    }
+
+    let mut sets = sets.into_iter();
+    Ok(Some(OrgSets {
+        opened: sets.next().unwrap_or_default(),
+        merged: sets.next().unwrap_or_default(),
+        closed: sets.next().unwrap_or_default(),
+        still_open: sets.next().unwrap_or_default(),
+    }))
+}
+
+/// Why an org came back unsearchable, phrased for whoever has to fix it.
+///
+/// The two token kinds fail this way for genuinely different reasons, and the
+/// remedies do not overlap:
+///
+/// * A **Device Flow / OAuth App token** (`gho_`) is subject to the org's
+///   third-party application access policy. Scopes are irrelevant here - even a
+///   token holding `repo read:org read:user` sees the org as empty (`/user/orgs`
+///   returns `[]`, the org's repo list returns `[]`) until an org owner grants
+///   the OAuth App access. Search then reports 422.
+/// * A **PAT** is not subject to that policy, so a 422 means the org name is
+///   wrong, or the token lacks `repo` / SAML SSO authorization.
+fn org_unsearchable_message(token: &str, org: &str) -> String {
+    if token.starts_with("gho_") {
+        i18n::tf(
+            "github.orgNotGranted",
+            &[("org", org), ("url", &device_flow::app_grant_url())],
+        )
+    } else {
+        i18n::tf("github.orgUnsearchable", &[("org", org)])
+    }
 }
 
 /// Fetch the viewer's contribution calendars and build the heatmap panel,
@@ -378,6 +437,35 @@ fn rate_limited_snapshot(retry_after_secs: Option<u64>) -> Snapshot {
         panels: vec![],
         fetched_at: Utc::now(),
         next_refresh_secs: retry_after_secs.or(Some(REFRESH_SECS)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An OAuth (Device Flow) token gets the org-grant explanation; a PAT, which
+    /// the third-party app policy does not apply to, gets the generic one.
+    #[test]
+    fn unsearchable_message_depends_on_token_kind() {
+        let oauth = org_unsearchable_message("gho_abc123", "z-roworld");
+        assert!(oauth.contains("z-roworld"), "{oauth}");
+        assert!(oauth.contains("third-party OAuth apps"), "{oauth}");
+
+        let pat = org_unsearchable_message("ghp_abc123", "z-roworld");
+        assert!(pat.contains("z-roworld"), "{pat}");
+        assert!(!pat.contains("third-party OAuth apps"), "{pat}");
+    }
+
+    /// Both messages must resolve to real catalog entries, never the bare key.
+    #[test]
+    fn unsearchable_messages_are_translated() {
+        for token in ["gho_x", "ghp_x"] {
+            let msg = org_unsearchable_message(token, "acme");
+            assert!(!msg.starts_with("github."), "untranslated: {msg}");
+            assert!(!msg.contains("{org}"), "unsubstituted: {msg}");
+            assert!(!msg.contains("{url}"), "unsubstituted: {msg}");
+        }
     }
 }
 
