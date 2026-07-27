@@ -5,6 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 
 use crate::engine::panel::Panel;
+use crate::engine::range::DateRange;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -68,10 +69,15 @@ pub enum ConnectorError {
     Other(String),
 }
 
-/// Per-fetch context handed to every connector (timezone for "today", etc.).
+/// Per-fetch context handed to every connector (timezone for "today", the day
+/// range the user is looking at, etc.).
 #[derive(Debug, Clone)]
 pub struct FetchCtx {
     pub timezone: String,
+    /// Inclusive span of days to report on. Defaults to today; the UI's date
+    /// filter widens it. Live "right now" figures (Claude's plan limits, the
+    /// GitHub contribution heatmap) deliberately ignore it.
+    pub range: DateRange,
 }
 
 #[async_trait]

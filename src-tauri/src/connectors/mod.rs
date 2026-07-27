@@ -11,10 +11,12 @@ pub mod github;
 mod diag {
     use crate::connectors::{claude::ClaudeConnector, github::GithubConnector};
     use crate::engine::connector::{Connector, FetchCtx};
+    use crate::engine::range::DateRange;
 
     fn ctx() -> FetchCtx {
         FetchCtx {
             timezone: "Asia/Kolkata".into(),
+            range: DateRange::today(),
         }
     }
 

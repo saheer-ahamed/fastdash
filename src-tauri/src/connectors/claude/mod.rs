@@ -4,6 +4,10 @@
 //! effort, timestamps) and overlays the official `/usage` numbers. Fully
 //! offline for token/effort/cost; the official limit + reset is best-effort.
 //!
+//! The UI's date filter scopes the token-usage panels (defaulting to today);
+//! the plan-limit meters keep showing the live session/weekly windows, since
+//! those are current-state readings rather than a report over past days.
+//!
 //! The official `/usage` endpoint is rate-limited, so it is pulled at most once
 //! per `OFFICIAL_TTL` and the last good value is reused if a later pull fails
 //! (e.g. a transient 429). The local transcript scan drives everything else.
@@ -23,11 +27,12 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use chrono::{DateTime, FixedOffset, Utc};
+use chrono::{DateTime, Utc};
 
 use crate::engine::connector::{Connector, ConnectorError, ConnectorMeta, FetchCtx, Snapshot};
 use crate::engine::i18n;
 use crate::engine::panel::{Bar, Cell, Column, Panel, Stat, TableSpec};
+use crate::engine::range::{self, DateRange};
 
 use aggregate::Aggregate;
 use usage_api::{OfficialUsage, ScopedLimit, UsageWindow};
@@ -92,7 +97,7 @@ impl Connector for ClaudeConnector {
         }
     }
 
-    async fn fetch(&self, _ctx: &FetchCtx) -> Result<Snapshot, ConnectorError> {
+    async fn fetch(&self, ctx: &FetchCtx) -> Result<Snapshot, ConnectorError> {
         let official = self.official_usage().await;
         let plan = usage_api::read_plan();
 
@@ -103,27 +108,25 @@ impl Connector for ClaudeConnector {
             .map_err(|e| ConnectorError::Other(e.to_string()))?;
 
         let now = Utc::now();
-        let agg = aggregate::build(&turns, now);
+        let range = ctx.range.normalized();
+        let agg = aggregate::build(&turns, now, &range);
 
-        let panels = build_panels(&agg, official.as_ref(), plan, now);
+        let panels = build_panels(&agg, official.as_ref(), plan, now, &range);
         Ok(Snapshot::ok(panels, Some(REFRESH_SECS)))
     }
 }
 
 // --- panel assembly ---
 
-/// IST offset for humanized reset times.
-fn ist() -> FixedOffset {
-    FixedOffset::east_opt(5 * 3600 + 30 * 60).expect("IST offset is valid")
-}
-
 fn build_panels(
     agg: &Aggregate,
     official: Option<&OfficialUsage>,
     plan: Option<String>,
     now: DateTime<Utc>,
+    range: &DateRange,
 ) -> Vec<Panel> {
     let mut panels = Vec::new();
+    let range_label = range.label();
 
     // --- Plan usage limits (official numbers) ---
     panels.push(Panel::Heading {
@@ -179,18 +182,8 @@ fn build_panels(
         title: None,
         stats: vec![
             Stat {
-                label: i18n::t("claude.thisMonth"),
-                value: fmt_tokens(agg.current_month_tokens),
-                sub: Some(i18n::t("claude.tokens")),
-            },
-            Stat {
-                label: i18n::t("claude.today"),
-                value: fmt_tokens(agg.today_tokens),
-                sub: Some(i18n::t("claude.tokens")),
-            },
-            Stat {
-                label: i18n::t("claude.allTime"),
-                value: fmt_tokens(agg.total_tokens()),
+                label: range_label.clone(),
+                value: fmt_tokens(agg.range_tokens),
                 sub: Some(i18n::tf(
                     "claude.sessions",
                     &[("n", &fmt_count(agg.sessions as u64))],
@@ -199,14 +192,27 @@ fn build_panels(
             Stat {
                 label: i18n::t("claude.equivalentCost"),
                 value: fmt_usd(cost),
-                sub: Some(i18n::t("claude.allTimeNotional")),
+                sub: Some(i18n::tf("claude.rangeNotional", &[("range", &range_label)])),
+            },
+            Stat {
+                label: i18n::t("claude.thisMonth"),
+                value: fmt_tokens(agg.current_month_tokens),
+                sub: Some(i18n::t("claude.tokens")),
+            },
+            Stat {
+                label: i18n::t("claude.allTime"),
+                value: fmt_tokens(agg.all_time_tokens),
+                sub: Some(i18n::tf(
+                    "claude.sessions",
+                    &[("n", &fmt_count(agg.all_time_sessions as u64))],
+                )),
             },
         ],
     });
 
     panels.push(monthly_table(agg));
-    panels.push(tokens_by_model_table(agg));
-    panels.push(effort_bars(agg));
+    panels.push(tokens_by_model_table(agg, &range_label));
+    panels.push(effort_bars(agg, &range_label));
 
     panels
 }
@@ -281,7 +287,7 @@ fn monthly_table(agg: &Aggregate) -> Panel {
     })
 }
 
-fn tokens_by_model_table(agg: &Aggregate) -> Panel {
+fn tokens_by_model_table(agg: &Aggregate, range_label: &str) -> Panel {
     let columns = vec![
         Column {
             key: "model".into(),
@@ -332,13 +338,13 @@ fn tokens_by_model_table(agg: &Aggregate) -> Panel {
         .collect();
 
     Panel::Table(TableSpec {
-        title: Some(i18n::t("claude.tokensByModel")),
+        title: Some(i18n::tf("claude.tokensByModel", &[("range", range_label)])),
         columns,
         rows,
     })
 }
 
-fn effort_bars(agg: &Aggregate) -> Panel {
+fn effort_bars(agg: &Aggregate, range_label: &str) -> Panel {
     let denom = agg.total_effort_output().max(1) as f64;
     let bars = agg
         .effort
@@ -360,7 +366,7 @@ fn effort_bars(agg: &Aggregate) -> Panel {
         .collect();
 
     Panel::BarList {
-        title: Some(i18n::t("claude.effortTitle")),
+        title: Some(i18n::tf("claude.effortTitle", &[("range", range_label)])),
         bars,
     }
 }
@@ -390,7 +396,7 @@ fn fmt_reset(target: DateTime<Utc>, now: DateTime<Utc>) -> String {
             i18n::tf("claude.resetsInMin", &[("m", &mins.to_string())])
         }
     } else {
-        let local = target.with_timezone(&ist());
+        let local = target.with_timezone(&range::ist());
         i18n::tf(
             "claude.resetsAt",
             &[("when", &local.format("%a %-I:%M %p").to_string())],
@@ -470,6 +476,7 @@ mod tests {
             Some(&official),
             Some("Max (5x)".into()),
             now,
+            &DateRange::today(),
         );
         println!(
             "PANELS:\n{}",

@@ -398,6 +398,73 @@ button {
   border-color: var(--fill);
 }
 
+/* Date filter: preset chips, plus the custom start/end pair when selected. */
+.range-filter {
+  display: flex;
+  flex-wrap: wrap;
+  /* Baseline, so the label lines up with the chip row and not with the middle
+     of the two-row body once the custom dates are open. */
+  align-items: baseline;
+  gap: 6px 10px;
+  padding: 10px 20px 0;
+}
+
+.range-label {
+  font-size: 12px;
+  text-transform: lowercase;
+}
+
+/* Chips and the custom row stack, so the second row starts under the first. */
+.range-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.range-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.range-custom {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+
+.range-custom label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.range-custom input {
+  background: var(--bg);
+  border: 1px solid var(--border-bright);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  padding: 2px 6px;
+}
+
+.range-custom input:focus {
+  outline: none;
+  border-color: var(--fill);
+}
+
+.range-custom .save-btn {
+  font-size: 12px;
+  padding: 3px 12px;
+}
+
+.range-custom .save-btn:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
 .banner {
   padding: 10px 12px;
   border: 1px solid var(--border-bright);

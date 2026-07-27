@@ -17,16 +17,21 @@ use tauri::{AppHandle, Emitter};
 use crate::engine::cache::SnapshotCache;
 use crate::engine::config::AppConfig;
 use crate::engine::connector::{Connector, ConnectorError, FetchCtx, Health, Snapshot};
+use crate::engine::range::DateRange;
 use crate::engine::registry::Registry;
 
 /// Event name the UI subscribes to for live panel updates.
 pub const UPDATE_EVENT: &str = "connector:update";
 
-/// Payload of `connector:update`: which connector, and its fresh snapshot.
+/// Payload of `connector:update`: which connector, which day range it covers,
+/// and its fresh snapshot. The range travels with the event so the UI can file
+/// a background refresh under the right cache slot instead of overwriting a
+/// different range the user is currently looking at.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ConnectorUpdate {
     id: String,
+    range: DateRange,
     snapshot: Snapshot,
 }
 
@@ -59,19 +64,31 @@ pub async fn refresh_one(
     connector: &Arc<dyn Connector>,
     cache: &SnapshotCache,
     timezone: String,
+    range: DateRange,
 ) -> Snapshot {
-    let ctx = FetchCtx { timezone };
+    let range = range.normalized();
+    let ctx = FetchCtx {
+        timezone,
+        range: range.clone(),
+    };
     let snapshot = match connector.fetch(&ctx).await {
         Ok(snapshot) => snapshot,
         Err(err) => error_snapshot(&err),
     };
 
     let id = connector.meta().id;
-    cache.set(id.clone(), snapshot.clone());
+    // The warm-start cache holds one snapshot per connector and `get_cached`
+    // has no range to ask for, so only the default (today) view is stored -
+    // a historical range the user opened must never become what the app shows
+    // on next launch.
+    if range == DateRange::today() {
+        cache.set(id.clone(), snapshot.clone());
+    }
     let _ = app.emit(
         UPDATE_EVENT,
         ConnectorUpdate {
             id,
+            range,
             snapshot: snapshot.clone(),
         },
     );
@@ -100,7 +117,9 @@ pub fn start(
                 // Read the current timezone fresh each tick so a config change
                 // takes effect without a restart. Guard dropped before await.
                 let timezone = config.read().unwrap().timezone.clone();
-                refresh_one(&app, &connector, &cache, timezone).await;
+                // The background loop always covers today; other ranges are
+                // historical and only fetched on demand from the UI.
+                refresh_one(&app, &connector, &cache, timezone, DateRange::today()).await;
                 tokio::time::sleep(interval).await;
             }
         });
