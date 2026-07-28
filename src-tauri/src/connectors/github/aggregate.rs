@@ -247,12 +247,19 @@ fn pr_activity_table(rollup: &Rollup, range_label: &str) -> Panel {
             "github.table.prActivity",
             &[("range", range_label)],
         )),
+        // "Created" and "Still open" are one letter apart in spirit but answer
+        // different questions - an event in the window vs a state right now -
+        // so each header carries the sentence that spells the difference out.
         columns: vec![
             col("contributor", i18n::t("github.column.contributor"), false),
-            col("merged", i18n::t("github.column.merged"), true),
-            col("opened", i18n::t("github.column.opened"), true),
-            col("closed", i18n::t("github.column.closedNoMerge"), true),
-            col("open", i18n::t("github.column.open"), true),
+            col("merged", i18n::t("github.column.merged"), true)
+                .with_hint(i18n::t("github.column.mergedHint")),
+            col("opened", i18n::t("github.column.created"), true)
+                .with_hint(i18n::t("github.column.createdHint")),
+            col("closed", i18n::t("github.column.closedUnmerged"), true)
+                .with_hint(i18n::t("github.column.closedUnmergedHint")),
+            col("open", i18n::t("github.column.stillOpen"), true)
+                .with_hint(i18n::t("github.column.stillOpenHint")),
         ],
         rows: table_rows,
     })
@@ -293,7 +300,7 @@ fn line_contributions_table(rollup: &Rollup, range_label: &str) -> Panel {
                 num(total),
                 num(adds),
                 num(dels),
-                text(format_net(net)),
+                keyed(format_net(net), net as f64),
                 num(prs),
             ]
         })
@@ -306,11 +313,14 @@ fn line_contributions_table(rollup: &Rollup, range_label: &str) -> Panel {
         )),
         columns: vec![
             col("contributor", i18n::t("github.column.contributor"), false),
-            col("total", i18n::t("github.column.total"), true),
+            col("total", i18n::t("github.column.total"), true)
+                .with_hint(i18n::t("github.column.totalHint")),
             col("additions", i18n::t("github.column.additions"), true),
             col("deletions", i18n::t("github.column.deletions"), true),
-            col("net", i18n::t("github.column.net"), true),
-            col("prs", i18n::t("github.column.prs"), true),
+            col("net", i18n::t("github.column.net"), true)
+                .with_hint(i18n::t("github.column.netHint")),
+            col("prs", i18n::t("github.column.prs"), true)
+                .with_hint(i18n::t("github.column.prsHint")),
         ],
         rows: table_rows,
     })
@@ -337,21 +347,27 @@ fn pr_list_table(rollup: &Rollup, ist: FixedOffset, range: &DateRange, range_lab
         .into_iter()
         .map(|pr| {
             let author = pr.author.clone().unwrap_or_else(|| "-".into());
+            // Sorting "+120 / -4" by its characters is meaningless; churn
+            // (additions + deletions) is what the column reads as - PR size.
             let delta = match (pr.additions, pr.deletions) {
-                (Some(a), Some(d)) => format!("+{a} / -{d}"),
-                _ => "-".into(),
+                (Some(a), Some(d)) => keyed(format!("+{a} / -{d}"), (a + d) as f64),
+                _ => text("-".into()),
             };
-            let time = pr
-                .at
-                .map(|t| t.with_timezone(&ist).format(time_format).to_string())
-                .unwrap_or_else(|| "-".into());
+            // Likewise "Jul 24, 14:30" only sorts right as an instant.
+            let time = match pr.at {
+                Some(t) => keyed(
+                    t.with_timezone(&ist).format(time_format).to_string(),
+                    t.timestamp() as f64,
+                ),
+                None => text("-".into()),
+            };
             vec![
                 text(author),
                 text(pr.name_with_owner.clone()),
                 link(pr.title.clone(), pr.url.clone()),
                 text(pr.state.label()),
-                text(delta),
-                text(time),
+                delta,
+                time,
             ]
         })
         .collect();
@@ -362,9 +378,12 @@ fn pr_list_table(rollup: &Rollup, ist: FixedOffset, range: &DateRange, range_lab
             col("author", i18n::t("github.column.contributor"), false),
             col("repo", i18n::t("github.column.repo"), false),
             col("title", i18n::t("github.column.title"), false),
-            col("state", i18n::t("github.column.state"), false),
-            col("delta", i18n::t("github.column.delta"), false),
-            col("time", i18n::t("github.column.time"), false),
+            col("state", i18n::t("github.column.state"), false)
+                .with_hint(i18n::t("github.column.stateHint")),
+            col("delta", i18n::t("github.column.delta"), false)
+                .with_hint(i18n::t("github.column.deltaHint")),
+            col("time", i18n::t("github.column.time"), false)
+                .with_hint(i18n::t("github.column.timeHint")),
         ],
         rows,
     })
@@ -379,17 +398,23 @@ fn format_net(net: i64) -> String {
 }
 
 fn col(key: &str, label: impl Into<String>, numeric: bool) -> Column {
-    Column {
-        key: key.into(),
-        label: label.into(),
-        numeric,
-    }
+    Column::new(key, label, numeric)
 }
 
 fn text(s: String) -> Cell {
     Cell {
         text: s,
         href: None,
+        sort: None,
+    }
+}
+
+/// Text that sorts by a value of its own rather than by its characters.
+fn keyed(s: String, sort: f64) -> Cell {
+    Cell {
+        text: s,
+        href: None,
+        sort: Some(sort),
     }
 }
 
@@ -397,6 +422,7 @@ fn num(n: u64) -> Cell {
     Cell {
         text: n.to_string(),
         href: None,
+        sort: Some(n as f64),
     }
 }
 
@@ -404,6 +430,7 @@ fn link(text: String, href: String) -> Cell {
     Cell {
         text,
         href: Some(href),
+        sort: None,
     }
 }
 
@@ -437,12 +464,16 @@ mod tests {
         }
     }
 
-    fn time_cell(range: &DateRange) -> String {
+    fn pr_list_row(range: &DateRange) -> Vec<Cell> {
         let panel = pr_list_table(&rollup(), range::ist(), range, "x");
         let Panel::Table(spec) = panel else {
             panic!("expected a table")
         };
-        spec.rows[0].last().unwrap().text.clone()
+        spec.rows[0].clone()
+    }
+
+    fn time_cell(range: &DateRange) -> String {
+        pr_list_row(range).last().unwrap().text.clone()
     }
 
     /// Within one day the clock is enough; across days the row would be
@@ -460,5 +491,30 @@ mod tests {
             end: day(2026, 7, 27),
         };
         assert_eq!(time_cell(&week), "Jul 24, 14:30");
+    }
+
+    /// Columns the frontend can't sort from their text - the delta pair and the
+    /// formatted timestamp - must carry an explicit key, or clicking the header
+    /// would order them alphabetically.
+    #[test]
+    fn unsortable_text_columns_carry_a_sort_key() {
+        let range = DateRange {
+            start: day(2026, 7, 24),
+            end: day(2026, 7, 24),
+        };
+        let row = pr_list_row(&range);
+
+        let delta = &row[4];
+        assert_eq!(delta.text, "+10 / -2");
+        assert_eq!(delta.sort, Some(12.0), "delta sorts by churn");
+
+        let time = row.last().unwrap();
+        let expected = DateTime::parse_from_rfc3339("2026-07-24T14:30:00+05:30")
+            .unwrap()
+            .timestamp() as f64;
+        assert_eq!(time.sort, Some(expected), "time sorts as an instant");
+
+        // Plain text keeps no key and falls back to comparing characters.
+        assert_eq!(row[0].sort, None);
     }
 }

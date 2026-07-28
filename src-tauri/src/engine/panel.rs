@@ -113,6 +113,25 @@ pub struct Column {
     pub label: String,
     /// Right-align and sort numerically when true.
     pub numeric: bool,
+    /// One sentence saying exactly what the column counts, shown on hover.
+    /// A header label has to stay short; this is where the precision goes.
+    pub hint: Option<String>,
+}
+
+impl Column {
+    pub fn new(key: &str, label: impl Into<String>, numeric: bool) -> Self {
+        Column {
+            key: key.into(),
+            label: label.into(),
+            numeric,
+            hint: None,
+        }
+    }
+
+    pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
+        self.hint = Some(hint.into());
+        self
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -120,6 +139,11 @@ pub struct Column {
 pub struct Cell {
     pub text: String,
     pub href: Option<String>,
+    /// Numeric key to sort this cell by when its display text would sort wrong
+    /// on its own - `"1.2M"`, `"$3.40"`, `"+10 / -2"`, `"Jul 24, 14:30"`.
+    /// `None` means "sort by `text`"; in a column where some cells carry a key,
+    /// the ones without sink to the bottom of either direction.
+    pub sort: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]

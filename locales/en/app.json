@@ -26,6 +26,9 @@
     "less": "Less",
     "more": "More"
   },
+  "table": {
+    "sortBy": "Sort by {column}"
+  },
   "pager": {
     "prev": "[ prev ]",
     "next": "[ next ]",

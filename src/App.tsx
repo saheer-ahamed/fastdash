@@ -10,6 +10,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
   AppConfig,
+  Cell,
   ConnectorMeta,
   ConnectorUpdate,
   DateRange,
@@ -778,15 +779,79 @@ function weekdayLabel(row: number): string {
 
 const PAGE_SIZE = 15;
 
-// A table that paginates client-side once it exceeds PAGE_SIZE rows.
+type SortDir = "asc" | "desc";
+type SortState = { col: number; dir: SortDir };
+
+// The direction a column starts in: counts read best largest-first, names A-Z.
+const firstDir = (numeric: boolean): SortDir => (numeric ? "desc" : "asc");
+
+// What a cell compares as: its explicit sort key when the backend supplied one
+// (formatted values like "1.2M" or "Jul 24, 14:30" sort wrong as text), the
+// number its text parses to in a numeric column, otherwise the text itself.
+// `null` means "no value" - those rows sink to the bottom either way.
+function cellValue(cell: Cell | undefined, numeric: boolean): number | string | null {
+  if (!cell) return null;
+  if (cell.sort != null) return cell.sort;
+  const text = cell.text.trim();
+  if (text === "") return null;
+  if (numeric) {
+    const n = Number(text.replace(/[^0-9.+-]/g, ""));
+    return Number.isNaN(n) ? null : n;
+  }
+  return text;
+}
+
+function compareValues(a: number | string | null, b: number | string | null): number {
+  if (a === null || b === null) return a === b ? 0 : a === null ? 1 : -1;
+  if (typeof a === "number" && typeof b === "number") return a - b;
+  return String(a).localeCompare(String(b), getLocale(), {
+    numeric: true,
+    sensitivity: "base",
+  });
+}
+
+// A table that sorts on any column and paginates client-side once it exceeds
+// PAGE_SIZE rows. Sorting is off by default: connectors order their rows
+// meaningfully (most merged first, and so on), and a third click restores it.
 function TableView({ panel }: { panel: Extract<Panel, { kind: "table" }> }) {
   const [page, setPage] = useState(0);
-  const total = panel.rows.length;
+  const [sort, setSort] = useState<SortState | null>(null);
+
+  const sorted = useMemo(() => {
+    const col = sort && sort.col < panel.columns.length ? sort : null;
+    if (!col) return panel.rows;
+    const numeric = panel.columns[col.col]?.numeric ?? false;
+    // Decorate with the original index so equal rows keep the backend order.
+    return panel.rows
+      .map((row, i) => ({ row, i, value: cellValue(row[col.col], numeric) }))
+      .sort((a, b) => {
+        // Blanks sink in both directions, so the sign applies only to real values.
+        if (a.value === null || b.value === null) {
+          return compareValues(a.value, b.value) || a.i - b.i;
+        }
+        const cmp = compareValues(a.value, b.value) * (col.dir === "asc" ? 1 : -1);
+        return cmp || a.i - b.i;
+      })
+      .map((d) => d.row);
+  }, [panel.rows, panel.columns, sort]);
+
+  // asc -> desc -> unsorted, starting in whichever direction reads best.
+  function toggleSort(ci: number) {
+    const start = firstDir(panel.columns[ci]?.numeric ?? false);
+    setPage(0);
+    setSort((cur) => {
+      if (!cur || cur.col !== ci) return { col: ci, dir: start };
+      if (cur.dir === start) return { col: ci, dir: start === "asc" ? "desc" : "asc" };
+      return null;
+    });
+  }
+
+  const total = sorted.length;
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const paginated = total > PAGE_SIZE;
   const clamped = Math.min(page, pages - 1);
   const start = clamped * PAGE_SIZE;
-  const rows = paginated ? panel.rows.slice(start, start + PAGE_SIZE) : panel.rows;
+  const rows = paginated ? sorted.slice(start, start + PAGE_SIZE) : sorted;
 
   useEffect(() => {
     if (page > pages - 1) setPage(0);
@@ -799,11 +864,32 @@ function TableView({ panel }: { panel: Extract<Panel, { kind: "table" }> }) {
         <table>
           <thead>
             <tr>
-              {panel.columns.map((col) => (
-                <th key={col.key} className={col.numeric ? "num" : ""}>
-                  {col.label}
-                </th>
-              ))}
+              {panel.columns.map((col, ci) => {
+                const active = sort?.col === ci;
+                return (
+                  <th
+                    key={col.key}
+                    className={col.numeric ? "num" : ""}
+                    aria-sort={
+                      active ? (sort.dir === "asc" ? "ascending" : "descending") : "none"
+                    }
+                  >
+                    <button
+                      type="button"
+                      className={`th-sort${active ? " active" : ""}`}
+                      onClick={() => toggleSort(ci)}
+                      // The hint is the more useful thing to say when there is
+                      // one; the caret already advertises the sorting.
+                      title={col.hint ?? t("table.sortBy", { column: col.label })}
+                    >
+                      <span className={col.hint ? "hinted" : ""}>{col.label}</span>
+                      <span className="caret" aria-hidden="true">
+                        {active ? (sort.dir === "asc" ? "↑" : "↓") : "↕"}
+                      </span>
+                    </button>
+                  </th>
+                );
+              })}
             </tr>
           </thead>
           <tbody>

@@ -22,11 +22,15 @@ export interface Column {
   key: string;
   label: string;
   numeric: boolean;
+  /** One sentence saying exactly what the column counts, shown on hover. */
+  hint: string | null;
 }
 
 export interface Cell {
   text: string;
   href: string | null;
+  /** Sort key for cells whose text sorts wrong ("1.2M", "+10 / -2", "Jul 24, 14:30"). */
+  sort: number | null;
 }
 
 export interface ListItem {

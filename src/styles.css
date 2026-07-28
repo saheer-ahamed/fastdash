@@ -669,6 +669,55 @@ th {
   text-transform: uppercase;
   letter-spacing: 0.4px;
   border-bottom: 1px solid var(--border-bright);
+  padding: 0;
+}
+
+/* The whole header cell is the sort control, so the click target matches the
+   cell the user aims at rather than just the label glyphs. */
+.th-sort {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 6px 10px;
+  background: transparent;
+  border: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+
+th.num .th-sort {
+  justify-content: flex-end;
+}
+
+/* A column whose meaning needs a sentence: the dotted rule is the "hover me". */
+.th-sort .hinted {
+  border-bottom: 1px dotted var(--border-bright);
+}
+
+.th-sort:hover,
+.th-sort.active {
+  color: var(--bright);
+}
+
+/* Reserve the caret's width always, so sorting never nudges the header. */
+.th-sort .caret {
+  opacity: 0;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.th-sort:hover .caret,
+.th-sort:focus-visible .caret {
+  opacity: 0.45;
+}
+
+.th-sort.active .caret {
+  opacity: 1;
 }
 
 td.num,

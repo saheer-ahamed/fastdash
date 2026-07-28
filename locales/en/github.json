@@ -1,7 +1,7 @@
 {
   "github": {
     "stats": {
-      "prsOpened": "PRs opened",
+      "prsOpened": "PRs created",
       "prsMerged": "PRs merged",
       "contributorsActive": "Contributors active"
     },
@@ -12,20 +12,30 @@
     },
     "column": {
       "contributor": "Contributor",
-      "opened": "Opened",
+      "created": "Created",
+      "createdHint": "PRs this contributor created in this date range, whatever state they are in now.",
       "merged": "Merged",
-      "closedNoMerge": "Closed (no merge)",
-      "open": "Open",
+      "mergedHint": "PRs merged in this date range. Some may have been created earlier, so this is not a subset of Created.",
+      "closedUnmerged": "Closed unmerged",
+      "closedUnmergedHint": "PRs closed in this date range without ever being merged.",
+      "stillOpen": "Still open",
+      "stillOpenHint": "Of the PRs created in this date range, the ones neither merged nor closed as of now. Always a subset of Created; it does not include older PRs still waiting.",
       "total": "Total",
+      "totalHint": "Additions plus deletions across the PRs merged in this range.",
       "additions": "Additions",
       "deletions": "Deletions",
       "net": "Net",
+      "netHint": "Additions minus deletions.",
       "prs": "PRs",
+      "prsHint": "How many merged PRs these line counts come from.",
       "repo": "Repo",
       "title": "Title",
       "state": "State",
+      "stateHint": "Where this PR stands right now: merged, closed without merging, or still open.",
       "delta": "+/-",
-      "time": "Time"
+      "deltaHint": "Lines added and removed by this PR. Sorts by total lines touched.",
+      "time": "Time",
+      "timeHint": "When the PR was merged, closed, or created - whichever put it in this range."
     },
     "contributions": {
       "title": "Contribution activity - @{login}",
