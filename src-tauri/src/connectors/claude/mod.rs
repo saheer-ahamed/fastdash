@@ -263,21 +263,18 @@ fn local_meter(label: &str, tokens: u64, when: &str) -> Panel {
 
 fn monthly_table(agg: &Aggregate) -> Panel {
     let columns = vec![
-        Column {
-            key: "month".into(),
-            label: i18n::t("claude.colMonth"),
-            numeric: false,
-        },
-        Column {
-            key: "tokens".into(),
-            label: i18n::t("claude.colTokens"),
-            numeric: true,
-        },
+        Column::new("month", i18n::t("claude.colMonth"), false),
+        Column::new("tokens", i18n::t("claude.colTokens"), true),
     ];
     let rows = agg
         .per_month
         .iter()
-        .map(|m| vec![cell(m.label.clone()), cell(fmt_tokens(m.total_tokens))])
+        .map(|m| {
+            vec![
+                cell(m.label.clone()),
+                keyed(fmt_tokens(m.total_tokens), m.total_tokens as f64),
+            ]
+        })
         .collect();
 
     Panel::Table(TableSpec {
@@ -289,36 +286,12 @@ fn monthly_table(agg: &Aggregate) -> Panel {
 
 fn tokens_by_model_table(agg: &Aggregate, range_label: &str) -> Panel {
     let columns = vec![
-        Column {
-            key: "model".into(),
-            label: i18n::t("claude.colModel"),
-            numeric: false,
-        },
-        Column {
-            key: "input".into(),
-            label: i18n::t("claude.colInput"),
-            numeric: true,
-        },
-        Column {
-            key: "output".into(),
-            label: i18n::t("claude.colOutput"),
-            numeric: true,
-        },
-        Column {
-            key: "cache_read".into(),
-            label: i18n::t("claude.colCacheRead"),
-            numeric: true,
-        },
-        Column {
-            key: "total".into(),
-            label: i18n::t("claude.colTotal"),
-            numeric: true,
-        },
-        Column {
-            key: "cost".into(),
-            label: i18n::t("claude.colCost"),
-            numeric: true,
-        },
+        Column::new("model", i18n::t("claude.colModel"), false),
+        Column::new("input", i18n::t("claude.colInput"), true),
+        Column::new("output", i18n::t("claude.colOutput"), true),
+        Column::new("cache_read", i18n::t("claude.colCacheRead"), true),
+        Column::new("total", i18n::t("claude.colTotal"), true),
+        Column::new("cost", i18n::t("claude.colCost"), true),
     ];
 
     let rows = agg
@@ -328,11 +301,11 @@ fn tokens_by_model_table(agg: &Aggregate, range_label: &str) -> Panel {
             let cost = pricing::cost_for(&m.model, m.input, m.output, m.cache_read, m.cache_write);
             vec![
                 cell(short_model(&m.model)),
-                cell(fmt_tokens(m.input)),
-                cell(fmt_tokens(m.output)),
-                cell(fmt_tokens(m.cache_read)),
-                cell(fmt_tokens(m.total())),
-                cell(fmt_usd(cost)),
+                keyed(fmt_tokens(m.input), m.input as f64),
+                keyed(fmt_tokens(m.output), m.output as f64),
+                keyed(fmt_tokens(m.cache_read), m.cache_read as f64),
+                keyed(fmt_tokens(m.total()), m.total() as f64),
+                keyed(fmt_usd(cost), cost),
             ]
         })
         .collect();
@@ -374,7 +347,20 @@ fn effort_bars(agg: &Aggregate, range_label: &str) -> Panel {
 // --- formatting helpers ---
 
 fn cell(text: String) -> Cell {
-    Cell { text, href: None }
+    Cell {
+        text,
+        href: None,
+        sort: None,
+    }
+}
+
+/// A cell whose display text ("1.2M", "$3.40") must sort by its real value.
+fn keyed(text: String, sort: f64) -> Cell {
+    Cell {
+        text,
+        href: None,
+        sort: Some(sort),
+    }
 }
 
 /// "Resets in 47 min" / "Resets in 2h 14m" when soon; else the absolute IST
