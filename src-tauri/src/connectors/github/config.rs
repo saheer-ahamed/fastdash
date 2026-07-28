@@ -65,15 +65,21 @@ impl GithubConfig {
         // Prefer the keychain; fall back to the env var for local/dev use.
         let token = token_from_keychain(label).or_else(token_from_env)?;
 
-        // Full org set for the account, else the env-var default.
-        let all_orgs = account
+        // Full org set for the account, else the env-var default. Normalized on
+        // the way in so every entry downstream holds the no-whitespace
+        // invariant, whatever wrote the config.
+        let all_orgs: Vec<String> = account
             .map(|a| a.orgs)
             .filter(|o| !o.is_empty())
-            .unwrap_or_else(orgs_from_env);
+            .unwrap_or_else(orgs_from_env)
+            .iter()
+            .map(normalize_scope)
+            .filter(|o| !o.is_empty())
+            .collect();
 
         // A specific org narrows the fetch to just that org; otherwise use all.
-        let orgs = match org {
-            Some(o) if !o.trim().is_empty() => vec![o.trim().to_string()],
+        let orgs = match org.map(normalize_scope) {
+            Some(o) if !o.is_empty() => vec![o],
             _ => all_orgs,
         };
 
@@ -118,8 +124,39 @@ fn token_from_env() -> Option<String> {
 fn orgs_from_env() -> Vec<String> {
     let raw = std::env::var("FASTDASH_GITHUB_ORGS").unwrap_or_default();
     raw.split(',')
-        .map(|s| s.trim())
+        .map(normalize_scope)
         .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
         .collect()
+}
+
+/// Canonical form of a configured scope entry: no whitespace anywhere.
+///
+/// Neither a GitHub login nor a qualifier can contain whitespace, so stripping
+/// it is lossless - and it is what lets the stored entry be used verbatim
+/// everywhere downstream. `scope_qualifier` trims at query-build time, but the
+/// raw string is also the chip label and part of the frontend's `viewKey`,
+/// whose cache keys are space-separated; a stored `user: octocat` would make
+/// that separator ambiguous. Normalizing here holds the invariant for every
+/// writer - the Connectors UI, `FASTDASH_GITHUB_ORGS`, a hand-edited config.
+fn normalize_scope(entry: impl AsRef<str>) -> String {
+    entry
+        .as_ref()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The invariant the chip label and the frontend's space-separated
+    /// `viewKey` both rely on: a stored entry never contains whitespace.
+    #[test]
+    fn scopes_are_stored_without_whitespace() {
+        assert_eq!(normalize_scope("  acme  "), "acme");
+        assert_eq!(normalize_scope("user: octocat"), "user:octocat");
+        assert_eq!(normalize_scope(" author : octocat "), "author:octocat");
+        assert_eq!(normalize_scope("   "), "");
+    }
 }

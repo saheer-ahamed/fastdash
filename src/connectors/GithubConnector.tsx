@@ -23,10 +23,15 @@ type DeviceCode = {
 /// panel needs; linked from the token field so the answer is one click away.
 const TOKEN_DOCS_URL = "https://github.com/saheer-ahamed/fastdash#connecting-github";
 
+// Entries are stored whitespace-free: a qualifier and its name are one entry
+// even when typed as `user: octocat`, so collapse around the colon before
+// splitting - otherwise the split below tears that into `user:` and `octocat`,
+// two scopes that are both wrong. Downstream (the chip label, `viewKey`'s
+// space-separated cache keys) treats a stored entry as a single unspaced token.
 const parseOrgs = (raw: string): string[] =>
   raw
+    .replace(/\s*:\s*/g, ":")
     .split(/[\s,]+/)
-    .map((s) => s.trim())
     .filter(Boolean);
 
 // One editable row: keeps orgs as a raw string while typing; `key` is stable so

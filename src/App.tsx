@@ -321,10 +321,12 @@ const GITHUB_REFRESH_MS = 60_000;
 const viewKey = (label: string, org: string | null, range: DateRange) =>
   `${label} ${org ?? ""} ${rangeKey(range)}`;
 
-// A configured scope may carry an `org:`/`user:` qualifier (see `scope_qualifier`
-// in the Rust connector). Chips show the bare name; the qualified value is what
-// gets stored and sent, so only the display text is stripped.
-const scopeName = (scope: string) => scope.replace(/^(org|user):\s*/, "");
+// A configured scope may carry an `org:`, `user:` or `author:` qualifier (see
+// `scope_qualifier` in the Rust connector). Chips show the bare name; the
+// qualified value is what gets stored and sent, so only the display text is
+// stripped. Entries are normalized whitespace-free on save, but the `\s*` keeps
+// a config written before that from rendering as a ragged chip.
+const scopeName = (scope: string) => scope.replace(/^\s*(org|user|author)\s*:\s*/, "");
 
 // The GitHub view's persistent state. Held above <GithubView> (in <App>) so it
 // outlives tab switches: the cached snapshots, the loading flags, and the
