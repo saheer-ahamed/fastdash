@@ -321,6 +321,13 @@ const GITHUB_REFRESH_MS = 60_000;
 const viewKey = (label: string, org: string | null, range: DateRange) =>
   `${label} ${org ?? ""} ${rangeKey(range)}`;
 
+// A configured scope may carry an `org:`, `user:` or `author:` qualifier (see
+// `scope_qualifier` in the Rust connector). Chips show the bare name; the
+// qualified value is what gets stored and sent, so only the display text is
+// stripped. Entries are normalized whitespace-free on save, but the `\s*` keeps
+// a config written before that from rendering as a ragged chip.
+const scopeName = (scope: string) => scope.replace(/^\s*(org|user|author)\s*:\s*/, "");
+
 // The GitHub view's persistent state. Held above <GithubView> (in <App>) so it
 // outlives tab switches: the cached snapshots, the loading flags, and the
 // selected account/org all survive leaving and re-entering the GitHub tab, so
@@ -481,7 +488,7 @@ function GithubView({
               className={"chip" + (org === o ? " active" : "")}
               onClick={() => setOrg(o)}
             >
-              {o}
+              {scopeName(o)}
             </button>
           ))}
         </div>
@@ -521,6 +528,13 @@ function StatusBanner({ status }: { status: Health }) {
   }
   if (status.state === "rateLimited") {
     return <div className={"banner " + statusClass(status)}>{t("status.rateLimited")}</div>;
+  }
+  // Misconfigured is not a transient failure - retrying cannot fix it, and the
+  // backend already localized copy naming what to change. Hiding that behind
+  // the generic "we'll keep trying" line would leave the user with no way to
+  // find out which setting is wrong, so it is shown to everyone.
+  if (status.state === "misconfigured") {
+    return <div className={"banner " + statusClass(status)}>{status.message}</div>;
   }
 
   // A generic fetch/parse/HTTP failure. Everyday users see a plain, reassuring
@@ -936,6 +950,7 @@ function statusClass(status: Health | undefined): string {
       return "ok";
     case "needsAuth":
     case "rateLimited":
+    case "misconfigured":
       return "warn";
     case "error":
       return "err";

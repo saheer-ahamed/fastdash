@@ -64,14 +64,44 @@ pub struct OfficialUsage {
     pub scoped: Vec<ScopedLimit>,
 }
 
-/// Read the subscription OAuth access token from `~/.claude/.credentials.json`.
-pub fn read_oauth_token() -> Result<String, UsageError> {
+/// Load the Claude Code credentials blob.
+///
+/// Claude Code keeps this at `~/.claude/.credentials.json` on Windows, but on
+/// macOS it stores the same JSON in the login Keychain as a generic password
+/// under service `Claude Code-credentials` (account = the login user), and no
+/// file exists at all. The file is still tried first so a hand-placed or
+/// exported copy keeps working on either platform.
+fn read_credentials() -> Result<serde_json::Value, UsageError> {
     let base = directories::BaseDirs::new().ok_or(UsageError::NoHome)?;
     let path = base.home_dir().join(".claude").join(".credentials.json");
-    let raw = std::fs::read_to_string(&path).map_err(|e| UsageError::Credentials(e.to_string()))?;
-    let v: serde_json::Value =
-        serde_json::from_str(&raw).map_err(|e| UsageError::Credentials(e.to_string()))?;
-    v["claudeAiOauth"]["accessToken"]
+
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(err) => keychain_credentials().ok_or(UsageError::Credentials(err.to_string()))?,
+    };
+
+    serde_json::from_str(&raw).map_err(|e| UsageError::Credentials(e.to_string()))
+}
+
+/// The Keychain copy of the credentials blob that Claude Code writes on macOS.
+#[cfg(target_os = "macos")]
+fn keychain_credentials() -> Option<String> {
+    const CLAUDE_CODE_SERVICE: &str = "Claude Code-credentials";
+    let account = std::env::var("USER").ok()?;
+    keyring::Entry::new(CLAUDE_CODE_SERVICE, &account)
+        .ok()?
+        .get_password()
+        .ok()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn keychain_credentials() -> Option<String> {
+    None
+}
+
+/// Read the subscription OAuth access token from the stored credentials.
+pub fn read_oauth_token() -> Result<String, UsageError> {
+    read_credentials()?["claudeAiOauth"]["accessToken"]
         .as_str()
         .map(str::to_owned)
         .ok_or(UsageError::NoToken)
@@ -81,10 +111,7 @@ pub fn read_oauth_token() -> Result<String, UsageError> {
 /// Derived from `subscriptionType` ("max") + `rateLimitTier`
 /// ("default_claude_max_5x" -> "5x"). Returns `None` if unavailable.
 pub fn read_plan() -> Option<String> {
-    let base = directories::BaseDirs::new()?;
-    let path = base.home_dir().join(".claude").join(".credentials.json");
-    let raw = std::fs::read_to_string(&path).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let v = read_credentials().ok()?;
     let oauth = &v["claudeAiOauth"];
 
     let sub = oauth["subscriptionType"]

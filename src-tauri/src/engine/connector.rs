@@ -22,9 +22,23 @@ pub struct ConnectorMeta {
 #[serde(tag = "state", rename_all = "camelCase")]
 pub enum Health {
     Ok,
-    NeedsAuth { message: String },
-    RateLimited { retry_after_secs: Option<u64> },
-    Error { message: String },
+    NeedsAuth {
+        message: String,
+    },
+    RateLimited {
+        retry_after_secs: Option<u64>,
+    },
+    /// The credentials work but the connector's settings do not - a wrong org
+    /// name, a token not authorized for it, nothing selected to fetch. Distinct
+    /// from `Error` because retrying cannot help: the user has to change
+    /// something, so `message` is user-facing copy rather than a technical
+    /// string, and the UI shows it verbatim.
+    Misconfigured {
+        message: String,
+    },
+    Error {
+        message: String,
+    },
 }
 
 /// One fetch result: what to render plus status and refresh hints.
@@ -65,6 +79,9 @@ pub enum ConnectorError {
     Auth(String),
     #[error("rate limited")]
     RateLimited,
+    /// Settings are wrong in a way the user must fix; carries user-facing copy.
+    #[error("{0}")]
+    Misconfigured(String),
     #[error("{0}")]
     Other(String),
 }
