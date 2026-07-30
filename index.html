@@ -6,25 +6,161 @@
     <link rel="icon" type="image/png" href="/favicon.png" />
     <title>fastdash</title>
     <script>
-      // Set the theme before first paint to avoid a flash. Mirrors src/theme.ts.
+      // Theme AND first-paint colors, before anything else renders.
+      //
+      // Every color the app is painted with lives in the bundled stylesheet,
+      // which arrives after this document does - and WebView2 paints an unstyled
+      // document white. On a cold start (the first launch after an install or an
+      // update, when the new binary is being virus-scanned and the webview's code
+      // cache is empty) that white rectangle is on screen long enough to read as
+      // a hung app. So the background is set here, inline, on the very first
+      // frame, and handed to the boot loader below as --boot-bg / --boot-fg.
+      //
+      // Mirrors `resolve()` in src/theme.ts and the palettes in src/styles.css;
+      // keep the three in step when adding a theme.
       (function () {
+        var PALETTE = {
+          dark: ["#0a0b0c", "#6a7078", "dark"],
+          light: ["#f6f6f3", "#7c7f84", "light"],
+          midnight: ["#0a0e17", "#5c6d8c", "dark"],
+          amber: ["#0a0700", "#7d6024", "dark"],
+          green: ["#000700", "#1f6a2a", "dark"],
+          paper: ["#f4f1ea", "#867c68", "light"],
+        };
+        var root = document.documentElement;
+        var resolved = "dark";
         try {
-          var c = localStorage.getItem("fastdash.theme") || "system";
-          var resolved =
-            c === "system"
+          var choice = localStorage.getItem("fastdash.theme") || "system";
+          resolved =
+            choice === "system"
               ? window.matchMedia("(prefers-color-scheme: light)").matches
                 ? "light"
                 : "dark"
-              : c;
-          document.documentElement.dataset.theme = resolved;
+              : choice;
+          if (!PALETTE[resolved]) resolved = "dark";
         } catch (e) {
-          document.documentElement.dataset.theme = "dark";
+          resolved = "dark";
         }
+        var colors = PALETTE[resolved];
+        root.dataset.theme = resolved;
+        root.style.setProperty("--boot-bg", colors[0]);
+        root.style.setProperty("--boot-fg", colors[1]);
+        root.style.background = colors[0];
+        // Keeps native scrollbars and the webview's own canvas off white too.
+        root.style.colorScheme = colors[2];
       })();
     </script>
+    <style>
+      /* Boot loader: plain markup and inline CSS, because it has to be on screen
+         before the stylesheet and the JS bundle load - they are exactly what it
+         is covering for. main.tsx drops it on React's first commit. */
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        background: var(--boot-bg, #0a0b0c);
+      }
+
+      #boot {
+        position: fixed;
+        inset: 0;
+        z-index: 200;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--boot-bg, #0a0b0c);
+        color: var(--boot-fg, #6a7078);
+        font: 13px/1.5 ui-monospace, "Cascadia Mono", "Cascadia Code", "SFMono-Regular", Menlo,
+          Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace;
+        /* Held back a moment so a warm launch never flashes a loader at someone
+           who was not kept waiting. */
+        opacity: 0;
+        animation: boot-in 220ms ease 250ms forwards;
+      }
+
+      /* Set by main.tsx once React has painted. */
+      html.booted #boot {
+        animation: none;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 180ms ease;
+      }
+
+      .boot-inner {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 14px;
+      }
+
+      .boot-brand {
+        letter-spacing: 0.04em;
+      }
+
+      /* Indeterminate rail: a block running across it, in keeping with the flat
+         terminal UI - no radius, no shadow, no spinner. */
+      .boot-bar {
+        position: relative;
+        width: 180px;
+        height: 2px;
+        overflow: hidden;
+      }
+
+      .boot-rail,
+      .boot-run {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        background: currentColor;
+      }
+
+      .boot-rail {
+        left: 0;
+        right: 0;
+        opacity: 0.2;
+      }
+
+      .boot-run {
+        left: 0;
+        width: 56px;
+        animation: boot-run 1.15s ease-in-out infinite;
+      }
+
+      @keyframes boot-in {
+        to {
+          opacity: 1;
+        }
+      }
+
+      @keyframes boot-run {
+        from {
+          transform: translateX(-56px);
+        }
+        to {
+          transform: translateX(180px);
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .boot-run {
+          animation: none;
+          width: 100%;
+          opacity: 0.5;
+        }
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>
+    <div id="boot" aria-hidden="true">
+      <div class="boot-inner">
+        <span class="boot-brand">$ fastdash</span>
+        <span class="boot-bar">
+          <i class="boot-rail"></i>
+          <i class="boot-run"></i>
+        </span>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
