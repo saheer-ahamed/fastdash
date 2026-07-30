@@ -19,9 +19,15 @@ export const THEMES: { id: ThemeChoice; label: string }[] = [
 const STORAGE_KEY = "fastdash.theme";
 const LIGHT_QUERY = "(prefers-color-scheme: light)";
 
+const CHOICES: ThemeChoice[] = THEMES.map((t) => t.id);
+
 export function getStoredTheme(): ThemeChoice {
-  const v = localStorage.getItem(STORAGE_KEY);
-  return v === "dark" || v === "light" || v === "system" ? v : "system";
+  const v = localStorage.getItem(STORAGE_KEY) as ThemeChoice | null;
+  // Validate against the registry, not a hand-written list: anything narrower
+  // silently downgrades the themes it forgot back to "system" on the next
+  // launch, which also puts the applied theme at odds with the pre-paint
+  // background index.html picks from the same stored value.
+  return v && CHOICES.includes(v) ? v : "system";
 }
 
 function resolve(choice: ThemeChoice): ResolvedTheme {
