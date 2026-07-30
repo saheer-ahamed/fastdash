@@ -3,6 +3,9 @@ import { invoke } from "@tauri-apps/api/core";
 import type { GithubAccount } from "../types";
 import { getConfig, patchConfig } from "../config";
 import { t } from "../i18n";
+import Tour, { type TourStep } from "../Tour";
+import { markTourSeen, tourSeen } from "../tourseen";
+import GithubTokenGuide from "./GithubTokenGuide";
 import type { ConnectorTabProps } from "./types";
 
 // GitHub connector setup: add/remove accounts, per-account token (Device Flow or
@@ -23,6 +26,10 @@ type DeviceCode = {
 /// panel needs; linked from the token field so the answer is one click away.
 const TOKEN_DOCS_URL = "https://github.com/saheer-ahamed/fastdash#connecting-github";
 
+/// Walkthrough id for the "seen" flag - bump it if the steps change enough that
+/// returning users should be shown them again.
+const TOUR_ID = "github";
+
 // Entries are stored whitespace-free: a qualifier and its name are one entry
 // even when typed as `user: octocat`, so collapse around the colon before
 // splitting - otherwise the split below tears that into `user:` and `octocat`,
@@ -37,6 +44,8 @@ const parseOrgs = (raw: string): string[] =>
 // One editable row: keeps orgs as a raw string while typing; `key` is stable so
 // per-row token/device state survives reordering and removals.
 type AccountRow = { key: number; label: string; orgs: string };
+
+const blankRow = (key: number): AccountRow => ({ key, label: "", orgs: "" });
 
 export default function GithubConnector({ onRefresh, flash, error }: ConnectorTabProps) {
   const nextKey = useRef(0);
@@ -53,20 +62,28 @@ export default function GithubConnector({ onRefresh, flash, error }: ConnectorTa
     copied: boolean;
   } | null>(null);
   const connectId = useRef(0);
+  // The first-run walkthrough, and the step-by-step token guide behind the (i).
+  const [tourOpen, setTourOpen] = useState(false);
+  const [guideOpen, setGuideOpen] = useState(false);
 
-  // Seed the rows from the saved accounts on mount.
+  // Seed the rows from the saved accounts on mount, and offer the walkthrough
+  // the first time this connector is opened.
   useEffect(() => {
     let cancelled = false;
     getConfig()
       .then((cfg) => {
         if (cancelled) return;
-        setRows(
-          cfg.github.accounts.map((a) => ({
-            key: nextKey.current++,
-            label: a.label,
-            orgs: a.orgs.join(", "),
-          })),
-        );
+        const saved = cfg.github.accounts.map((a) => ({
+          key: nextKey.current++,
+          label: a.label,
+          orgs: a.orgs.join(", "),
+        }));
+        // The walkthrough points at the token and organizations boxes, which only
+        // exist inside an account - so open a blank one for it to point at when
+        // there is nothing saved yet. That is also where the user has to start.
+        const firstVisit = !tourSeen(TOUR_ID);
+        setRows(saved.length || !firstVisit ? saved : [blankRow(nextKey.current++)]);
+        if (firstVisit) setTourOpen(true);
       })
       .catch((e) => console.error(e));
     return () => {
@@ -108,7 +125,18 @@ export default function GithubConnector({ onRefresh, flash, error }: ConnectorTa
   }
 
   function addAccount() {
-    setRows((rs) => [...rs, { key: nextKey.current++, label: "", orgs: "" }]);
+    setRows((rs) => [...rs, blankRow(nextKey.current++)]);
+  }
+
+  // Replaying the walkthrough needs something to point at, same as the first run.
+  function startTour() {
+    setRows((rs) => (rs.length ? rs : [blankRow(nextKey.current++)]));
+    setTourOpen(true);
+  }
+
+  function closeTour() {
+    setTourOpen(false);
+    markTourSeen(TOUR_ID);
   }
 
   // Rows -> persisted accounts, dropping any without a label.
@@ -213,10 +241,42 @@ export default function GithubConnector({ onRefresh, flash, error }: ConnectorTa
     }
   }
 
+  // The four things a new user has to understand, in the order they meet them.
+  // Anchored on `data-tour` attributes rather than class names so restyling the
+  // form can never quietly unhook the walkthrough.
+  const tourSteps: TourStep[] = [
+    {
+      selector: '[data-tour="add-account"]',
+      title: t("tour.addAccountTitle"),
+      body: t("tour.addAccountBody"),
+    },
+    {
+      selector: '[data-tour="pat"]',
+      title: t("tour.patTitle"),
+      body: t("tour.patBody"),
+    },
+    {
+      selector: '[data-tour="orgs"]',
+      title: t("tour.orgsTitle"),
+      body: t("tour.orgsBody"),
+    },
+    {
+      selector: '[data-tour="save"]',
+      title: t("tour.saveTitle"),
+      body: t("tour.saveBody"),
+    },
+  ];
+
   return (
     // The active sub-tab already names the connector, so the card carries no
     // heading of its own.
     <section className="card">
+      <div className="card-tools">
+        <button type="button" className="link-btn" onClick={startTour}>
+          {t("tour.replay")}
+        </button>
+      </div>
+
       {rows.length === 0 && <p className="muted">{t("settings.noGithubAccounts")}</p>}
 
       {rows.map((row, i) => {
@@ -284,11 +344,28 @@ export default function GithubConnector({ onRefresh, flash, error }: ConnectorTa
                   </button>
                 </div>
 
-                <div className="field">
-                  <label>{tokenStored ? t("settings.orPasteToken") : t("settings.pat")}</label>
+                <div className="field" data-tour={i === 0 ? "pat" : undefined}>
+                  {/* The (i) opens the step-by-step guide to making a token. It
+                      is a click, not a hover: the guide is something you read
+                      with GitHub open in another window, so it has to stay put. */}
+                  <div className="field-label">
+                    <label htmlFor={`gh-token-${row.key}`}>
+                      {tokenStored ? t("settings.orPasteToken") : t("settings.pat")}
+                    </label>
+                    <button
+                      type="button"
+                      className="info-btn"
+                      aria-label={t("patGuide.open")}
+                      title={t("patGuide.open")}
+                      onClick={() => setGuideOpen(true)}
+                    >
+                      i
+                    </button>
+                  </div>
                   {tokenStored && !isReplacing ? (
                     <div className="stored-token">
                       <input
+                        id={`gh-token-${row.key}`}
                         type="password"
                         value="storedtoken"
                         readOnly
@@ -307,6 +384,7 @@ export default function GithubConnector({ onRefresh, flash, error }: ConnectorTa
                     </div>
                   ) : (
                     <input
+                      id={`gh-token-${row.key}`}
                       type="password"
                       value={tokenInput[row.key] ?? ""}
                       onChange={(e) =>
@@ -342,9 +420,10 @@ export default function GithubConnector({ onRefresh, flash, error }: ConnectorTa
               </>
             )}
 
-            <div className="field">
-              <label>{t("settings.orgs")}</label>
+            <div className="field" data-tour={i === 0 ? "orgs" : undefined}>
+              <label htmlFor={`gh-orgs-${row.key}`}>{t("settings.orgs")}</label>
               <input
+                id={`gh-orgs-${row.key}`}
                 value={row.orgs}
                 onChange={(e) => patchRow(row.key, { orgs: e.target.value })}
                 placeholder={t("settings.orgsPlaceholder")}
@@ -355,13 +434,21 @@ export default function GithubConnector({ onRefresh, flash, error }: ConnectorTa
       })}
 
       <div className="field-actions account-actions">
-        <button className="save-btn" onClick={addAccount}>
+        <button className="save-btn" data-tour="add-account" onClick={addAccount}>
           {t("settings.addAccount")}
         </button>
-        <button className="save-btn" onClick={saveAll}>
+        <button className="save-btn" data-tour="save" onClick={saveAll}>
           {t("settings.save")}
         </button>
       </div>
+
+      {guideOpen && (
+        <GithubTokenGuide docsUrl={TOKEN_DOCS_URL} onClose={() => setGuideOpen(false)} />
+      )}
+      {/* The token step highlights the whole field, (i) included, and the hole in
+          the walkthrough's dim is clickable - so the guide can be opened mid-tour
+          and layers above it. */}
+      {tourOpen && <Tour steps={tourSteps} onClose={closeTour} />}
     </section>
   );
 }
