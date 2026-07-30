@@ -1309,3 +1309,302 @@ a:hover {
   gap: 16px;
   margin-top: 18px;
 }
+
+/* Small square (i) that opens a step-by-step guide next to a field's label. */
+.field-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+
+.field-label label {
+  margin-bottom: 0;
+}
+
+.info-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--border-bright);
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.info-btn:hover,
+.info-btn:focus-visible {
+  color: var(--bright);
+  border-color: var(--fill);
+}
+
+/* Right-aligned strip of card-level affordances (e.g. replay the walkthrough). */
+.card-tools {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+
+/* Guided tour - dims the app and rings one control at a time (see src/Tour.tsx). */
+.tour {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  animation: fade-in 200ms ease;
+  /* The container itself must not swallow clicks - only the dim does, and the
+     dim has a hole in it. Its interactive children opt back in below. */
+  pointer-events: none;
+}
+
+/* The dim, with the current target punched out of it. The hole is a real hole:
+   the highlighted control stays clickable, everything around it is inert. */
+.tour-dim {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.62);
+  pointer-events: auto;
+  transition: clip-path 280ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.tour-ring {
+  position: fixed;
+  border: 1px solid var(--fill);
+  pointer-events: none;
+  transition: top 280ms cubic-bezier(0.4, 0, 0.2, 1), left 280ms cubic-bezier(0.4, 0, 0.2, 1),
+    width 280ms cubic-bezier(0.4, 0, 0.2, 1), height 280ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* One slow outward pulse, so the eye lands on the ring without it flashing. */
+.tour-ring::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border: 1px solid var(--fill);
+  animation: tour-pulse 2s ease-out infinite;
+}
+
+.tour-bubble {
+  position: fixed;
+  pointer-events: auto;
+  max-width: calc(100vw - 24px);
+  padding: 12px 14px;
+  background: var(--panel);
+  border: 1px solid var(--border-bright);
+  border-left: 2px solid var(--fill);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  transition: top 280ms cubic-bezier(0.4, 0, 0.2, 1), left 280ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Keyed per step in the JSX, so the copy fades in on every move. */
+.tour-text {
+  animation: tour-step-in 260ms ease both;
+}
+
+.tour-count {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.tour-bubble h3 {
+  margin: 6px 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--bright);
+}
+
+.tour-bubble p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+.tour-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 14px;
+}
+
+.tour-nav {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-left: auto;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes tour-pulse {
+  0% {
+    opacity: 0.7;
+    transform: scale(1);
+  }
+  70%,
+  100% {
+    opacity: 0;
+    transform: scale(1.05);
+  }
+}
+
+@keyframes tour-step-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Modal dialog (the token guide). Sits above the tour, so it can be opened
+   without leaving the walkthrough. */
+.modal-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.62);
+  animation: fade-in 160ms ease;
+}
+
+.modal {
+  display: flex;
+  flex-direction: column;
+  width: min(640px, 100%);
+  max-height: 100%;
+  background: var(--panel);
+  border: 1px solid var(--border-bright);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+  animation: tour-step-in 200ms ease both;
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.modal-head h2 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+}
+
+.modal-head .link-btn {
+  margin-left: auto;
+}
+
+.modal-body {
+  padding: 14px 16px 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+/* Step-by-step token guide inside the modal. */
+.guide-lede {
+  margin: 0 0 14px;
+  color: var(--text);
+}
+
+.guide-steps {
+  margin: 0;
+  padding-left: 20px;
+  color: var(--text);
+}
+
+.guide-steps > li {
+  margin-bottom: 12px;
+  padding-left: 4px;
+}
+
+.guide-steps strong {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--bright);
+  font-weight: 600;
+}
+
+/* Which boxes to tick, one scope per line with its permission spelled out. */
+.guide-scopes {
+  margin: 8px 0 0;
+  padding-left: 0;
+  list-style: none;
+}
+
+/* Chip and explanation on one baseline, with the wrapped text kept clear of the
+   chip rather than sliding back under it. */
+.guide-scopes li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+  color: var(--muted);
+}
+
+.guide-scopes code {
+  flex: none;
+  padding: 0 5px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--bright);
+}
+
+.guide-note {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.guide-note strong {
+  color: var(--bright);
+  font-weight: 600;
+}
+
+.guide-note p {
+  margin: 4px 0 0;
+  color: var(--muted);
+}
+
+/* Respect a system-level request for less motion: everything still works, it
+   just arrives instead of travelling. */
+@media (prefers-reduced-motion: reduce) {
+  .tour,
+  .tour-dim,
+  .tour-ring,
+  .tour-ring::after,
+  .tour-bubble,
+  .tour-text,
+  .modal-scrim,
+  .modal {
+    animation: none;
+    transition: none;
+  }
+}
