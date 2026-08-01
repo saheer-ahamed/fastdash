@@ -11,7 +11,7 @@
 //! for "today"; see `AppConfig::timezone` for the setting this will eventually
 //! read.
 
-use chrono::{Datelike, Duration, FixedOffset, NaiveDate, Utc};
+use chrono::{Duration, FixedOffset, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::engine::i18n;
@@ -95,9 +95,6 @@ impl DateRange {
             if self.start == today - Duration::days(29) {
                 return i18n::t("range.last30");
             }
-            if self.start == month_start(today) {
-                return i18n::t("range.thisMonth");
-            }
         }
 
         i18n::tf(
@@ -123,10 +120,6 @@ fn pretty(day: NaiveDate) -> String {
     day.format("%b %-d, %Y").to_string()
 }
 
-fn month_start(day: NaiveDate) -> NaiveDate {
-    NaiveDate::from_ymd_opt(day.year(), day.month(), 1).unwrap_or(day)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,7 +141,8 @@ mod tests {
         assert_eq!(label(day(2026, 7, 26), day(2026, 7, 26)), "Yesterday");
         assert_eq!(label(day(2026, 7, 21), today), "Last 7 days");
         assert_eq!(label(day(2026, 6, 28), today), "Last 30 days");
-        assert_eq!(label(day(2026, 7, 1), today), "This month");
+        // Month-to-date is no longer a preset: it reads as the span it is.
+        assert_eq!(label(day(2026, 7, 1), today), "Jul 1, 2026 - Jul 27, 2026");
     }
 
     #[test]

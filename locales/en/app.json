@@ -14,7 +14,6 @@
     "yesterday": "Yesterday",
     "last7": "Last 7 days",
     "last30": "Last 30 days",
-    "thisMonth": "This month",
     "custom": "Custom",
     "singleDay": "{date}",
     "span": "{start} - {end}",
