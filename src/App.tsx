@@ -121,9 +121,12 @@ export default function App() {
 
   // On showing a connector - or moving the date filter - seed instantly from
   // whatever is already cached and fetch otherwise. The warm backend cache only
-  // holds today, so any other range goes straight to a fetch.
+  // holds today, so any other range goes straight to a fetch. GitHub is exempt:
+  // its tab renders per-account views it fetches itself, so refreshing the
+  // connector here would spend a second round of the API budget - on the same
+  // rate-limited endpoints - for a snapshot nothing renders.
   useEffect(() => {
-    if (!active) return;
+    if (!active || active === "github") return;
     const key = snapKey(active, range);
     if (snapshotsRef.current[key]) return;
     if (rangeKey(range) !== rangeKey(todayRange())) {
@@ -316,6 +319,10 @@ function ExtLink({ href, children }: { href: string; children: ReactNode }) {
 // `github_fetch` and self-refreshes on the connector cadence.
 const GITHUB_REFRESH_MS = 60_000;
 
+// The backend's marker for "a newer request took over". Not an error: the view
+// keeps whatever it already had, and the request that superseded it will paint.
+const SUPERSEDED = "superseded";
+
 // Stable cache key for an (account, org, range) view. ` ` can't appear in a
 // label or org, so it's a safe separator.
 const viewKey = (label: string, org: string | null, range: DateRange) =>
@@ -345,6 +352,15 @@ function useGithubState(range: DateRange) {
   const [snaps, setSnaps] = useState<Record<string, Snapshot>>({});
   // Which views have a fetch in flight, so each tab's refresh spins on its own.
   const [loadingKeys, setLoadingKeys] = useState<Record<string, boolean>>({});
+  // Views whose last fetch failed. The cached snapshot stays on screen, but the
+  // topbar says so - a silently swallowed failure looks exactly like a refresh
+  // that fetched nothing new.
+  const [failedKeys, setFailedKeys] = useState<Record<string, boolean>>({});
+  // Monotonic request counter per view. Only the newest request for a view may
+  // paint: overlapping fetches resolve in whatever order the network decides,
+  // and without this an older one landing late repaints stale data over fresh -
+  // which then sat there until the app was relaunched.
+  const requestIds = useRef<Record<string, number>>({});
   // Latest snapshots, readable inside the switch effect without making it a
   // dependency (which would reset the refresh interval on every fetch).
   const snapsRef = useRef(snaps);
@@ -370,15 +386,37 @@ function useGithubState(range: DateRange) {
   }, [reloadAccounts]);
 
   // Fetch one view in the background: never clears the cached snapshot, only
-  // flags the view as loading and overlays the result when it arrives.
-  const load = useCallback((lbl: string, o: string | null, r: DateRange) => {
-    const key = viewKey(lbl, o, r);
-    setLoadingKeys((l) => ({ ...l, [key]: true }));
-    invoke<Snapshot>("github_fetch", { label: lbl, org: o, range: r })
-      .then((s) => setSnaps((m) => ({ ...m, [key]: s })))
-      .catch((e) => console.error(e))
-      .finally(() => setLoadingKeys((l) => ({ ...l, [key]: false })));
-  }, []);
+  // flags the view as loading and overlays the result when it arrives. Anything
+  // a newer request for the same view has already superseded is dropped, so the
+  // view can only ever move forward in time. `force` is the manual Refresh
+  // button, which skips the backend's short reuse window.
+  const load = useCallback(
+    (lbl: string, o: string | null, r: DateRange, force = false) => {
+      const key = viewKey(lbl, o, r);
+      const id = (requestIds.current[key] = (requestIds.current[key] ?? 0) + 1);
+      const current = () => requestIds.current[key] === id;
+
+      setLoadingKeys((l) => ({ ...l, [key]: true }));
+      invoke<Snapshot>("github_fetch", { label: lbl, org: o, range: r, force })
+        .then((s) => {
+          if (!current()) return;
+          setSnaps((m) => ({ ...m, [key]: s }));
+          setFailedKeys((f) => ({ ...f, [key]: false }));
+        })
+        .catch((e) => {
+          // The backend cancels the fetch for a view the user has left; that is
+          // the intended outcome, not a failure to report.
+          if (String(e).includes(SUPERSEDED) || !current()) return;
+          console.error(e);
+          setFailedKeys((f) => ({ ...f, [key]: true }));
+        })
+        .finally(() => {
+          // A superseded request must not clear the spinner its successor owns.
+          if (current()) setLoadingKeys((l) => ({ ...l, [key]: false }));
+        });
+    },
+    [],
+  );
 
   // Keep the selected view fresh: refetch if its cached snapshot is missing or
   // older than the refresh cadence - flipping between recently-loaded views (or
@@ -405,7 +443,18 @@ function useGithubState(range: DateRange) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [label, org, key, load]);
 
-  return { accounts, label, setLabel, org, setOrg, snaps, loadingKeys, load, reloadAccounts };
+  return {
+    accounts,
+    label,
+    setLabel,
+    org,
+    setOrg,
+    snaps,
+    loadingKeys,
+    failedKeys,
+    load,
+    reloadAccounts,
+  };
 }
 
 function GithubView({
@@ -419,12 +468,14 @@ function GithubView({
   preset: PresetId;
   onRange: (next: DateRange, preset: PresetId) => void;
 }) {
-  const { accounts, label, setLabel, org, setOrg, snaps, loadingKeys, load } = state;
+  const { accounts, label, setLabel, org, setOrg, snaps, loadingKeys, failedKeys, load } =
+    state;
 
   const activeAccount = accounts.find((a) => a.label === label);
   const key = label ? viewKey(label, org, range) : null;
   const snap = key ? snaps[key] : undefined;
   const loading = key ? !!loadingKeys[key] : false;
+  const failed = key ? !!failedKeys[key] : false;
 
   if (accounts.length === 0) {
     return (
@@ -442,15 +493,21 @@ function GithubView({
       <header className="topbar">
         <h1>GitHub</h1>
         <div className="actions">
-          {snap && (
-            <span className="muted">
-              {t("app.updated", { time: fetchedLabel(snap.fetchedAt) })}
+          {failed && !loading ? (
+            <span className="stale" role="status">
+              {t("app.refreshFailed")}
             </span>
+          ) : (
+            snap && (
+              <span className="muted">
+                {t("app.updated", { time: fetchedLabel(snap.fetchedAt) })}
+              </span>
+            )
           )}
           <button
             className="refresh"
             disabled={loading || !label}
-            onClick={() => label && load(label, org, range)}
+            onClick={() => label && load(label, org, range, true)}
             aria-label={t("app.refresh")}
           >
             {loading && <span className="spinner" aria-hidden />}

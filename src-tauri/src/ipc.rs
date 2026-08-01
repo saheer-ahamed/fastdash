@@ -106,13 +106,26 @@ pub fn delete_secret(connector: String, label: String) -> Result<(), String> {
 /// Fetch the GitHub dashboard for one account, optionally scoped to a single org
 /// (`org = None` means all of the account's orgs) and to a day range (`None`
 /// means today). Drives the account sub-tabs, org filter, and date filter.
+///
+/// Only one GitHub fetch runs at a time: this cancels whatever was still in
+/// flight, so flipping through sub-tabs or date ranges costs one fetch rather
+/// than one per click. A superseded call comes back as `Err("superseded")`,
+/// which the UI ignores. `force` skips the short reuse window behind the manual
+/// Refresh button.
 #[tauri::command]
 pub async fn github_fetch(
     label: String,
     org: Option<String>,
     range: Option<DateRange>,
-) -> Snapshot {
-    crate::connectors::github::fetch_account(label, org, range.unwrap_or_default()).await
+    force: Option<bool>,
+) -> Result<Snapshot, String> {
+    crate::connectors::github::fetch_account(
+        label,
+        org,
+        range.unwrap_or_default(),
+        force.unwrap_or(false),
+    )
+    .await
 }
 
 /// Open a URL in the user's default external browser. Restricted to http(s) so a

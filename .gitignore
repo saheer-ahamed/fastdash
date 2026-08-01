@@ -16,9 +16,10 @@
 .envrc
 .direnv/
 
-# updater signing key - the private half must never be committed
-fastdash.key
-fastdash.key.pub
+# updater signing key - the private half must never be committed. The glob also
+# covers backups (fastdash.key.bak-*), which the two exact names missed - one
+# `git add -A` away from publishing the key that signs every release.
+fastdash.key*
 
 # logs / os cruft
 *.log

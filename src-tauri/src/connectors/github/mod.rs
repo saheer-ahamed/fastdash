@@ -22,6 +22,7 @@ mod aggregate;
 mod client;
 mod config;
 pub mod device_flow;
+mod gate;
 
 use std::collections::HashMap;
 
@@ -36,8 +37,12 @@ use crate::engine::range::{self, DateRange};
 use aggregate::{LineContrib, PrEntry, PrState, Rollup};
 use client::{CalendarWindow, EnrichedPr, GithubClient, GithubError, PrRef, SearchItem};
 use config::GithubConfig;
+use gate::Cancel;
 
 const REFRESH_SECS: u64 = 60;
+/// Error string `github_fetch` returns when a newer request took over. The UI
+/// recognizes it and quietly keeps what it already has - it is not a failure.
+pub const SUPERSEDED: &str = "superseded";
 /// Year tabs on the contribution heatmap (current year plus the previous four),
 /// clamped to the years the account has actually existed.
 const HEATMAP_YEARS: i32 = 5;
@@ -61,6 +66,11 @@ impl Connector for GithubConnector {
         }
     }
 
+    /// The scheduler's periodic tick, which only feeds the sidebar status dot -
+    /// the GitHub tab drives its own per-account views through `fetch_account`.
+    /// It therefore never preempts a fetch the user is waiting on: if one is
+    /// already running it reuses the last snapshot rather than doubling the
+    /// Search API spend to compute the same thing twice.
     async fn fetch(&self, ctx: &FetchCtx) -> Result<Snapshot, ConnectorError> {
         // Days are fixed to IST per the design (PRs near midnight are attributed
         // by IST datetime bounds). `ctx.timezone` is ignored for now.
@@ -68,8 +78,24 @@ impl Connector for GithubConnector {
             return Ok(Snapshot::needs_auth(i18n::t("github.needsAuth")));
         };
 
-        match run_fetch(&cfg, &ctx.range).await {
-            Ok(snapshot) => Ok(snapshot),
+        let key = view_key(&cfg.label, None, &ctx.range);
+        if let Some(snapshot) = gate::gate().fresh(&key) {
+            return Ok(snapshot);
+        }
+        let Some(lease) = gate::gate().begin_if_idle(&key) else {
+            return Ok(gate::gate()
+                .last(&key)
+                .unwrap_or_else(|| Snapshot::ok(vec![], Some(REFRESH_SECS))));
+        };
+
+        match run_fetch(&cfg, &ctx.range, lease.cancel()).await {
+            Ok(snapshot) => {
+                gate::gate().finish(&lease, &snapshot);
+                Ok(snapshot)
+            }
+            Err(GithubError::Cancelled) => Ok(gate::gate()
+                .last(&key)
+                .unwrap_or_else(|| Snapshot::ok(vec![], Some(REFRESH_SECS)))),
             Err(GithubError::RateLimited { retry_after_secs }) => {
                 Ok(rate_limited_snapshot(retry_after_secs))
             }
@@ -79,17 +105,50 @@ impl Connector for GithubConnector {
     }
 }
 
+/// Stable key for one dashboard view: account, org filter and date range - the
+/// three things that change what is fetched. `\u{1f}` (unit separator) can
+/// appear in none of them, so two views can never collide on the same key.
+fn view_key(label: &str, org: Option<&str>, range: &DateRange) -> String {
+    let range = range.normalized();
+    format!(
+        "{label}\u{1f}{org}\u{1f}{start}\u{1f}{end}",
+        org = org.unwrap_or_default(),
+        start = range.start,
+        end = range.end,
+    )
+}
+
 /// Fetch a specific account's dashboard, optionally scoped to a single org
 /// (an org-filter sub-tab; `None` means all of the account's orgs), over the
-/// selected day range. Always returns a `Snapshot` carrying the right `Health`
-/// (needsAuth / rateLimited / error) so the UI can render a banner instead of
-/// surfacing a raw error.
-pub async fn fetch_account(label: String, org: Option<String>, range: DateRange) -> Snapshot {
+/// selected day range. Any outcome the user should see comes back as a
+/// `Snapshot` carrying the right `Health` (needsAuth / rateLimited /
+/// misconfigured / error) so the UI renders a banner rather than a raw error;
+/// the one `Err` is [`SUPERSEDED`], meaning a newer request took over.
+///
+/// Changing account, org or date range therefore cancels the fetch for the view
+/// just left instead of stacking another one on top of it, and a snapshot
+/// younger than the gate's TTL is reused unless `force` is set (the manual
+/// Refresh button).
+pub async fn fetch_account(
+    label: String,
+    org: Option<String>,
+    range: DateRange,
+    force: bool,
+) -> Result<Snapshot, String> {
+    let key = view_key(&label, org.as_deref(), &range);
+    if !force {
+        if let Some(snapshot) = gate::gate().fresh(&key) {
+            return Ok(snapshot);
+        }
+    }
     let Some(cfg) = GithubConfig::for_account(&label, org.as_deref()) else {
-        return Snapshot::needs_auth(i18n::t("github.needsAuth"));
+        return Ok(Snapshot::needs_auth(i18n::t("github.needsAuth")));
     };
-    match run_fetch(&cfg, &range).await {
+
+    let lease = gate::gate().begin(&key);
+    let snapshot = match run_fetch(&cfg, &range, lease.cancel()).await {
         Ok(snapshot) => snapshot,
+        Err(GithubError::Cancelled) => return Err(SUPERSEDED.to_string()),
         Err(GithubError::RateLimited { retry_after_secs }) => {
             rate_limited_snapshot(retry_after_secs)
         }
@@ -107,10 +166,25 @@ pub async fn fetch_account(label: String, org: Option<String>, range: DateRange)
             fetched_at: Utc::now(),
             next_refresh_secs: None,
         },
+    };
+    // A result that lost the race is dropped by the gate, and the caller is told
+    // it was superseded - painting it would be the out-of-order repaint that
+    // made a refresh look like it had fetched nothing new.
+    if lease.cancel().cancelled() {
+        return Err(SUPERSEDED.to_string());
     }
+    gate::gate().finish(&lease, &snapshot);
+    Ok(snapshot)
 }
 
-async fn run_fetch(cfg: &GithubConfig, range: &DateRange) -> Result<Snapshot, GithubError> {
+/// One dashboard fetch. `cancel` is polled between requests, so a fetch the user
+/// has navigated away from stops after the call already in flight rather than
+/// working through every remaining scope.
+async fn run_fetch(
+    cfg: &GithubConfig,
+    range: &DateRange,
+    cancel: &Cancel,
+) -> Result<Snapshot, GithubError> {
     // Nothing to search. Caught here rather than falling through to an empty
     // dashboard, which reads as "no activity" instead of "not set up yet".
     if cfg.orgs.is_empty() {
@@ -140,7 +214,7 @@ async fn run_fetch(cfg: &GithubConfig, range: &DateRange) -> Result<Snapshot, Gi
         // rather than being reported as a settings mistake that retrying cannot
         // fix. A rate limit is global too: trying the remaining scopes would
         // only burn more quota.
-        let Some(sets) = search_scope(&client, &scope, &bounds).await? else {
+        let Some(sets) = search_scope(&client, &scope, &bounds, cancel).await? else {
             eprintln!("github: scope {scope} is unsearchable with this token");
             failed.push(scope);
             continue;
@@ -185,7 +259,7 @@ async fn run_fetch(cfg: &GithubConfig, range: &DateRange) -> Result<Snapshot, Gi
     let enriched = if merged_refs.is_empty() {
         Vec::new()
     } else {
-        client.enrich_prs(&merged_refs).await?
+        client.enrich_prs(&merged_refs, cancel).await?
     };
 
     // Index enrichment by (nameWithOwner, number) for overlay onto the union.
@@ -252,6 +326,9 @@ async fn run_fetch(cfg: &GithubConfig, range: &DateRange) -> Result<Snapshot, Gi
     // The contribution calendar is viewer-scoped, not org-scoped, so it is the
     // same on every org sub-tab. Best-effort: a GraphQL failure drops the
     // heatmap, never the dashboard.
+    if cancel.cancelled() {
+        return Err(GithubError::Cancelled);
+    }
     let contributions = contributions_panels(&client).await;
 
     let mut panels = aggregate::build_panels(&rollup, ist, &range, contributions);
@@ -288,6 +365,7 @@ async fn search_scope(
     client: &GithubClient,
     scope: &str,
     bounds: &str,
+    cancel: &Cancel,
 ) -> Result<Option<ScopeSets>, GithubError> {
     let queries = [
         format!("{scope} type:pr created:{bounds}"),
@@ -297,7 +375,7 @@ async fn search_scope(
 
     let mut sets = Vec::with_capacity(queries.len());
     for q in queries {
-        match client.search_issues(&q).await {
+        match client.search_issues(&q, cancel).await {
             Ok(items) => sets.push(items),
             Err(GithubError::Status { code: 422, .. }) => return Ok(None),
             Err(e) => return Err(e),
@@ -648,6 +726,36 @@ mod tests {
 mod live_test {
     use super::*;
 
+    /// Switching view while a fetch is running must cancel the one being left,
+    /// against the real API - the whole point being that the abandoned view
+    /// stops spending the Search budget and can never paint over the view the
+    /// user actually switched to. Ignored by default; run with:
+    ///   GITHUB_TOKEN=<token> cargo test --lib github::live_test::switching_views -- --ignored --nocapture
+    #[ignore = "hits the live GitHub API; run with --ignored and GITHUB_TOKEN set"]
+    #[tokio::test]
+    async fn switching_views_cancels_the_fetch_left_behind() {
+        let cfg = GithubConfig::resolve().expect("set GITHUB_TOKEN for the live test");
+        let scope = cfg.orgs.first().cloned().expect("a scope to narrow to");
+
+        // The view the user leaves, then the one they land on - started while
+        // the first is still in flight, exactly as a fast sub-tab click does.
+        let left = tokio::spawn(fetch_account(
+            cfg.label.clone(),
+            None,
+            DateRange::today(),
+            true,
+        ));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let landed = fetch_account(cfg.label.clone(), Some(scope), DateRange::today(), true).await;
+
+        assert_eq!(
+            left.await.expect("task panicked").err().as_deref(),
+            Some(SUPERSEDED),
+            "the abandoned view must stand down instead of returning data"
+        );
+        assert!(landed.is_ok(), "the view switched to must still load");
+    }
+
     /// Live smoke test against the real GitHub API. Ignored by default; run with:
     ///   GITHUB_TOKEN=<token> cargo test -p fastdash github::live_test -- --ignored --nocapture
     /// (get a work-account token via `gh auth token -u saheer-zro`).
@@ -659,7 +767,9 @@ mod live_test {
         eprintln!("orgs: {:?}", cfg.orgs);
         eprintln!("bounds: {}", range.ist_bounds());
 
-        let snapshot = run_fetch(&cfg, &range).await.expect("fetch failed");
+        let snapshot = run_fetch(&cfg, &range, &Cancel::none())
+            .await
+            .expect("fetch failed");
         eprintln!("status: {:?}", snapshot.status);
         eprintln!("panels: {}", snapshot.panels.len());
         let json = serde_json::to_string_pretty(&snapshot.panels).unwrap();
@@ -696,7 +806,10 @@ mod live_test {
         eprintln!("calendar breakdown: {breakdown:#?}");
 
         let authored = client
-            .search_issues(&format!("author:{} type:pr", profile.login))
+            .search_issues(
+                &format!("author:{} type:pr", profile.login),
+                &Cancel::none(),
+            )
             .await
             .map(|v| v.len())
             .unwrap_or(0);

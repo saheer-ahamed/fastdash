@@ -4,6 +4,7 @@
     "refresh": "Refresh",
     "refreshing": "...",
     "updated": "updated {time}",
+    "refreshFailed": "couldn't refresh - showing the last data",
     "settings": "Settings",
     "connectors": "Connectors",
     "noConnectors": "No connectors available."
