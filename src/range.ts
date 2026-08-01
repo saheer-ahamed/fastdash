@@ -5,7 +5,7 @@
 
 import type { DateRange } from "./types";
 
-export type PresetId = "today" | "yesterday" | "last7" | "last30" | "thisMonth" | "custom";
+export type PresetId = "today" | "yesterday" | "last7" | "last30" | "custom";
 
 // Chip order in the filter bar. "custom" is last and reveals the two date
 // inputs instead of resolving to a fixed span.
@@ -14,7 +14,6 @@ export const PRESETS: { id: PresetId; labelKey: string }[] = [
   { id: "yesterday", labelKey: "range.yesterday" },
   { id: "last7", labelKey: "range.last7" },
   { id: "last30", labelKey: "range.last30" },
-  { id: "thisMonth", labelKey: "range.thisMonth" },
   { id: "custom", labelKey: "range.custom" },
 ];
 
@@ -47,10 +46,6 @@ export function presetRange(id: PresetId, current?: DateRange): DateRange {
       return { start: toISODate(daysAgo(6)), end: today };
     case "last30":
       return { start: toISODate(daysAgo(29)), end: today };
-    case "thisMonth": {
-      const now = new Date();
-      return { start: toISODate(new Date(now.getFullYear(), now.getMonth(), 1)), end: today };
-    }
     case "custom":
       return current ?? { start: today, end: today };
   }

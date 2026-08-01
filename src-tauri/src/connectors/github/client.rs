@@ -6,6 +6,8 @@ use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
+use super::gate::Cancel;
+
 const SEARCH_URL: &str = "https://api.github.com/search/issues";
 const GRAPHQL_URL: &str = "https://api.github.com/graphql";
 /// Search returns at most 1000 results (10 pages of 100); cap accordingly.
@@ -33,6 +35,10 @@ pub enum GithubError {
     Header(String),
     #[error("graphql error: {0}")]
     GraphQl(String),
+    /// The caller moved on (another view, a newer refresh) and this fetch stood
+    /// down mid-flight. Not a failure: it must never reach the UI as one.
+    #[error("superseded")]
+    Cancelled,
 }
 
 /// A pull request reference (owner/repo/number) drawn from a search result.
@@ -180,12 +186,21 @@ impl GithubClient {
     }
 
     /// Run a Search API query, following pagination. `query` is the raw `q`
-    /// value, e.g. `org:z-roworld type:pr created:<bounds>`.
-    pub async fn search_issues(&self, query: &str) -> Result<Vec<SearchItem>, GithubError> {
+    /// value, e.g. `org:z-roworld type:pr created:<bounds>`. `cancel` is checked
+    /// before every page: a superseded fetch must not keep spending the Search
+    /// budget (30 requests/minute) on a view nobody is looking at.
+    pub async fn search_issues(
+        &self,
+        query: &str,
+        cancel: &Cancel,
+    ) -> Result<Vec<SearchItem>, GithubError> {
         let mut items = Vec::new();
         let mut page = 1u32;
 
         loop {
+            if cancel.cancelled() {
+                return Err(GithubError::Cancelled);
+            }
             let resp = self
                 .http
                 .get(SEARCH_URL)
@@ -248,10 +263,17 @@ impl GithubClient {
 
     /// Enrich a set of PRs (by owner/repo/number) with additions, deletions,
     /// author, state, title, `nameWithOwner`, and url in batched GraphQL calls.
-    pub async fn enrich_prs(&self, prs: &[PrRef]) -> Result<Vec<EnrichedPr>, GithubError> {
+    pub async fn enrich_prs(
+        &self,
+        prs: &[PrRef],
+        cancel: &Cancel,
+    ) -> Result<Vec<EnrichedPr>, GithubError> {
         let mut out = Vec::with_capacity(prs.len());
 
         for chunk in prs.chunks(GRAPHQL_CHUNK) {
+            if cancel.cancelled() {
+                return Err(GithubError::Cancelled);
+            }
             // Node-not-found style errors are non-fatal (repo/PR moved), so
             // partial data is kept; `graphql` only bails when nothing came back.
             let Some(data) = self.graphql(&build_graphql_query(chunk)).await? else {

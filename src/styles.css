@@ -323,6 +323,13 @@ button {
   color: var(--muted);
 }
 
+/* Takes the place of the "updated HH:MM" label when the last refresh failed, so
+   a stale panel never passes for a fresh one. Sits at the same size and weight
+   as the label it replaces - only the colour says something is wrong. */
+.stale {
+  color: var(--warn);
+}
+
 .panels {
   padding: 16px 20px;
   display: flex;
