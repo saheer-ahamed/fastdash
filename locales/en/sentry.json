@@ -1,0 +1,60 @@
+{
+  "sentry": {
+    "stats": {
+      "issues": "Unresolved issues",
+      "newIssues": "New issues",
+      "events": "Events",
+      "projects": "Projects affected"
+    },
+    "table": {
+      "issues": "Unresolved issues - {range}",
+      "byProject": "Events by project"
+    },
+    "column": {
+      "issue": "Issue",
+      "where": "Where",
+      "whereHint": "Sentry's culprit - the function, route, or file the error was attributed to. Long paths are shortened; the linked issue has the full text.",
+      "project": "Project",
+      "level": "Level",
+      "events": "Events",
+      "eventsHint": "Events recorded for this issue inside the selected date range, not its lifetime total.",
+      "users": "Users",
+      "usersHint": "Distinct users who hit this issue inside the selected date range.",
+      "lastSeen": "Last seen",
+      "lastSeenHint": "When Sentry last recorded an event for this issue."
+    },
+    "level": {
+      "fatal": "Fatal",
+      "error": "Error",
+      "warning": "Warning",
+      "info": "Info",
+      "debug": "Debug",
+      "sample": "Sample"
+    },
+    "empty": "No unresolved issue recorded any events in this range.",
+    "truncatedTitle": "Showing the busiest issues only",
+    "truncated": "Sentry had more than the {n} issues listed. They are the ones with the most events, and the totals above count only those - narrow the date range for a complete picture.",
+    "needsAuth": "Add a Sentry auth token under Connectors (or set the SENTRY_AUTH_TOKEN env var) to see your issues.",
+    "tokenRejected": "Sentry rejected the token for {label}. Auth tokens expire and can be revoked - create a new one under Sentry Settings -> Account -> User Auth Tokens and paste it in under Connectors.",
+    "missingScopes": "Sentry won't let the {label} token read issues. It needs the org:read, project:read and event:read scopes, and event:read is the one that returns the issue stream. Recreate the token with all three under Sentry Settings -> Account -> User Auth Tokens.",
+    "orgTokenKind": "The token for {label} is a Sentry organization auth token (sntrys_...). Those exist for CI - uploading releases and source maps - and carry no event:read, so there is no scope to tick that would let this one read issues. Replace it with a user auth token from Sentry Settings -> Account -> User Auth Tokens.",
+    "badUrl": "{url} doesn't answer as a Sentry API for {label}. Use https://sentry.io, your region host (https://de.sentry.io), or the origin of your self-hosted install - the part of the URL before /organizations/.",
+    "noOrgs": "The token for {label} can't see any Sentry organizations. Either it lacks the org:read scope or the account belongs to none. If you'd rather not grant org:read, name the organizations explicitly under Connectors.",
+    "orgsFailed": "Sentry doesn't recognize {orgs} for this token. Check the slug under Connectors - it's the part of your Sentry URL after /organizations/ - or clear the field to use every organization the token can see.",
+    "orgsFailedTitle": "Some organizations couldn't be read",
+    "orgsPartial": "Excludes {orgs}: Sentry doesn't recognize them for this token. The numbers below cover the remaining organizations only.",
+    "setup": {
+      "noAccounts": "No Sentry connections yet. Add one to start tracking issues.",
+      "token": "Auth token",
+      "tokenHelp": "A user auth token with org:read, project:read and event:read. Create one under Sentry Settings -> Account -> User Auth Tokens.",
+      "tokenWarning": "Organization tokens (sntrys_...) are built for CI and cannot read issues - fastdash will tell you so if you paste one.",
+      "docs": "Setting up Sentry, explained",
+      "baseUrl": "Sentry URL",
+      "baseUrlPlaceholder": "https://sentry.io",
+      "baseUrlHelp": "Leave this as it is for sentry.io. Use https://de.sentry.io if your organization is pinned to the EU region, or your own origin for a self-hosted install.",
+      "orgs": "Organizations",
+      "orgsPlaceholder": "acme-inc, my-team - leave empty for all",
+      "orgsHelp": "The slug from your Sentry URL, the part after /organizations/. Leave it empty to report on every organization the token can see."
+    }
+  }
+}

@@ -1,6 +1,6 @@
 # fastdash
 
-A super-fast desktop dashboard for Claude usage, with pluggable connectors (GitHub, with Slack planned).
+A super-fast desktop dashboard for Claude usage, with pluggable connectors (GitHub and Sentry, with Slack planned).
 
 Built with Tauri v2 (Rust core) and a React + TypeScript frontend.
 
@@ -8,6 +8,7 @@ Built with Tauri v2 (Rust core) and a React + TypeScript frontend.
 
 - **Claude**: token usage (total and per model), efforts used, weekly usage, the current 5-hour window, reset countdown, and cost - read from local `~/.claude` transcripts, with official `/usage` numbers overlaid when available.
 - **GitHub**: per selected org, today's per-contributor PR counts (opened / merged / closed-without-merge / open), line contributions (based on PRs merged today), and the PR list with repos.
+- **Sentry**: per organization, the unresolved issues that fired in the selected range - how many, how many are new, the event total, which projects they came from, and the issue list with events, users affected, and when each was last seen.
 - **Slack** (planned, not yet available): per workspace, the channels that mentioned me today.
 
 ## Install
@@ -86,6 +87,43 @@ Two more constraints come from GitHub, not fastdash:
 - A fine-grained token belongs to **one** resource owner, so it cannot span several orgs. Tracking two orgs this way means two account rows, each with its own token.
 - If the org enforces a token policy, an owner has to approve the token before it works.
 
+## Connecting Sentry
+
+Add a connection under **Connectors -> Sentry**, give it a label and an auth token, then leave the rest at their defaults unless one of the notes below applies.
+
+### The token
+
+Create a **user auth token** at **Sentry Settings -> Account -> User Auth Tokens** with three read scopes.
+
+| Scope | What it unlocks |
+|-------|-----------------|
+| `event:read` | The issue stream itself - every number on the dashboard comes from it |
+| `project:read` | The project each issue belongs to, and the events-by-project breakdown |
+| `org:read` | Discovering which organizations the token can see, so the Organizations field can be left empty |
+
+An **internal integration** token (Settings -> Developer Settings) works the same way and is the better choice for a shared or team setup, since it is not tied to one person's account.
+
+Sentry's third token kind does not work, and cannot be made to: an **organization auth token** (`sntrys_...`) exists for CI - uploading releases and source maps - and has no `event:read` scope to grant.
+fastdash recognizes the prefix and says so rather than telling you to tick a box that is not there.
+
+### Sentry URL
+
+Leave it empty for `sentry.io`.
+
+- **EU-region organizations** are served from `https://de.sentry.io`; the `sentry.io` host will not find them.
+- **Self-hosted** installs use their own origin, e.g. `https://sentry.example.com` - the part of the URL before `/organizations/`. A pasted `/api/0` suffix is stripped for you.
+
+### Organizations
+
+The slug from your Sentry URL, the part after `/organizations/`.
+Leave the field empty to report on **every** organization the token can see, which is what `org:read` is for.
+Naming them explicitly is the way to skip that discovery call, and the only way to work with a token that has no `org:read`.
+
+Two things the connector does deliberately:
+
+- It reports on **unresolved** issues only. That is a state filter, not a date one, so an issue that first fired months ago and is still erroring today shows up - which is the point. **New issues** is the stat that separates the two.
+- **Events** counts what happened inside the selected date range, not an issue's lifetime total. Projects are not narrowable: the connector asks for every project the token can read in one request and derives the breakdown from the results, rather than spending a round trip per project.
+
 ## Prerequisites
 
 These are for building from source; installing a release needs none of them.
@@ -116,5 +154,5 @@ Each connector is developed in its own worktree.
 
 ## Status
 
-Scaffold: core engine, connector trait, generic panel renderer, and the Claude and GitHub connectors are wired.
+Scaffold: core engine, connector trait, generic panel renderer, and the Claude, GitHub and Sentry connectors are wired.
 Connector implementations are in progress; the Slack connector is planned but not yet implemented.

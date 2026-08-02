@@ -13,7 +13,8 @@ use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
 /// Root, non-secret configuration. Every connector reads only the slice it needs
-/// (GitHub reads `github`, Claude reads `claude`); all of them share `timezone`.
+/// (GitHub reads `github`, Claude reads `claude`, Sentry reads `sentry`); all of
+/// them share `timezone`.
 ///
 /// Serialized camelCase because this struct crosses to the frontend verbatim
 /// through `get_config`/`save_config`, and the TypeScript mirror in `types.ts`
@@ -34,6 +35,9 @@ pub struct AppConfig {
     /// Claude Console connection. The Admin API key itself lives in the
     /// keychain under `claude/console`.
     pub claude: ClaudeConfig,
+    /// Sentry connections and their organizations. The auth token for a
+    /// connection lives in the keychain under `sentry/{label}`.
+    pub sentry: SentryConfig,
     /// When true, connectors that surface authors filter out bots
     /// (dependabot and similar).
     #[serde(alias = "filter_bots")]
@@ -47,6 +51,7 @@ impl Default for AppConfig {
             locale: "en".to_string(),
             github: GithubConfig::default(),
             claude: ClaudeConfig::default(),
+            sentry: SentryConfig::default(),
             filter_bots: true,
         }
     }
@@ -78,6 +83,25 @@ pub struct ClaudeConfig {
     /// connect time so a fetch never spends a request re-asking who we are.
     /// Empty means no key is connected.
     pub console_org: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SentryConfig {
+    pub accounts: Vec<SentryAccount>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SentryAccount {
+    /// Human label and keychain key suffix (secret at `sentry/{label}`).
+    pub label: String,
+    /// Sentry origin: `https://sentry.io`, a region host like
+    /// `https://de.sentry.io`, or a self-hosted install. Empty means SaaS.
+    pub base_url: String,
+    /// Organization slugs to report on. Empty means "every organization this
+    /// token can see", discovered at fetch time.
+    pub organizations: Vec<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -173,5 +197,52 @@ mod tests {
         let back: AppConfig = serde_json::from_str(&json).unwrap();
         assert!(!back.filter_bots);
         assert_eq!(back.claude.console_org, "Acme Inc");
+
+        // Same leg for a Sentry connection: `baseUrl` is what `types.ts`
+        // declares, and a snake_case slip here is invisible at compile time.
+        let account = serde_json::to_value(SentryAccount::default()).unwrap();
+        for key in ["label", "baseUrl", "organizations"] {
+            assert!(account.get(key).is_some(), "missing `{key}` in {account}");
+        }
+    }
+
+    /// A config from before the Sentry connector existed must still load - the
+    /// whole file falls back to defaults on a parse error, so a missing section
+    /// would blank every other setting too.
+    #[test]
+    fn a_config_without_the_sentry_section_still_loads() {
+        let cfg: AppConfig = toml::from_str(
+            r#"
+            timezone = "Asia/Kolkata"
+            locale = "en"
+
+            [[github.accounts]]
+            label = "work"
+            orgs = ["acme"]
+            "#,
+        )
+        .unwrap();
+        assert_eq!(cfg.github.accounts.len(), 1);
+        assert!(cfg.sentry.accounts.is_empty());
+    }
+
+    /// Round-tripping through TOML must not lose a connection's origin - a
+    /// self-hosted install is unreachable without it.
+    #[test]
+    fn sentry_accounts_round_trip_through_toml() {
+        let mut cfg = AppConfig::default();
+        cfg.sentry.accounts.push(SentryAccount {
+            label: "work".into(),
+            base_url: "https://sentry.example.com".into(),
+            organizations: vec!["acme".into()],
+        });
+
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        let back: AppConfig = toml::from_str(&text).unwrap();
+        assert_eq!(
+            back.sentry.accounts[0].base_url,
+            "https://sentry.example.com"
+        );
+        assert_eq!(back.sentry.accounts[0].organizations, vec!["acme"]);
     }
 }

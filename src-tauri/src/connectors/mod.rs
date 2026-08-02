@@ -3,13 +3,16 @@
 
 pub mod claude;
 pub mod github;
+pub mod sentry;
 
 // Temporary diagnostic harness: dumps the exact Snapshot each connector returns
 // using the real keychain token, config, transcripts, and live APIs. Run with:
 //   cargo test --lib connectors::diag -- --ignored --nocapture
 #[cfg(test)]
 mod diag {
-    use crate::connectors::{claude::ClaudeConnector, github::GithubConnector};
+    use crate::connectors::{
+        claude::ClaudeConnector, github::GithubConnector, sentry::SentryConnector,
+    };
     use crate::engine::connector::{Connector, FetchCtx};
     use crate::engine::range::DateRange;
 
@@ -41,6 +44,18 @@ mod diag {
                 serde_json::to_string_pretty(&s).unwrap()
             ),
             Err(e) => println!("GITHUB_ERROR: {e}"),
+        }
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn dump_sentry() {
+        match SentryConnector::new().fetch(&ctx()).await {
+            Ok(s) => println!(
+                "SENTRY_SNAPSHOT:\n{}",
+                serde_json::to_string_pretty(&s).unwrap()
+            ),
+            Err(e) => println!("SENTRY_ERROR: {e}"),
         }
     }
 }
