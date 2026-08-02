@@ -1,23 +1,40 @@
 //! Claude usage connector.
 //!
-//! Reads local `~/.claude/projects/**/*.jsonl` transcripts (tokens, model,
-//! effort, timestamps) and overlays the official `/usage` numbers. Fully
-//! offline for token/effort/cost; the official limit + reset is best-effort.
+//! Two sources, each used for what only it can answer:
+//!
+//! * **Anthropic Console, via the Admin API** (`admin_api`) - the connected
+//!   account's official token counts and real USD spend over the selected
+//!   range. This is the authenticated half: the user connects an Admin API key
+//!   in Connectors -> Claude and it is the source of truth for the token-usage
+//!   panels whenever it returns anything.
+//! * **This machine's Claude Code state** - the `~/.claude/projects/**/*.jsonl`
+//!   transcripts (effort split, all-time history) and the `/usage` plan meters.
+//!   Anthropic exposes no API for a Pro/Max plan's 5h and weekly limits, so the
+//!   meters can only come from here.
+//!
+//! Why not an OAuth "Connect with Claude" button mirroring the GitHub one:
+//! Anthropic operates no third-party OAuth client registration, and since
+//! February 2026 their policy reserves subscription OAuth tokens for Claude
+//! Code and claude.ai. A browser authorize flow would have to present Claude
+//! Code's own client id as ours. The Admin API key is the sanctioned path;
+//! `admin_api` documents what it does and does not cover.
 //!
 //! The UI's date filter scopes the token-usage panels (defaulting to today);
 //! the plan-limit meters keep showing the live session/weekly windows, since
 //! those are current-state readings rather than a report over past days.
 //!
-//! The official `/usage` endpoint is rate-limited, so it is pulled at most once
-//! per `OFFICIAL_TTL` and the last good value is reused if a later pull fails
-//! (e.g. a transient 429). The local transcript scan drives everything else.
+//! The `/usage` endpoint is rate-limited, so it is pulled at most once per
+//! `OFFICIAL_TTL` and the last good value is reused if a later pull fails
+//! (e.g. a transient 429).
 //!
 //! Owned modules:
 //!   - `parse`     JSONL reader (cold full-scan; incremental watcher is a TODO)
 //!   - `aggregate` rollups by model / effort / day / week / month / 5h block
-//!   - `usage_api` official /usage pull + plan label
-//!   - `pricing`   token -> notional cost
+//!   - `usage_api` plan-limit meters + plan label, from Claude Code's own login
+//!   - `admin_api` official Console usage + cost, from the connected Admin key
+//!   - `pricing`   token -> notional cost, the fallback when Console has no data
 
+pub mod admin_api;
 mod aggregate;
 mod parse;
 mod pricing;
@@ -33,7 +50,9 @@ use crate::engine::connector::{Connector, ConnectorError, ConnectorMeta, FetchCt
 use crate::engine::i18n;
 use crate::engine::panel::{Bar, Cell, Column, Panel, Stat, TableSpec};
 use crate::engine::range::{self, DateRange};
+use crate::engine::secrets;
 
+use admin_api::ConsoleUsage;
 use aggregate::Aggregate;
 use usage_api::{OfficialUsage, ScopedLimit, UsageWindow};
 
@@ -42,6 +61,30 @@ const REFRESH_SECS: u64 = 60;
 /// Minimum spacing between official `/usage` pulls (the endpoint is rate-limited
 /// and returns 429 if polled too often).
 const OFFICIAL_TTL: Duration = Duration::from_secs(45);
+/// Keychain label for the Console Admin API key (stored at `claude/console`).
+pub const CONSOLE_LABEL: &str = "console";
+
+/// What the Console half of the fetch produced. The three outcomes render
+/// differently on purpose: real numbers, an explanation, or a warning - never a
+/// row of zeros, which on a usage dashboard reads as "you did nothing".
+enum Console {
+    /// A key is connected and reported usage.
+    Usage(ConsoleUsage),
+    /// A key is connected and works, but this range has no Console-billed
+    /// usage. Ordinary for a Pro/Max-only account; explained rather than shown.
+    Empty,
+    /// A key is connected but the call failed. Local numbers stand in.
+    Failed(String),
+}
+
+/// The Admin API key the user connected, if any.
+fn console_key() -> Option<String> {
+    secrets::get("claude", CONSOLE_LABEL)
+        .ok()
+        .flatten()
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+}
 
 pub struct ClaudeConnector {
     /// Last good official usage plus when it was fetched, used to throttle the
@@ -100,6 +143,21 @@ impl Connector for ClaudeConnector {
     async fn fetch(&self, ctx: &FetchCtx) -> Result<Snapshot, ConnectorError> {
         let official = self.official_usage().await;
         let plan = usage_api::read_plan();
+        let range = ctx.range.normalized();
+
+        // Official Console numbers, when a key is connected. A failure here is
+        // never fatal: the local scan below can still render the dashboard.
+        let console = match console_key() {
+            None => None,
+            Some(key) => Some(match admin_api::fetch_console_usage(&key, &range).await {
+                Ok(usage) if usage.is_empty() => Console::Empty,
+                Ok(usage) => Console::Usage(usage),
+                Err(e) => {
+                    eprintln!("claude: Console usage unavailable: {e}");
+                    Console::Failed(e.to_string())
+                }
+            }),
+        };
 
         // Local transcripts (blocking fs) off the async runtime.
         let turns = tokio::task::spawn_blocking(parse::scan_transcripts)
@@ -108,10 +166,9 @@ impl Connector for ClaudeConnector {
             .map_err(|e| ConnectorError::Other(e.to_string()))?;
 
         let now = Utc::now();
-        let range = ctx.range.normalized();
         let agg = aggregate::build(&turns, now, &range);
 
-        let panels = build_panels(&agg, official.as_ref(), plan, now, &range);
+        let panels = build_panels(&agg, official.as_ref(), console.as_ref(), plan, now, &range);
         Ok(Snapshot::ok(panels, Some(REFRESH_SECS)))
     }
 }
@@ -121,6 +178,7 @@ impl Connector for ClaudeConnector {
 fn build_panels(
     agg: &Aggregate,
     official: Option<&OfficialUsage>,
+    console: Option<&Console>,
     plan: Option<String>,
     now: DateTime<Utc>,
     range: &DateRange,
@@ -166,23 +224,104 @@ fn build_panels(
         }
     }
 
-    // --- Token usage (local transcripts) ---
-    panels.push(Panel::Heading {
-        title: i18n::t("claude.tokenUsage"),
-        badge: None,
-    });
+    // --- Token usage ---
+    //
+    // Console is the source of truth whenever it has data for the range: those
+    // are billed numbers rather than a local transcript scan priced against a
+    // hand-maintained table. Otherwise the local scan stands in, preceded by a
+    // note saying why - a connected key that reports nothing is a fact about
+    // the account (Pro/Max usage is not Console-billed), not a fetch failure,
+    // and it deserves a sentence rather than a row of zeros.
+    match console {
+        Some(Console::Usage(usage)) => {
+            panels.push(Panel::Heading {
+                title: i18n::t("claude.tokenUsage"),
+                badge: Some(i18n::t("claude.sourceConsole")),
+            });
+            panels.push(console_stats(usage, &range_label));
+            panels.push(console_model_table(usage, &range_label));
+        }
+        other => {
+            match other {
+                Some(Console::Empty) => panels.push(Panel::Note {
+                    title: Some(i18n::t("claude.consoleEmptyTitle")),
+                    message: i18n::tf("claude.consoleEmpty", &[("range", &range_label)]),
+                }),
+                Some(Console::Failed(message)) => panels.push(Panel::Note {
+                    title: Some(i18n::t("claude.consoleFailedTitle")),
+                    message: i18n::tf("claude.consoleFailed", &[("error", message)]),
+                }),
+                _ => {}
+            }
+            panels.push(Panel::Heading {
+                title: i18n::t("claude.tokenUsage"),
+                badge: Some(i18n::t("claude.sourceLocal")),
+            });
+            panels.push(local_stats(agg, &range_label));
+            panels.push(tokens_by_model_table(agg, &range_label));
+        }
+    }
 
+    // Both of these are local-only by necessity: the Console report caps at 31
+    // buckets (so it cannot carry all-time history) and has no effort
+    // dimension at all.
+    panels.push(monthly_table(agg));
+    panels.push(effort_bars(agg, &range_label));
+
+    panels
+}
+
+/// The headline tiles when Console has the range covered: billed tokens and
+/// real spend, not transcript estimates priced against `pricing.rs`.
+fn console_stats(usage: &ConsoleUsage, range_label: &str) -> Panel {
+    let output: u64 = usage.per_model.iter().map(|m| m.output).sum();
+    let cost = match usage.cost_usd {
+        Some(c) => fmt_usd(c),
+        None => i18n::t("claude.costUnavailable"),
+    };
+
+    Panel::StatCards {
+        title: None,
+        stats: vec![
+            Stat {
+                label: range_label.into(),
+                value: fmt_tokens(usage.total_tokens()),
+                sub: Some(i18n::t("claude.tokens")),
+            },
+            Stat {
+                label: i18n::t("claude.actualCost"),
+                value: cost,
+                sub: Some(i18n::tf("claude.rangeBilled", &[("range", range_label)])),
+            },
+            Stat {
+                label: i18n::t("claude.colOutput"),
+                value: fmt_tokens(output),
+                sub: Some(i18n::t("claude.tokens")),
+            },
+            Stat {
+                label: i18n::t("claude.modelsUsed"),
+                value: fmt_count(usage.per_model.len() as u64),
+                sub: Some(i18n::tf("claude.inRange", &[("range", range_label)])),
+            },
+        ],
+    }
+}
+
+/// The local-transcript headline tiles, used when no Console data covers the
+/// range. Cost here is notional - `pricing.rs` list prices applied to scanned
+/// tokens - which is why the tile is labelled differently to the Console one.
+fn local_stats(agg: &Aggregate, range_label: &str) -> Panel {
     let cost: f64 = agg
         .per_model
         .iter()
         .map(|m| pricing::cost_for(&m.model, m.input, m.output, m.cache_read, m.cache_write))
         .sum();
 
-    panels.push(Panel::StatCards {
+    Panel::StatCards {
         title: None,
         stats: vec![
             Stat {
-                label: range_label.clone(),
+                label: range_label.into(),
                 value: fmt_tokens(agg.range_tokens),
                 sub: Some(i18n::tf(
                     "claude.sessions",
@@ -192,7 +331,7 @@ fn build_panels(
             Stat {
                 label: i18n::t("claude.equivalentCost"),
                 value: fmt_usd(cost),
-                sub: Some(i18n::tf("claude.rangeNotional", &[("range", &range_label)])),
+                sub: Some(i18n::tf("claude.rangeNotional", &[("range", range_label)])),
             },
             Stat {
                 label: i18n::t("claude.thisMonth"),
@@ -208,13 +347,44 @@ fn build_panels(
                 )),
             },
         ],
-    });
+    }
+}
 
-    panels.push(monthly_table(agg));
-    panels.push(tokens_by_model_table(agg, &range_label));
-    panels.push(effort_bars(agg, &range_label));
+/// Per-model billed tokens. No cost column: the cost report groups by
+/// description rather than by model, and splitting it per row would mean
+/// parsing prose like "Claude Sonnet 4 Usage - Input Tokens". The billed total
+/// sits in the stat tile above, where it is exact.
+fn console_model_table(usage: &ConsoleUsage, range_label: &str) -> Panel {
+    let columns = vec![
+        Column::new("model", i18n::t("claude.colModel"), false),
+        Column::new("input", i18n::t("claude.colInput"), true)
+            .with_hint(i18n::t("claude.hintUncached")),
+        Column::new("output", i18n::t("claude.colOutput"), true),
+        Column::new("cache_read", i18n::t("claude.colCacheRead"), true),
+        Column::new("cache_write", i18n::t("claude.colCacheWrite"), true),
+        Column::new("total", i18n::t("claude.colTotal"), true),
+    ];
 
-    panels
+    let rows = usage
+        .per_model
+        .iter()
+        .map(|m| {
+            vec![
+                cell(short_model(&m.model)),
+                keyed(fmt_tokens(m.uncached_input), m.uncached_input as f64),
+                keyed(fmt_tokens(m.output), m.output as f64),
+                keyed(fmt_tokens(m.cache_read), m.cache_read as f64),
+                keyed(fmt_tokens(m.cache_write), m.cache_write as f64),
+                keyed(fmt_tokens(m.total()), m.total() as f64),
+            ]
+        })
+        .collect();
+
+    Panel::Table(TableSpec {
+        title: Some(i18n::tf("claude.tokensByModel", &[("range", range_label)])),
+        columns,
+        rows,
+    })
 }
 
 /// A 0..100 official limit meter: "31% used" on the right, reset under the label.
@@ -460,6 +630,7 @@ mod tests {
         let panels = build_panels(
             &Aggregate::default(),
             Some(&official),
+            None,
             Some("Max (5x)".into()),
             now,
             &DateRange::today(),
@@ -469,5 +640,102 @@ mod tests {
             serde_json::to_string_pretty(&panels).unwrap()
         );
         assert!(panels.len() >= 6);
+    }
+
+    fn panels_with(console: Option<&Console>) -> String {
+        let panels = build_panels(
+            &Aggregate::default(),
+            None,
+            console,
+            None,
+            Utc::now(),
+            &DateRange::today(),
+        );
+        serde_json::to_string(&panels).unwrap()
+    }
+
+    fn sample_usage() -> ConsoleUsage {
+        ConsoleUsage {
+            per_model: vec![admin_api::ModelUsage {
+                model: "claude-opus-5".into(),
+                uncached_input: 1_500,
+                cache_read: 200,
+                cache_write: 1_000,
+                output: 500,
+            }],
+            cost_usd: Some(1.2345),
+        }
+    }
+
+    /// With Console data the panels must carry the billed figures, and must not
+    /// also carry the notional "Equivalent cost" tile - two cost numbers from
+    /// two different methods on one screen is the confusing outcome.
+    #[test]
+    fn console_usage_replaces_the_local_estimate() {
+        let json = panels_with(Some(&Console::Usage(sample_usage())));
+        assert!(json.contains("$1.23"), "billed cost missing: {json}");
+        assert!(
+            !json.contains("Equivalent cost"),
+            "notional cost tile survived alongside the billed one: {json}"
+        );
+    }
+
+    /// A connected key with nothing to report must say so in words. Falling
+    /// through to zeros would read as "you used nothing today", when the real
+    /// meaning is "your Pro/Max usage is not billed through Console".
+    #[test]
+    fn empty_console_explains_itself_and_falls_back() {
+        let json = panels_with(Some(&Console::Empty));
+        assert!(json.contains("\"kind\":\"note\""), "{json}");
+        assert!(
+            json.contains("Equivalent cost"),
+            "local panels must still render: {json}"
+        );
+    }
+
+    /// A failed call surfaces the reason and still renders the dashboard from
+    /// local data - a Console outage must not blank the Claude tab.
+    #[test]
+    fn failed_console_surfaces_the_error_and_falls_back() {
+        let json = panels_with(Some(&Console::Failed("boom".into())));
+        assert!(json.contains("boom"), "{json}");
+        assert!(json.contains("Equivalent cost"), "{json}");
+    }
+
+    /// Every string these branches reach for has to resolve; `i18n::t` returns
+    /// the key itself when one is missing, so a typo ships as `claude.foo`.
+    #[test]
+    fn console_copy_resolves() {
+        for key in [
+            "claude.sourceConsole",
+            "claude.sourceLocal",
+            "claude.consoleEmptyTitle",
+            "claude.consoleFailedTitle",
+            "claude.actualCost",
+            "claude.costUnavailable",
+            "claude.modelsUsed",
+            "claude.colCacheWrite",
+            "claude.hintUncached",
+        ] {
+            let value = i18n::t(key);
+            assert_ne!(value, key, "untranslated: {key}");
+            assert!(!value.is_empty(), "empty: {key}");
+        }
+
+        let empty = i18n::tf("claude.consoleEmpty", &[("range", "Today")]);
+        assert!(empty.contains("Today"), "{empty}");
+        assert!(!empty.contains("{range}"), "{empty}");
+
+        let failed = i18n::tf("claude.consoleFailed", &[("error", "boom")]);
+        assert!(failed.contains("boom"), "{failed}");
+        assert!(!failed.contains("{error}"), "{failed}");
+
+        let billed = i18n::tf("claude.rangeBilled", &[("range", "Today")]);
+        assert!(billed.contains("Today"), "{billed}");
+        assert!(!billed.contains("{range}"), "{billed}");
+
+        let in_range = i18n::tf("claude.inRange", &[("range", "Today")]);
+        assert!(in_range.contains("Today"), "{in_range}");
+        assert!(!in_range.contains("{range}"), "{in_range}");
     }
 }

@@ -13,9 +13,16 @@ use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
 /// Root, non-secret configuration. Every connector reads only the slice it needs
-/// (GitHub reads `github`); all of them share `timezone`.
+/// (GitHub reads `github`, Claude reads `claude`); all of them share `timezone`.
+///
+/// Serialized camelCase because this struct crosses to the frontend verbatim
+/// through `get_config`/`save_config`, and the TypeScript mirror in `types.ts`
+/// is camelCase. Multi-word fields silently failed to round-trip before that
+/// rename - the UI wrote `filterBots`, serde looked for `filter_bots`, found
+/// nothing, and fell back to the default - so `filter_bots` keeps a snake_case
+/// alias to load configs written by older builds.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, rename_all = "camelCase")]
 pub struct AppConfig {
     /// IANA timezone used to define "today" across connectors.
     pub timezone: String,
@@ -24,8 +31,12 @@ pub struct AppConfig {
     /// GitHub accounts and their selected orgs. The PAT for an account lives in
     /// the keychain under `github/{label}`.
     pub github: GithubConfig,
+    /// Claude Console connection. The Admin API key itself lives in the
+    /// keychain under `claude/console`.
+    pub claude: ClaudeConfig,
     /// When true, connectors that surface authors filter out bots
     /// (dependabot and similar).
+    #[serde(alias = "filter_bots")]
     pub filter_bots: bool,
 }
 
@@ -35,6 +46,7 @@ impl Default for AppConfig {
             timezone: "Asia/Kolkata".to_string(),
             locale: "en".to_string(),
             github: GithubConfig::default(),
+            claude: ClaudeConfig::default(),
             filter_bots: true,
         }
     }
@@ -53,6 +65,19 @@ pub struct GithubAccount {
     pub label: String,
     /// Orgs selected for this account (e.g. `["z-roworld"]`).
     pub orgs: Vec<String>,
+}
+
+/// The Claude connector's non-secret state.
+///
+/// Only the Console side is configurable: the plan meters read Claude Code's
+/// own credentials on this machine and need nothing stored here.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ClaudeConfig {
+    /// Console organization the stored Admin key belongs to, captured once at
+    /// connect time so a fetch never spends a request re-asking who we are.
+    /// Empty means no key is connected.
+    pub console_org: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -98,4 +123,55 @@ pub fn save(config: &AppConfig) -> Result<(), ConfigError> {
     std::fs::write(&tmp, text)?;
     std::fs::rename(&tmp, &path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A config written before the camelCase rename must still load - and in
+    /// particular must not silently drop the GitHub accounts, which would leave
+    /// a returning user staring at an empty dashboard and no obvious cause.
+    #[test]
+    fn snake_case_configs_still_load() {
+        let old = r#"
+            timezone = "Asia/Kolkata"
+            locale = "en"
+            filter_bots = false
+
+            [[github.accounts]]
+            label = "work"
+            orgs = ["z-roworld"]
+        "#;
+
+        let cfg: AppConfig = toml::from_str(old).expect("old config must parse");
+        assert_eq!(cfg.timezone, "Asia/Kolkata");
+        assert!(!cfg.filter_bots, "filter_bots alias did not apply");
+        assert_eq!(cfg.github.accounts.len(), 1);
+        assert_eq!(cfg.github.accounts[0].label, "work");
+        // Absent slice falls back to "no Console key connected".
+        assert!(cfg.claude.console_org.is_empty());
+    }
+
+    /// The round trip the UI actually performs: `get_config` hands camelCase to
+    /// the frontend, `save_config` hands it back. Before the rename this leg
+    /// dropped `filterBots` on the floor and the toggle never persisted.
+    #[test]
+    fn camel_case_round_trips_through_json() {
+        let cfg = AppConfig {
+            filter_bots: false,
+            claude: ClaudeConfig {
+                console_org: "Acme Inc".to_string(),
+            },
+            ..AppConfig::default()
+        };
+
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(json.contains("\"filterBots\""), "{json}");
+        assert!(json.contains("\"consoleOrg\""), "{json}");
+
+        let back: AppConfig = serde_json::from_str(&json).unwrap();
+        assert!(!back.filter_bots);
+        assert_eq!(back.claude.console_org, "Acme Inc");
+    }
 }

@@ -103,6 +103,41 @@ pub fn delete_secret(connector: String, label: String) -> Result<(), String> {
     secrets::delete(&connector, &label).map_err(|e| e.to_string())
 }
 
+/// Connect the Claude connector to Anthropic Console with an Admin API key.
+///
+/// The key is verified against `/v1/organizations/me` **before** it is stored,
+/// so a typo or a revoked key fails here with something the user can act on
+/// rather than being written to the keychain and surfacing later as a broken
+/// dashboard. Returns the organization name, which the caller persists to the
+/// config so the dashboard can name it without re-querying.
+///
+/// There is deliberately no browser OAuth equivalent: Anthropic runs no
+/// third-party OAuth client registration, and reserves subscription OAuth for
+/// Claude Code and claude.ai. See `connectors::claude::admin_api`.
+#[tauri::command]
+pub async fn claude_connect(key: String) -> Result<String, String> {
+    use crate::connectors::claude::{admin_api, CONSOLE_LABEL};
+
+    let key = key.trim().to_string();
+    if key.is_empty() {
+        return Err("Paste an Admin API key first.".into());
+    }
+
+    let org = admin_api::verify_key(&key)
+        .await
+        .map_err(|e| e.to_string())?;
+    secrets::set("claude", CONSOLE_LABEL, &key).map_err(|e| e.to_string())?;
+    Ok(org.name)
+}
+
+/// Forget the stored Console key. The plan meters keep working afterwards -
+/// they read Claude Code's own login on this machine, not this key.
+#[tauri::command]
+pub fn claude_disconnect() -> Result<(), String> {
+    use crate::connectors::claude::CONSOLE_LABEL;
+    secrets::delete("claude", CONSOLE_LABEL).map_err(|e| e.to_string())
+}
+
 /// Fetch the GitHub dashboard for one account, optionally scoped to a single org
 /// (`org = None` means all of the account's orgs) and to a day range (`None`
 /// means today). Drives the account sub-tabs, org filter, and date filter.

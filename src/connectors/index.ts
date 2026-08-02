@@ -4,10 +4,12 @@
 // Save button, persisting only its own config slice via `patchConfig`) and add
 // an entry here. The Connectors page renders one sub-tab per entry, in order.
 
+import ClaudeConnector from "./ClaudeConnector";
 import GithubConnector from "./GithubConnector";
 import type { ConnectorTab } from "./types";
 
 export const CONNECTOR_TABS: ConnectorTab[] = [
+  { id: "claude", labelKey: "settings.claude", Component: ClaudeConnector },
   { id: "github", labelKey: "settings.github", Component: GithubConnector },
 ];
 
