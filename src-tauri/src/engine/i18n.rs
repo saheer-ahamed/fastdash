@@ -38,6 +38,10 @@ fn english() -> &'static Value {
                 env!("CARGO_MANIFEST_DIR"),
                 "/../locales/en/github.json"
             )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../locales/en/sentry.json"
+            )),
         ];
         let mut root = Map::new();
         for raw in FILES {

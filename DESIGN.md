@@ -6,7 +6,7 @@ Each connector is built in isolation against the contract in "The isolation cont
 ## Goals
 
 A super-fast, simple desktop dashboard.
-One glance shows Claude usage; connectors add GitHub and Slack views.
+One glance shows Claude usage; connectors add GitHub, Sentry and Slack views.
 "Fast" means the UI always reads a warm in-memory cache and never blocks on the network.
 
 ## Stack
@@ -88,6 +88,26 @@ Optionally filter bot authors (dependabot and similar).
 
 This mirrors the logic already proven in the `daily-pr-stats` skill.
 
+## Connector: Sentry
+
+Config supports multiple connections, each with its own auth token in the keychain, its own Sentry origin (SaaS `https://sentry.io`, a region host like `https://de.sentry.io`, or a self-hosted install), and the organizations to report on.
+Leaving the organizations empty means "every organization this token can see", discovered from `/organizations/` - so a fresh connection needs a token and nothing else.
+
+Fetch strategy is one request per organization, not one per project.
+`GET /organizations/{org}/issues/` with `query=is:unresolved`, `project=-1`, `sort=freq`, and the selected range as `start`/`end` in UTC alongside `utc=true`, following the `Link` header's cursor for up to 5 pages of 100.
+Narrowing to specific projects would take numeric project ids and therefore a second round trip to resolve slugs, so the per-project breakdown is derived from the results instead.
+
+The range is the UI's date filter converted from IST day bounds to UTC, so `Events` counts what happened inside the selected days rather than an issue's lifetime total.
+`is:unresolved` is a state filter, not a date one: an issue that first fired months ago and is still erroring today belongs on a dashboard of what needs attention, and the `New issues` stat - `firstSeen` inside the range - is what separates the two.
+
+Per organization: `StatCards` (unresolved issues, new issues, events, projects affected), a `BarList` of events by project (skipped when only one project is implicated), and a `Table` of Issue (linked), Where (`culprit`), Project, Level, Events, Users, Last seen.
+An empty range renders a `Note` rather than a bare table, so a quiet day never reads as a broken fetch.
+
+Token kinds are not interchangeable, and the difference is not actionable from a generic error.
+A **user auth token** (or an internal integration) with `org:read`, `project:read` and `event:read` is the working combination; an **organization auth token** (`sntrys_...`) is a CI credential with no `event:read` scope to grant, so the connector recognizes the prefix and says so instead of advising a scope change that cannot be made.
+
+Rate limits: Sentry answers 429 with `Retry-After` / `X-Sentry-Rate-Limit-Reset`, both honored. Refresh every 120s or on manual refresh - Sentry aggregates on ingest, so a faster poll mostly redraws the same numbers.
+
 ## Connector: Slack
 
 Config picks a workspace; multiple workspaces are supported, each with its own token.
@@ -106,6 +126,7 @@ Fallback: if a workspace forbids `search:read`, degrade to scanning `conversatio
 
 - Claude: file-watch driven, effectively instant (2s debounce).
 - GitHub: every 60s or manual.
+- Sentry: every 120s or manual.
 - Slack: every 60s or manual.
 
 All are async, independent, and non-blocking; the UI always reads the cache.
@@ -116,6 +137,7 @@ The connectors are isolated behind the trait, so they are built concurrently in 
 
 - `feat/claude` - the Claude connector modules.
 - `feat/github` - the GitHub connector.
+- `feat/sentry` - the Sentry connector.
 - `feat/slack` - the Slack connector.
 - `feat/core` - config loading, keychain, and the refresh scheduler.
 

@@ -6,11 +6,13 @@
 
 import ClaudeConnector from "./ClaudeConnector";
 import GithubConnector from "./GithubConnector";
+import SentryConnector from "./SentryConnector";
 import type { ConnectorTab } from "./types";
 
 export const CONNECTOR_TABS: ConnectorTab[] = [
   { id: "claude", labelKey: "settings.claude", Component: ClaudeConnector },
   { id: "github", labelKey: "settings.github", Component: GithubConnector },
+  { id: "sentry", labelKey: "settings.sentry", Component: SentryConnector },
 ];
 
 export type { ConnectorTab, ConnectorTabProps } from "./types";

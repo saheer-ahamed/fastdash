@@ -113,10 +113,19 @@ export interface ClaudeConfig {
   consoleOrg: string;
 }
 
+export interface SentryAccount {
+  label: string;
+  /** Sentry origin; empty means SaaS (`https://sentry.io`). */
+  baseUrl: string;
+  /** Organization slugs; empty means every one the token can see. */
+  organizations: string[];
+}
+
 export interface AppConfig {
   timezone: string;
   locale: string;
   github: { accounts: GithubAccount[] };
   claude: ClaudeConfig;
+  sentry: { accounts: SentryAccount[] };
   filterBots: boolean;
 }

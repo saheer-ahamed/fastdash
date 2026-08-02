@@ -7,11 +7,14 @@
 import enApp from "../locales/en/app.json";
 import enClaude from "../locales/en/claude.json";
 import enGithub from "../locales/en/github.json";
+import enSentry from "../locales/en/sentry.json";
 
 type Catalog = Record<string, unknown>;
 
+// Merged at the top level, so each file must own a distinct top-level key -
+// a second `settings` block would replace app.json's rather than extend it.
 const catalogs: Record<string, Catalog> = {
-  en: { ...enApp, ...enClaude, ...enGithub },
+  en: { ...enApp, ...enClaude, ...enGithub, ...enSentry },
 };
 
 let locale = "en";

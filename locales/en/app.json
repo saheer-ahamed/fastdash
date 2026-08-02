@@ -83,6 +83,7 @@
     "claudeNoOauth": "There is no \"Sign in with Claude\" button because Anthropic does not offer one: they run no third-party OAuth app registration, and since February 2026 their policy reserves subscription sign-in for Claude Code and claude.ai. An Admin API key is the supported way for another app to read your usage.",
     "claudePlanMeters": "Your plan limit meters do not need this key. They read the Claude Code login already on this machine, because no Anthropic API reports a Pro or Max plan's 5-hour and weekly windows.",
     "github": "GitHub",
+    "sentry": "Sentry",
     "accountLabel": "Account label",
     "pat": "Personal access token",
     "tokenPlaceholder": "Paste to set or replace - stored in the OS keychain",
