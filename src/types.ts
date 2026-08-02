@@ -108,9 +108,15 @@ export interface GithubAccount {
   orgs: string[];
 }
 
+export interface ClaudeConfig {
+  /** Console org the stored Admin key belongs to; empty when not connected. */
+  consoleOrg: string;
+}
+
 export interface AppConfig {
   timezone: string;
   locale: string;
   github: { accounts: GithubAccount[] };
+  claude: ClaudeConfig;
   filterBots: boolean;
 }

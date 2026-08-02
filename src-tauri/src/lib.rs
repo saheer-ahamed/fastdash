@@ -62,6 +62,8 @@ pub fn run() {
             ipc::github_device_start,
             ipc::github_device_poll,
             ipc::github_fetch,
+            ipc::claude_connect,
+            ipc::claude_disconnect,
             ipc::open_external,
         ])
         .setup(move |app| {
