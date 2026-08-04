@@ -93,9 +93,9 @@ export interface ConnectorMeta {
   defaultRefreshSecs: number;
 }
 
-// Payload of the `connector:update` Tauri event emitted by the scheduler. The
-// range says which days the snapshot covers, so a background refresh is filed
-// under the right cache slot instead of overwriting another range on screen.
+// Payload of the `connector:update` Tauri event, emitted by every backend fetch.
+// The range says which days the snapshot covers, so the result is filed under
+// the right cache slot instead of overwriting another range on screen.
 export interface ConnectorUpdate {
   id: string;
   range: DateRange;

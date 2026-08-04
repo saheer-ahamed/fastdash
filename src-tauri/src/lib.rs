@@ -7,9 +7,12 @@
 //
 // The engine also owns the cross-cutting infra: non-secret config
 // (`engine::config`), the OS keychain wrapper (`engine::secrets`), the in-memory
-// snapshot cache (`engine::cache`), and the background refresh scheduler
-// (`engine::scheduler`). Shared state is wired in below via `.manage(...)` and
-// the scheduler is spawned in `.setup(...)`.
+// snapshot cache (`engine::cache`), and the shared fetch path
+// (`engine::refresh`). Shared state is wired in below via `.manage(...)`.
+//
+// Nothing fetches on a timer here. The frontend drives every fetch and only for
+// the dashboard on screen, only while the window has focus, so a backgrounded
+// app makes no network calls at all.
 
 // TODO: remove once every connector is fleshed out; keeps the scaffold quiet.
 #![allow(dead_code)]
@@ -47,9 +50,9 @@ pub fn run() {
     }
 
     builder
-        .manage(Arc::clone(&registry))
-        .manage(Arc::clone(&cache))
-        .manage(Arc::clone(&config))
+        .manage(registry)
+        .manage(cache)
+        .manage(config)
         .invoke_handler(tauri::generate_handler![
             ipc::list_connectors,
             ipc::fetch_connector,
@@ -66,7 +69,7 @@ pub fn run() {
             ipc::claude_disconnect,
             ipc::open_external,
         ])
-        .setup(move |app| {
+        .setup(|app| {
             // Force the window icon at runtime so the taskbar picks it up. In
             // `tauri dev` on Windows the default icon path is not reliably
             // applied to the taskbar; explicitly calling `set_icon` sends
@@ -79,7 +82,6 @@ pub fn run() {
                 let _ = window.set_icon(icon);
             }
 
-            engine::scheduler::start(app.handle().clone(), registry, cache, config);
             Ok(())
         })
         .run(tauri::generate_context!())

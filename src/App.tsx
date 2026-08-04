@@ -8,6 +8,7 @@ import {
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import type {
   AppConfig,
   Cell,
@@ -35,6 +36,15 @@ type Page = "connectors" | "settings";
 // flipping between ranges shows what was already fetched instead of a blank.
 const snapKey = (id: string, range: DateRange) => `${id}|${rangeKey(range)}`;
 
+// Cadence a connector asks to be polled at while its tab is being watched.
+// Clamped so a misdeclared 0 can never become a busy-loop.
+const cadenceMs = (meta: ConnectorMeta | undefined) =>
+  Math.max(1, meta?.defaultRefreshSecs ?? 60) * 1000;
+
+// Whether a snapshot is still young enough to leave alone.
+const isFresh = (snap: Snapshot | undefined, cadence: number) =>
+  !!snap && Date.now() - new Date(snap.fetchedAt).getTime() < cadence;
+
 export default function App() {
   const [connectors, setConnectors] = useState<ConnectorMeta[]>([]);
   const [active, setActive] = useState<string | null>(null);
@@ -51,10 +61,15 @@ export default function App() {
   const [preset, setPreset] = useState<PresetId>("today");
   // Bumped on language change to re-render chrome that calls t().
   const [, setLang] = useState("en");
+  // Fetching is gated on the app actually being watched: the window has focus
+  // and the connector's own tab is the thing on screen. `active` alone is not
+  // enough - a pinned page (Connectors / Settings) covers the dashboard.
+  const focused = useWindowFocus();
+  const live = page === null ? active : null;
   // GitHub view state lives here, not in <GithubView>, so it survives tab
   // switches. Otherwise leaving and re-entering the GitHub tab unmounts the
   // component, drops its cache, and flashes "Loading..." on every return.
-  const github = useGithubState(range);
+  const github = useGithubState(range, focused && live === "github");
 
   useEffect(() => {
     invoke<ConnectorMeta[]>("list_connectors")
@@ -75,12 +90,12 @@ export default function App() {
       .catch(() => {});
   }, []);
 
-  // Live updates: the scheduler emits `connector:update` on every refresh, so
-  // panels update on their own cadence without the UI polling.
+  // Every backend fetch emits `connector:update`, whoever asked for it, so a
+  // snapshot lands here exactly once no matter which path produced it.
   useEffect(() => {
     const unlisten = listen<ConnectorUpdate>("connector:update", (e) => {
-      // File it under the range it actually covers. The scheduler only ever
-      // refreshes today, so this never disturbs a historical range on screen.
+      // File it under the range it actually covers, so a fetch that finishes
+      // after the date filter moved cannot overwrite the range now on screen.
       const key = snapKey(e.payload.id, e.payload.range);
       setSnapshots((s) => ({ ...s, [key]: e.payload.snapshot }));
     });
@@ -91,55 +106,109 @@ export default function App() {
 
   const refresh = useCallback((id: string, r: DateRange) => {
     setLoading(true);
-    invoke<Snapshot>("fetch_connector", { id, range: r })
+    return invoke<Snapshot>("fetch_connector", { id, range: r })
       .then((snap) => setSnapshots((s) => ({ ...s, [snapKey(id, r)]: snap })))
       .catch((e) => console.error(e))
       .finally(() => setLoading(false));
   }, []);
 
-  // After a connector's settings are saved: refetch its dashboard, and re-read
-  // the GitHub account list so an account added just now shows up as a sub-tab
-  // without restarting the app.
+  // After a connector's settings are saved its cached snapshots describe the old
+  // settings, so drop them - the tab refetches when it is next opened rather
+  // than now, while the Connectors page is what's on screen. The GitHub account
+  // list is re-read so an account added just now shows up as a sub-tab without
+  // restarting the app.
   const onConnectorSaved = useCallback(
     (id: string) => {
-      refresh(id, range);
-      if (id === "github") github.reloadAccounts();
+      setSnapshots((s) =>
+        Object.fromEntries(Object.entries(s).filter(([k]) => !k.startsWith(`${id}|`))),
+      );
+      if (id === "github") {
+        github.reloadAccounts();
+        github.clear();
+      }
     },
-    [refresh, range, github],
+    [github],
   );
 
-  // Switch language: update the frontend catalog, re-render chrome, and re-fetch
-  // every connector so backend panel strings come back in the new language.
+  // Switch language: update the frontend catalog and re-render the chrome. Panel
+  // strings are baked into snapshots by the backend, so every cached one is now
+  // in the old language - dropping them all makes the next tab the user opens
+  // fetch a fresh copy. Nothing is refetched here: this is reached from
+  // Settings, so there is no dashboard on screen to refetch.
   const onLocaleChange = useCallback(
     (next: string) => {
       setLocale(next);
       setLang(next);
-      connectors.forEach((c) => refresh(c.id, range));
+      setSnapshots({});
+      github.clear();
     },
-    [connectors, refresh, range],
+    [github],
   );
 
-  // On showing a connector - or moving the date filter - seed instantly from
-  // whatever is already cached and fetch otherwise. The warm backend cache only
-  // holds today, so any other range goes straight to a fetch. GitHub is exempt:
-  // its tab renders per-account views it fetches itself, so refreshing the
-  // connector here would spend a second round of the API budget - on the same
-  // rate-limited endpoints - for a snapshot nothing renders.
+  // Keep the dashboard on screen fresh - and only that one. A fetch happens only
+  // while its own tab is showing and the window has focus; switching away or
+  // clicking out of the app tears the timer down, so a dashboard nobody is
+  // looking at never spends API budget. Coming back refetches at once if what we
+  // have has aged past the connector's cadence, and otherwise paints the cache.
+  //
+  // Only today polls: a past range cannot change, so it is fetched once and left
+  // to the Refresh button.
+  //
+  // GitHub is exempt - its tab renders per-account views that fetch themselves
+  // (see `useGithubState`), so a connector-level fetch here would spend a second
+  // round of the same rate-limited API on a snapshot nothing renders.
   useEffect(() => {
-    if (!active || active === "github") return;
-    const key = snapKey(active, range);
-    if (snapshotsRef.current[key]) return;
+    if (!focused || !live || live === "github") return;
+    const cadence = cadenceMs(connectors.find((c) => c.id === live));
+    const key = snapKey(live, range);
+    let stopped = false;
+    // A fetch slower than the cadence must not get a second one piled on top.
+    // Deliberately scoped to this run of the effect rather than a ref that
+    // outlives it: a flag that survives can only ever get stuck, and a stuck
+    // flag would silently stop the connector refreshing for the whole session.
+    let inFlight = false;
+
+    const fetchNow = () => {
+      if (stopped || inFlight) return;
+      inFlight = true;
+      refresh(live, range).finally(() => {
+        inFlight = false;
+      });
+    };
+
+    // On arrival, unlike on the interval, only fetch if what we already have has
+    // aged out. Flipping between tabs or bouncing focus then costs nothing.
+    const start = async () => {
+      let current = snapshotsRef.current[key];
+      // Nothing on screen for this view yet: the backend may still be holding a
+      // snapshot from earlier in the session (the frontend can reload without it
+      // restarting), so paint that before deciding to fetch. It only ever holds
+      // today, so any other range goes straight to the fetch below.
+      if (!current && rangeKey(range) === rangeKey(todayRange())) {
+        const cached = await invoke<Snapshot | null>("get_cached", { id: live }).catch(
+          () => null,
+        );
+        if (stopped) return;
+        if (cached) {
+          current = cached;
+          setSnapshots((s) => (s[key] ? s : { ...s, [key]: cached }));
+        }
+      }
+      if (!isFresh(current, cadence)) fetchNow();
+    };
+    start();
+
     if (rangeKey(range) !== rangeKey(todayRange())) {
-      refresh(active, range);
-      return;
+      return () => {
+        stopped = true;
+      };
     }
-    invoke<Snapshot | null>("get_cached", { id: active })
-      .then((snap) => {
-        if (snap) setSnapshots((s) => ({ ...s, [key]: snap }));
-        else refresh(active, range);
-      })
-      .catch(() => refresh(active, range));
-  }, [active, range, refresh]);
+    const id = window.setInterval(fetchNow, cadence);
+    return () => {
+      stopped = true;
+      window.clearInterval(id);
+    };
+  }, [focused, live, connectors, range, refresh]);
 
   const onRange = useCallback((next: DateRange, p: PresetId) => {
     setRange(next);
@@ -148,6 +217,17 @@ export default function App() {
 
   const snap = active ? snapshots[snapKey(active, range)] : undefined;
   const activeName = connectors.find((c) => c.id === active)?.name ?? "";
+
+  // A sidebar dot reports the health of what that tab last loaded, so a tab not
+  // opened yet stays idle rather than claiming a status nothing measured.
+  // GitHub keeps its snapshots per (account, org) view, so its dot follows the
+  // sub-tab the user has selected.
+  const dotStatus = (id: string): Health | undefined =>
+    id === "github"
+      ? github.label
+        ? github.snaps[viewKey(github.label, github.org, range)]?.status
+        : undefined
+      : snapshots[snapKey(id, range)]?.status;
 
   return (
     <div className="app">
@@ -164,7 +244,7 @@ export default function App() {
                 setActive(c.id);
               }}
             >
-              <span className={"dot " + statusClass(snapshots[snapKey(c.id, range)]?.status)} />
+              <span className={"dot " + statusClass(dotStatus(c.id))} />
               {c.name}
             </button>
           ))}
@@ -231,6 +311,60 @@ export default function App() {
       </main>
     </div>
   );
+}
+
+// Whether the app window has focus. Every fetch in the app is gated on this: a
+// dashboard nobody is looking at must not poll, and an app sitting in the
+// background must make no network calls at all.
+//
+// The window's own focus event is the authoritative desktop signal - the webview
+// does not reliably forward OS focus changes to the DOM - with the DOM
+// focus/blur pair as the fallback for `npm run dev`, where the page runs in a
+// plain browser and the Tauri API is absent. Focus starts out assumed: the first
+// fetch cannot happen until `list_connectors` has come back anyway, by which
+// time the real reading has landed.
+function useWindowFocus(): boolean {
+  const [focused, setFocused] = useState(true);
+
+  useEffect(() => {
+    let stopped = false;
+    let unlisten: (() => void) | undefined;
+
+    const listenInBrowser = () => {
+      const on = () => setFocused(true);
+      const off = () => setFocused(false);
+      window.addEventListener("focus", on);
+      window.addEventListener("blur", off);
+      setFocused(document.hasFocus());
+      return () => {
+        window.removeEventListener("focus", on);
+        window.removeEventListener("blur", off);
+      };
+    };
+
+    // Subscribe before reading the current state, so a change landing in between
+    // is caught rather than dropped.
+    const attach = async () => {
+      const win = getCurrentWindow();
+      const off = await win.onFocusChanged(({ payload }) => setFocused(payload));
+      if (stopped) {
+        off();
+        return;
+      }
+      unlisten = off;
+      setFocused(await win.isFocused());
+    };
+    attach().catch(() => {
+      if (!stopped && !unlisten) unlisten = listenInBrowser();
+    });
+
+    return () => {
+      stopped = true;
+      unlisten?.();
+    };
+  }, []);
+
+  return focused;
 }
 
 // A non-blocking toast that appears only when a newer signed release exists.
@@ -316,7 +450,8 @@ function ExtLink({ href, children }: { href: string; children: ReactNode }) {
 
 // The GitHub dashboard: one sub-tab per connected account, with an org filter
 // (All + each org) inside the account. Each (account, org) view fetches via
-// `github_fetch` and self-refreshes on the connector cadence.
+// `github_fetch` and refreshes on this cadence for as long as it is the thing
+// on screen - see `useGithubState`.
 const GITHUB_REFRESH_MS = 60_000;
 
 // The backend's marker for "a newer request took over". Not an error: the view
@@ -340,9 +475,13 @@ const scopeName = (scope: string) => scope.replace(/^\s*(org|user|author)\s*:\s*
 // selected account/org all survive leaving and re-entering the GitHub tab, so
 // returning shows cached data instantly and refreshes silently in the topbar
 // button instead of flashing "Loading...".
+//
+// Living above the view is exactly why `watched` exists: the hook stays mounted
+// for the life of the app, so it must be told when the GitHub tab is the thing
+// on screen and the window has focus. Nothing fetches unless it is.
 type GithubState = ReturnType<typeof useGithubState>;
 
-function useGithubState(range: DateRange) {
+function useGithubState(range: DateRange, watched: boolean) {
   const [accounts, setAccounts] = useState<GithubAccount[]>([]);
   const [label, setLabel] = useState<string | null>(null);
   // null = the account's "All orgs" view.
@@ -418,11 +557,20 @@ function useGithubState(range: DateRange) {
     [],
   );
 
+  // Forget every cached view. Used when something makes them all wrong at once -
+  // a language change, or edited accounts - so the next view opened refetches
+  // instead of painting stale panels.
+  const clear = useCallback(() => setSnaps({}), []);
+
   // Keep the selected view fresh: refetch if its cached snapshot is missing or
   // older than the refresh cadence - flipping between recently-loaded views (or
-  // tabs, or ranges) then costs nothing. A periodic interval keeps the active
-  // view fresh, and the manual Refresh button always forces a fetch. This runs
-  // while the GitHub tab is mounted; the cache above persists even when it isn't.
+  // tabs, or ranges) then costs nothing. A periodic interval keeps the selected
+  // view fresh, and the manual Refresh button always forces a fetch.
+  //
+  // All of it hangs off `watched`: the tab has to be the thing on screen and the
+  // window has to have focus. Leaving the tab or clicking out of the app stops
+  // the polling dead, and returning picks it back up - the cache above survives
+  // in between, so a return is usually free.
   //
   // Only the live view - today - polls. A past day can no longer change, and a
   // multi-day range costs several paginated Search queries per org, which would
@@ -430,7 +578,7 @@ function useGithubState(range: DateRange) {
   // are fetched once, and the Refresh button is always there.
   const key = rangeKey(range);
   useEffect(() => {
-    if (!label) return;
+    if (!watched || !label) return;
     const cached = snapsRef.current[viewKey(label, org, range)];
     const fresh =
       cached && Date.now() - new Date(cached.fetchedAt).getTime() < GITHUB_REFRESH_MS;
@@ -441,7 +589,7 @@ function useGithubState(range: DateRange) {
     // `range` is compared by its stable key, so a new object with the same days
     // does not restart the interval.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [label, org, key, load]);
+  }, [watched, label, org, key, load]);
 
   return {
     accounts,
@@ -454,6 +602,7 @@ function useGithubState(range: DateRange) {
     failedKeys,
     load,
     reloadAccounts,
+    clear,
   };
 }
 

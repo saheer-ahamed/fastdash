@@ -35,7 +35,7 @@ pub struct GithubConfig {
 }
 
 impl GithubConfig {
-    /// Resolve the configuration for the scheduler's default view: the first
+    /// Resolve the configuration for the connector's default view: the first
     /// account configured under Connectors (all its orgs), or `None` if no token is
     /// available (the connector then reports `NeedsAuth`).
     pub fn resolve() -> Option<Self> {

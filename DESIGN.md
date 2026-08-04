@@ -40,7 +40,9 @@ Data crosses the Rust to JS boundary only as generic render primitives, so the f
 - `BarList` - horizontal bars (effort split, top contributors).
 - `List` - a vertical list of links (Slack mentions, PR list).
 
-The core stays agnostic: `Registry` holds the connectors, a scheduler refreshes each on its own interval into a cache, and the UI reads the cache.
+The core stays agnostic: `Registry` holds the connectors and a single shared path fetches one into the cache, emits the result, and returns it.
+The UI decides when that runs - on opening a connector's tab, then on the connector's own interval for as long as that tab is on screen and the app window has focus.
+A dashboard nobody is looking at fetches nothing, so a backgrounded app makes no network calls at all.
 The engine types live in `src-tauri/src/engine/`; connectors live in `src-tauri/src/connectors/<name>/`.
 
 ## Connector: Claude

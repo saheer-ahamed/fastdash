@@ -3,9 +3,9 @@
 //! One dashboard fetch is expensive: four Search API calls per org (each up to
 //! ten pages) plus two or three GraphQL calls - against a Search budget of 30
 //! requests per minute. Nothing used to stop several of those running at once:
-//! the view's own 60s interval, every account/org sub-tab click, the manual
-//! Refresh button and the background scheduler all called straight into
-//! `run_fetch`. That caused both of the symptoms this module exists to kill:
+//! the view's own 60s interval, every account/org sub-tab click and the manual
+//! Refresh button all called straight into `run_fetch`. That caused both of the
+//! symptoms this module exists to kill:
 //!
 //! * **Rate limiting.** Flipping through sub-tabs fired a full fetch per click,
 //!   with the earlier ones still running, and the Search budget was gone in
@@ -19,11 +19,11 @@
 //!
 //! * At most one fetch is in flight. Starting a new one cancels the previous,
 //!   which stops at its next checkpoint instead of spending more budget. The
-//!   background scheduler is the polite exception: it skips its tick rather than
+//!   connector's generic `fetch` is the polite exception: it skips rather than
 //!   preempting a fetch the user is waiting on (see [`Gate::begin_if_idle`]).
-//! * A result younger than [`TTL`] is reused instead of refetched, so the
-//!   scheduler tick, the view's interval and a sub-tab click that land close
-//!   together cost one round of API calls rather than three.
+//! * A result younger than [`TTL`] is reused instead of refetched, so the view's
+//!   interval and a sub-tab click that land close together cost one round of API
+//!   calls rather than two.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};

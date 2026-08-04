@@ -86,9 +86,10 @@ Updates ride the signed NSIS installer; Scoop and `install.ps1` keep using the p
 
 ## Layout
 
-- `src-tauri/src/engine/` - connector-agnostic core: `Connector` trait, registry, config, secrets (OS keychain), snapshot cache, scheduler, i18n, and the shared date filter (`range.rs`).
+- `src-tauri/src/engine/` - connector-agnostic core: `Connector` trait, registry, config, secrets (OS keychain), snapshot cache, the shared fetch path (`refresh.rs`), i18n, and the shared date filter (`range.rs`).
   The UI's date filter resolves its presets to a `DateRange` and every fetch carries one (default: today);
   live "right now" readings - Claude's plan-limit meters, the GitHub contribution heatmap - deliberately ignore it.
+  Nothing fetches on a timer in Rust: the frontend drives every fetch, and only for the dashboard on screen while the app window has focus.
 - `src-tauri/src/connectors/` - self-contained connectors behind the trait; adding one needs zero UI changes.
 - `src-tauri/src/ipc.rs` - the Tauri command surface exposed to the frontend.
 - `src/` - React frontend; the UI only ever renders generic `Panel`s.
