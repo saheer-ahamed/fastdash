@@ -9,23 +9,27 @@ use crate::engine::config::AppConfig;
 use crate::engine::connector::{ConnectorMeta, Snapshot};
 use crate::engine::range::DateRange;
 use crate::engine::registry::Registry;
-use crate::engine::{scheduler, secrets};
+use crate::engine::{refresh, secrets};
 
 #[tauri::command]
 pub fn list_connectors(registry: State<'_, Arc<Registry>>) -> Vec<ConnectorMeta> {
     registry.all().iter().map(|c| c.meta()).collect()
 }
 
-/// The latest cached snapshot for a connector, or `None` if the scheduler has
-/// not fetched it yet. This is the fast path the UI reads first.
+/// The latest cached snapshot for a connector, or `None` if nothing has fetched
+/// it yet this session. The UI reads this before fetching, so a dashboard opened
+/// again paints instantly instead of flashing "Loading...".
 #[tauri::command]
 pub fn get_cached(cache: State<'_, Arc<SnapshotCache>>, id: String) -> Option<Snapshot> {
     cache.get(&id)
 }
 
-/// Manually refresh one connector now, over `range` (defaults to today).
-/// Fetches, updates the cache, emits `connector:update`, and returns the fresh
-/// snapshot for the caller.
+/// Fetch one connector now, over `range` (defaults to today): updates the cache,
+/// emits `connector:update`, and returns the fresh snapshot for the caller.
+///
+/// The frontend is what schedules this - on opening a connector's tab, on its
+/// cadence while that tab is on screen and the window has focus, and on the
+/// Refresh button. Nothing fetches on its own in the background.
 #[tauri::command]
 pub async fn fetch_connector(
     app: AppHandle,
@@ -41,7 +45,7 @@ pub async fn fetch_connector(
     let timezone = config.read().unwrap().timezone.clone();
     let cache = Arc::clone(cache.inner());
     let range = range.unwrap_or_default();
-    Ok(scheduler::refresh_one(&app, &connector, &cache, timezone, range).await)
+    Ok(refresh::refresh_one(&app, &connector, &cache, timezone, range).await)
 }
 
 #[tauri::command]
@@ -49,8 +53,8 @@ pub fn get_config(config: State<'_, Arc<RwLock<AppConfig>>>) -> AppConfig {
     config.read().unwrap().clone()
 }
 
-/// Persist a new config to disk and update the in-memory copy the scheduler and
-/// commands read from.
+/// Persist a new config to disk and update the in-memory copy the commands read
+/// from.
 #[tauri::command]
 pub fn save_config(
     state: State<'_, Arc<RwLock<AppConfig>>>,

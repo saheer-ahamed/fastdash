@@ -14,9 +14,10 @@
 //! GitHub's own rolling calendar, not a range report.
 //!
 //! Supports multiple accounts (work `saheer-zro`, personal `saheer-ahamed`),
-//! each with its own PAT in the OS keychain. The scheduler's `fetch` renders the
-//! first account (all orgs) for the sidebar status dot; the UI drives per-account
-//! and per-org sub-tabs through `fetch_account` (see `ipc::github_fetch`).
+//! each with its own PAT in the OS keychain. The UI drives per-account and
+//! per-org sub-tabs through `fetch_account` (see `ipc::github_fetch`); the
+//! `Connector::fetch` below is the trait's generic entry point and renders the
+//! first account, all orgs.
 
 mod aggregate;
 mod client;
@@ -66,11 +67,11 @@ impl Connector for GithubConnector {
         }
     }
 
-    /// The scheduler's periodic tick, which only feeds the sidebar status dot -
-    /// the GitHub tab drives its own per-account views through `fetch_account`.
-    /// It therefore never preempts a fetch the user is waiting on: if one is
-    /// already running it reuses the last snapshot rather than doubling the
-    /// Search API spend to compute the same thing twice.
+    /// The generic entry point: the first account, all orgs. The GitHub tab
+    /// never takes this path - it drives its own per-account views through
+    /// `fetch_account` - so this never preempts a fetch the user is waiting on:
+    /// if one is already running it reuses the last snapshot rather than
+    /// doubling the Search API spend to compute the same thing twice.
     async fn fetch(&self, ctx: &FetchCtx) -> Result<Snapshot, ConnectorError> {
         // Days are fixed to IST per the design (PRs near midnight are attributed
         // by IST datetime bounds). `ctx.timezone` is ignored for now.

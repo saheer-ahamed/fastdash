@@ -101,7 +101,8 @@ pub struct FetchCtx {
 pub trait Connector: Send + Sync {
     fn meta(&self) -> ConnectorMeta;
 
-    /// Fetch the latest snapshot. Called by the scheduler on the connector's
-    /// own cadence and by the UI on manual refresh.
+    /// Fetch the latest snapshot. Driven entirely by the UI: when the
+    /// connector's tab is opened, on `default_refresh_secs` for as long as that
+    /// tab is on screen and the window has focus, and on manual refresh.
     async fn fetch(&self, ctx: &FetchCtx) -> Result<Snapshot, ConnectorError>;
 }

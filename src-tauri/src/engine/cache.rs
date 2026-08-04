@@ -1,8 +1,9 @@
 //! In-memory snapshot cache.
 //!
-//! The scheduler writes the latest `Snapshot` per connector id here; the UI
-//! reads it via the `get_cached` IPC command. "Fast" means the UI always reads
-//! this warm cache and never blocks on the network.
+//! Every fetch writes the latest `Snapshot` per connector id here; the UI reads
+//! it via the `get_cached` IPC command before deciding whether to fetch, so a
+//! reloaded frontend paints what the backend already has instead of blocking on
+//! the network.
 
 use std::collections::HashMap;
 use std::sync::RwLock;
