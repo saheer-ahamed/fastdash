@@ -46,6 +46,13 @@ keyring = { version = "3", features = ["windows-native"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }
 
+# Single-instance guard. Launching fastdash again (Start menu, shortcut, the
+# installer's "run now") must focus the window that is already open rather than
+# start a second copy - two copies would fight over the same config file and
+# keychain entries. Desktop-only: mobile has no second-launch notion.
+[target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))'.dependencies]
+tauri-plugin-single-instance = "2"
+
 # Smaller, faster release binaries.
 [profile.release]
 opt-level = "s"
