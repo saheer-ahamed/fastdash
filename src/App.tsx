@@ -313,50 +313,64 @@ export default function App() {
   );
 }
 
-// Whether the app window has focus. Every fetch in the app is gated on this: a
-// dashboard nobody is looking at must not poll, and an app sitting in the
-// background must make no network calls at all.
+// Whether the app is the window being watched. Every fetch in the app is gated
+// on this: a dashboard nobody is looking at must not poll, and an app sitting in
+// the background must make no network calls at all.
 //
-// The window's own focus event is the authoritative desktop signal - the webview
-// does not reliably forward OS focus changes to the DOM - with the DOM
-// focus/blur pair as the fallback for `npm run dev`, where the page runs in a
-// plain browser and the Tauri API is absent. Focus starts out assumed: the first
-// fetch cannot happen until `list_connectors` has come back anyway, by which
-// time the real reading has landed.
+// Two signals, unioned, because neither one is sufficient on its own:
+//
+//   - The DOM focus/blur pair says whether the *webview* holds focus. That is
+//     the signal that tracks the app being used, because the page is what the
+//     user clicks into, and it is the only signal available under `npm run dev`,
+//     where this runs in a plain browser with no Tauri API.
+//   - The window's own focus event says whether the *native window* holds focus.
+//     Tauri reports a window as focused only while it is both active and holding
+//     keyboard focus, and on Windows the WebView2 content is a child window that
+//     takes that keyboard focus away as soon as the app is used - so from
+//     startup onwards this alone reads as unfocused for an app sitting right in
+//     front of the user. It is still needed for the mirror case: grabbing the
+//     native frame to drag or resize moves focus off the webview while the
+//     window plainly has it.
+//
+// Either signal being true means the app is being watched; both false means it
+// is not. Both start out assumed focused - the app is launched into the
+// foreground - and are corrected as soon as the listeners below attach.
 function useWindowFocus(): boolean {
-  const [focused, setFocused] = useState(true);
+  const [domFocused, setDomFocused] = useState(true);
+  // `null` until the desktop listener attaches, and forever in a plain browser,
+  // so an absent window signal never props the union up on its own.
+  const [windowFocused, setWindowFocused] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    const on = () => setDomFocused(true);
+    const off = () => setDomFocused(false);
+    window.addEventListener("focus", on);
+    window.addEventListener("blur", off);
+    setDomFocused(document.hasFocus());
+    return () => {
+      window.removeEventListener("focus", on);
+      window.removeEventListener("blur", off);
+    };
+  }, []);
 
   useEffect(() => {
     let stopped = false;
     let unlisten: (() => void) | undefined;
 
-    const listenInBrowser = () => {
-      const on = () => setFocused(true);
-      const off = () => setFocused(false);
-      window.addEventListener("focus", on);
-      window.addEventListener("blur", off);
-      setFocused(document.hasFocus());
-      return () => {
-        window.removeEventListener("focus", on);
-        window.removeEventListener("blur", off);
-      };
-    };
-
     // Subscribe before reading the current state, so a change landing in between
     // is caught rather than dropped.
     const attach = async () => {
       const win = getCurrentWindow();
-      const off = await win.onFocusChanged(({ payload }) => setFocused(payload));
+      const off = await win.onFocusChanged(({ payload }) => setWindowFocused(payload));
       if (stopped) {
         off();
         return;
       }
       unlisten = off;
-      setFocused(await win.isFocused());
+      setWindowFocused(await win.isFocused());
     };
-    attach().catch(() => {
-      if (!stopped && !unlisten) unlisten = listenInBrowser();
-    });
+    // No Tauri API (the browser dev server): the DOM signal carries it alone.
+    attach().catch(() => {});
 
     return () => {
       stopped = true;
@@ -364,7 +378,7 @@ function useWindowFocus(): boolean {
     };
   }, []);
 
-  return focused;
+  return domFocused || windowFocused === true;
 }
 
 // A non-blocking toast that appears only when a newer signed release exists.
