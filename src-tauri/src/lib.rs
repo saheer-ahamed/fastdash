@@ -45,6 +45,17 @@ pub fn run() {
     #[cfg(desktop)]
     {
         builder = builder
+            // Registered first, as the plugin requires: a second launch has to be
+            // short-circuited before the rest of the app spins up. The callback
+            // runs in the *already running* instance, so all it does is surface
+            // the existing window - restore it if minimised, raise it, focus it.
+            .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.unminimize();
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }))
             .plugin(tauri_plugin_updater::Builder::new().build())
             .plugin(tauri_plugin_process::init());
     }
