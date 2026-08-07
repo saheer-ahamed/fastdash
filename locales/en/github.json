@@ -21,6 +21,8 @@
       "closedUnmergedHint": "Of the PRs created in this date range, the ones closed without ever being merged. Always a subset of Created.",
       "stillOpen": "Still open",
       "stillOpenHint": "Of the PRs created in this date range, the ones neither merged nor closed as of now. Always a subset of Created; it does not include older PRs still waiting.",
+      "drafts": "Drafts",
+      "draftsHint": "Of the PRs still open from this date range, the ones GitHub still marks as a draft right now. Always a subset of Still open, never a bucket beside it, so it is not part of what Created splits into.",
       "total": "Total",
       "totalHint": "Additions plus deletions across the PRs merged in this range.",
       "additions": "Additions",
@@ -32,7 +34,7 @@
       "repo": "Repo",
       "title": "Title",
       "state": "State",
-      "stateHint": "Where this PR stands right now: merged, closed without merging, or still open.",
+      "stateHint": "Where this PR stands right now: merged, closed without merging, open for review, or open but still a draft.",
       "delta": "+/-",
       "deltaHint": "Lines added and removed by this PR. Sorts by total lines touched.",
       "time": "Time",
@@ -52,7 +54,8 @@
     "state": {
       "merged": "Merged",
       "closed": "Closed",
-      "open": "Open"
+      "open": "Open",
+      "draft": "Draft"
     },
     "needsAuth": "Add a GitHub token (keychain fastdash/github/<label> or the GITHUB_TOKEN env var) and pick organizations",
     "orgNotGranted": "GitHub won't show this account anything in {org}. The connection has every scope it needs (repo, read:org, read:user), but {org} restricts third-party OAuth apps, and fastdash hasn't been granted access - so GitHub hides the org's repositories from it rather than reporting a permission error. Open {url}, find fastdash, and grant it access to {org} (if you don't own the org, that button sends a request to an owner instead). A personal access token isn't subject to this policy, which is why pasting one works today.",

@@ -63,6 +63,10 @@ pub struct SearchItem {
     pub created_at: Option<DateTime<Utc>>,
     pub closed_at: Option<DateTime<Utc>>,
     pub merged_at: Option<DateTime<Utc>>,
+    /// GitHub's draft flag *as of this fetch*, not a state the PR was ever in
+    /// during the range. It survives the PR being merged or closed, so it only
+    /// means "waiting on its author" once intersected with "still open".
+    pub draft: bool,
 }
 
 impl SearchItem {
@@ -697,6 +701,7 @@ struct RawSearchItem {
     html_url: String,
     created_at: Option<String>,
     closed_at: Option<String>,
+    draft: Option<bool>,
     repository_url: String,
     user: Option<RawUser>,
     pull_request: Option<RawPullRequest>,
@@ -729,6 +734,10 @@ impl RawSearchItem {
                 .and_then(|p| p.merged_at)
                 .as_deref()
                 .and_then(parse_ts),
+            // Search sends `draft` on every `type:pr` item, but it is absent on
+            // issues and on any older payload, and a missing flag has to mean
+            // "not a draft" rather than dropping the whole result.
+            draft: self.draft.unwrap_or(false),
         })
     }
 }
@@ -766,6 +775,25 @@ mod tests {
         let body: SearchResponse =
             serde_json::from_str(r#"{"total_count": 1758, "items": []}"#).unwrap();
         assert_eq!(body.total_count, 1758);
+    }
+
+    /// Search omits `draft` on anything that is not a pull request, and an
+    /// absent flag has to read as "not a draft" rather than losing the result:
+    /// a dropped item would be missing from the counts *and* from the PR list.
+    #[test]
+    fn a_missing_draft_flag_means_not_a_draft() {
+        let item = |json: &str| {
+            serde_json::from_str::<RawSearchItem>(json)
+                .expect("wire shape")
+                .normalize()
+                .expect("normalized")
+        };
+        let base = r#""number":1,"title":"t","html_url":"https://github.com/acme/api/pull/1",
+            "repository_url":"https://api.github.com/repos/acme/api""#;
+
+        assert!(!item(&format!("{{{base}}}")).draft);
+        assert!(item(&format!("{{{base},\"draft\":true}}")).draft);
+        assert!(!item(&format!("{{{base},\"draft\":false}}")).draft);
     }
 
     #[test]
