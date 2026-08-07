@@ -1,17 +1,29 @@
 //! GitHub connector.
 //!
 //! Per selected org, uses the REST Search API for the date-filtered PR sets
-//! (opened / merged / closed-without-merge / still-open over the selected IST
-//! day range), then a single batched GraphQL enrichment for
-//! additions/deletions/state on the MERGED set. Emits a `StatCards` header plus
+//! (created / merged / closed-without-merge over the selected IST day range),
+//! then a single batched GraphQL enrichment for additions/deletions/state on
+//! the PRs the dashboard reports as merged. Emits a `StatCards` header plus
 //! three tables: PR counts per contributor, line contributions per contributor
 //! (based on PRs MERGED in the range), and the PR list with repos.
 //!
+//! The per-contributor counts obey two rules that the table is unreadable
+//! without, and both are enforced in [`count_cohort`] rather than at fetch time:
+//! every PR is counted once across all configured scopes, and all four columns
+//! split a single cohort - the PRs *created* in the range - by what became of
+//! them, so a row always reconciles as
+//! `created = merged + closed unmerged + still open`.
+//!
 //! The range comes from the UI's date filter and is applied the way GitHub
 //! itself filters - as `created:` / `merged:` / `closed:` qualifiers on the
-//! Search API - so the numbers match what the same query shows on github.com.
+//! Search API - so each set matches what the same query shows on github.com.
 //! It defaults to today. The contribution heatmap is deliberately exempt: it is
 //! GitHub's own rolling calendar, not a range report.
+//!
+//! Search hands back at most 1000 results per query and gives no sign that it
+//! dropped the rest, so every query's `total_count` is checked and a range
+//! wider than that says so in a note above the tables rather than presenting
+//! its newest slice as the whole picture.
 //!
 //! Supports multiple accounts (work `saheer-zro`, personal `saheer-ahamed`),
 //! each with its own PAT in the OS keychain. The UI drives per-account and
@@ -198,10 +210,16 @@ async fn run_fetch(
     let client = GithubClient::new(&cfg.token)?;
 
     let mut rollup = Rollup::default();
-    // PRs deduped across all four sets, with per-set outcome flags.
-    let mut seen: HashMap<(String, String, u64), SeenPr> = HashMap::new();
+    // PRs deduped across every scope and every set, with per-set flags. Counting
+    // happens here rather than per scope, so two overlapping scopes (an org plus
+    // `author:me`, which the Connectors copy suggests pairing) cannot count the
+    // same PR twice in a table sitting above an already-deduped PR list.
+    let mut seen: HashMap<PrKey, SeenPr> = HashMap::new();
     // Scopes GitHub refused, kept aside so one bad entry cannot sink the others.
     let mut failed: Vec<String> = Vec::new();
+    // The biggest query GitHub capped, so the dashboard can say the range is
+    // wider than Search will serve instead of quietly reporting a slice of it.
+    let mut truncated_total = 0u64;
 
     for entry in &cfg.orgs {
         let scope = scope_qualifier(entry);
@@ -221,24 +239,17 @@ async fn run_fetch(
             continue;
         };
 
-        // Independent per-contributor counts (a PR may fall in several buckets).
-        count_authors(&sets.opened, &mut rollup.opened);
-        count_authors(&sets.merged, &mut rollup.merged);
-        count_authors(&sets.closed, &mut rollup.closed);
-        count_authors(&sets.still_open, &mut rollup.open);
+        truncated_total = truncated_total.max(sets.truncated_total);
 
-        // Fold every set into the deduped union with outcome flags.
+        // Fold every set into the deduped union with its flags.
         for it in sets.opened {
-            upsert(&mut seen, it, false, false, false);
+            upsert(&mut seen, it, Bucket::Created);
         }
         for it in sets.merged {
-            upsert(&mut seen, it, true, false, false);
+            upsert(&mut seen, it, Bucket::Merged);
         }
         for it in sets.closed {
-            upsert(&mut seen, it, false, true, false);
-        }
-        for it in sets.still_open {
-            upsert(&mut seen, it, false, false, true);
+            upsert(&mut seen, it, Bucket::Closed);
         }
     }
 
@@ -250,10 +261,16 @@ async fn run_fetch(
         )));
     }
 
-    // Enrich only the MERGED set (line contributions are merged-based).
+    count_cohort(&seen, cfg.filter_bots, &mut rollup);
+
+    // Enrich every PR the dashboard will call merged - the ones merged inside
+    // the range, which drive line contributions, plus the ones created inside it
+    // and merged after it, which the PR list still labels "Merged". Enriching
+    // only the first group left those rows claiming an outcome with "-" in the
+    // +/- column, which reads as missing data rather than an out-of-range merge.
     let merged_refs: Vec<PrRef> = seen
         .values()
-        .filter(|s| s.merged)
+        .filter(|s| s.merged_in_range || s.item.merged_at.is_some())
         .map(|s| s.item.pr_ref())
         .collect();
 
@@ -270,13 +287,18 @@ async fn run_fetch(
     }
 
     // Line contributions: PRs merged in the range, attributed to their author.
-    for e in &enriched {
-        let author = e.author.clone().unwrap_or_else(|| "unknown".to_string());
-        if is_bot(&author) {
+    // Driven off the deduped union rather than the enrichment results, so a PR
+    // two scopes both matched contributes its lines once.
+    for s in seen.values() {
+        if !s.merged_in_range || filtered_out(s.item.author.as_deref(), cfg.filter_bots) {
             continue;
         }
+        let name_with_owner = format!("{}/{}", s.item.owner, s.item.repo);
+        let Some(e) = enrich_by_key.get(&(name_with_owner, s.item.number)) else {
+            continue;
+        };
         rollup.line_contribs.push(LineContrib {
-            author,
+            author: aggregate::author_label(s.item.author.as_deref()),
             additions: e.additions,
             deletions: e.deletions,
         });
@@ -285,15 +307,15 @@ async fn run_fetch(
     // Build the union PR list for the range.
     for s in seen.values() {
         let author = s.item.author.clone();
-        if author.as_deref().map(is_bot).unwrap_or(false) {
+        if filtered_out(author.as_deref(), cfg.filter_bots) {
             continue;
         }
 
         let name_with_owner = format!("{}/{}", s.item.owner, s.item.repo);
         let enriched = enrich_by_key.get(&(name_with_owner.clone(), s.item.number));
 
-        let is_merged = s.merged || s.item.merged_at.is_some();
-        let is_closed = s.closed_unmerged || s.item.closed_at.is_some();
+        let is_merged = s.merged_in_range || s.item.merged_at.is_some();
+        let is_closed = s.closed_in_range || s.item.closed_at.is_some();
         let (state, at) = if is_merged {
             let merged_at = enriched
                 .and_then(|e| e.merged_at)
@@ -333,6 +355,16 @@ async fn run_fetch(
     let contributions = contributions_panels(&client).await;
 
     let mut panels = aggregate::build_panels(&rollup, ist, &range, contributions);
+    // The range matched more PRs than Search will hand over, so the numbers
+    // below are the newest slice of it. Silently rendering them was the worst
+    // failure mode this connector had: a 30-day view could show six days of
+    // data and look exactly like a complete one.
+    if truncated_total > 0 {
+        panels.insert(
+            0,
+            aggregate::results_truncated_note(&range.label(), truncated_total),
+        );
+    }
     // Some scopes worked and some did not: the numbers below are real but
     // incomplete, so say which scopes are missing rather than letting the
     // dashboard imply it covers everything.
@@ -342,13 +374,19 @@ async fn run_fetch(
     Ok(Snapshot::ok(panels, Some(REFRESH_SECS)))
 }
 
-/// The four date-filtered PR sets for one scope over the selected range
-/// (`still_open` is derived from `opened`, not searched separately).
+/// The date-filtered PR sets for one scope over the selected range.
 struct ScopeSets {
+    /// PRs created inside the range: the cohort every count column splits.
     opened: Vec<SearchItem>,
+    /// PRs merged inside the range, whenever they were created. Feeds the line
+    /// contributions table and the PR list, never the counts.
     merged: Vec<SearchItem>,
+    /// PRs closed without merging inside the range, whenever they were created.
+    /// Feeds the PR list only.
     closed: Vec<SearchItem>,
-    still_open: Vec<SearchItem>,
+    /// `total_count` of the widest query GitHub capped, or 0 when every query
+    /// fitted inside the 1000-result limit.
+    truncated_total: u64,
 }
 
 /// Run one scope's searches over `bounds`. `scope` is an already-resolved search
@@ -357,11 +395,12 @@ struct ScopeSets {
 /// this token cannot see the scope, whether because it does not exist or because
 /// the token is not allowed to view it.
 ///
-/// Only three queries are issued: "still open" is `created:{bounds} is:open`,
-/// which is exactly the subset of the `created` results that carry no
-/// `closed_at`, so it is derived locally. Search is budgeted at 30 requests a
-/// minute and every query here paginates, so dropping a whole redundant set
-/// matters as soon as the range is wider than a day.
+/// Three queries, and deliberately no fourth for "still open": a merged PR is
+/// closed too, so the `created` results that carry no `closed_at` are precisely
+/// `created:{bounds} is:open` - verified against the live API. Search is
+/// budgeted at 30 requests a minute and every query here paginates up to ten
+/// pages, so a redundant set costs a third of the per-minute budget as soon as
+/// the range is wider than a day.
 async fn search_scope(
     client: &GithubClient,
     scope: &str,
@@ -374,29 +413,28 @@ async fn search_scope(
         format!("{scope} type:pr closed:{bounds} is:unmerged"),
     ];
 
-    let mut sets = Vec::with_capacity(queries.len());
+    let mut results = Vec::with_capacity(queries.len());
     for q in queries {
         match client.search_issues(&q, cancel).await {
-            Ok(items) => sets.push(items),
+            Ok(r) => results.push(r),
             Err(GithubError::Status { code: 422, .. }) => return Ok(None),
             Err(e) => return Err(e),
         }
     }
 
-    let mut sets = sets.into_iter();
-    let opened = sets.next().unwrap_or_default();
-    // A merged PR is closed too, so "no closed_at" is precisely `is:open`.
-    let still_open: Vec<SearchItem> = opened
+    let truncated_total = results
         .iter()
-        .filter(|it| it.closed_at.is_none())
-        .cloned()
-        .collect();
+        .filter(|r| r.truncated())
+        .map(|r| r.total)
+        .max()
+        .unwrap_or(0);
 
+    let mut results = results.into_iter().map(|r| r.items);
     Ok(Some(ScopeSets {
-        opened,
-        merged: sets.next().unwrap_or_default(),
-        closed: sets.next().unwrap_or_default(),
-        still_open,
+        opened: results.next().unwrap_or_default(),
+        merged: results.next().unwrap_or_default(),
+        closed: results.next().unwrap_or_default(),
+        truncated_total,
     }))
 }
 
@@ -532,41 +570,77 @@ fn year_start(year: i32) -> Option<DateTime<Utc>> {
         .single()
 }
 
-/// A PR seen across one or more search sets, with its outcome flags.
+/// Identity of a pull request, and the key the union is deduped on.
+type PrKey = (String, String, u64);
+
+/// Which of a scope's three searches a PR came back from - one per date
+/// qualifier, so `Merged` and `Closed` mean "that happened inside the range",
+/// whenever the PR was opened.
+#[derive(Debug, Clone, Copy)]
+enum Bucket {
+    Created,
+    Merged,
+    Closed,
+}
+
+/// A PR seen across one or more search sets, with the sets it appeared in.
 struct SeenPr {
     item: SearchItem,
-    merged: bool,
-    closed_unmerged: bool,
-    open: bool,
+    created_in_range: bool,
+    merged_in_range: bool,
+    closed_in_range: bool,
 }
 
-fn upsert(
-    seen: &mut HashMap<(String, String, u64), SeenPr>,
-    item: SearchItem,
-    merged: bool,
-    closed_unmerged: bool,
-    open: bool,
-) {
+fn upsert(seen: &mut HashMap<PrKey, SeenPr>, item: SearchItem, bucket: Bucket) {
     let entry = seen.entry(item.key()).or_insert_with(|| SeenPr {
         item: item.clone(),
-        merged: false,
-        closed_unmerged: false,
-        open: false,
+        created_in_range: false,
+        merged_in_range: false,
+        closed_in_range: false,
     });
-    entry.merged |= merged;
-    entry.closed_unmerged |= closed_unmerged;
-    entry.open |= open;
+    match bucket {
+        Bucket::Created => entry.created_in_range = true,
+        Bucket::Merged => entry.merged_in_range = true,
+        Bucket::Closed => entry.closed_in_range = true,
+    }
 }
 
-/// Tally PR authors into `counts`, skipping bots and missing authors.
-fn count_authors(items: &[SearchItem], counts: &mut HashMap<String, u64>) {
-    for it in items {
-        if let Some(login) = &it.author {
-            if is_bot(login) {
-                continue;
-            }
-            *counts.entry(login.clone()).or_insert(0) += 1;
+/// Fill the four per-contributor count maps the PR activity table renders.
+///
+/// Two properties make those columns trustworthy, and both come from counting
+/// here - once, over the deduped union - rather than inside the scope loop:
+///
+/// * **Every PR counts once.** `seen` is keyed on owner/repo/number across every
+///   configured scope, so a PR that two overlapping scopes both match (an org
+///   plus `author:me`, a pairing the Connectors copy actively suggests) adds one
+///   rather than two. Tallying per scope made the table disagree with the PR
+///   list directly beneath it, which was already deduped this way.
+/// * **One cohort, split by outcome.** All four columns describe the PRs
+///   *created* in the range, so a row always reconciles as
+///   `created = merged + closed unmerged + still open`. Reading "merged" and
+///   "closed unmerged" off the event-based `merged:` / `closed:` searches
+///   instead swept in PRs opened long before the range: the outcome columns then
+///   summed past Created, with nothing on screen to explain why.
+///
+/// The outcome split needs no extra request, because a search result already
+/// carries `merged_at` and `closed_at`, and a merged PR is always closed too -
+/// so "no `closed_at`" is exactly "still open right now".
+fn count_cohort(seen: &HashMap<PrKey, SeenPr>, filter_bots: bool, rollup: &mut Rollup) {
+    for s in seen.values() {
+        if !s.created_in_range || filtered_out(s.item.author.as_deref(), filter_bots) {
+            continue;
         }
+        let author = aggregate::author_label(s.item.author.as_deref());
+        *rollup.opened.entry(author.clone()).or_insert(0) += 1;
+
+        let outcome = if s.item.merged_at.is_some() {
+            &mut rollup.merged
+        } else if s.item.closed_at.is_some() {
+            &mut rollup.closed
+        } else {
+            &mut rollup.open
+        };
+        *outcome.entry(author).or_insert(0) += 1;
     }
 }
 
@@ -598,10 +672,24 @@ fn scope_qualifier(entry: &str) -> String {
     }
 }
 
-/// Filter obvious bot authors (dependabot and any `...[bot]` account).
+/// Whether this PR is hidden by the app-wide "Filter bot authors" setting.
+///
+/// A PR with no author is never a bot: GitHub only drops the `user` field when
+/// the account is gone, and erasing those PRs would leave the counts lower than
+/// the rows visible right below them.
+fn filtered_out(login: Option<&str>, filter_bots: bool) -> bool {
+    filter_bots && login.map(is_bot).unwrap_or(false)
+}
+
+/// Obvious bot authors: any `...[bot]` account, plus dependabot, which posts
+/// under a bare login on some installations.
+///
+/// Matched exactly rather than by prefix. `starts_with("dependabot")` also ate
+/// human accounts such as `dependabot-mirror`, and a contributor vanishing from
+/// every number on the dashboard is invisible until someone counts by hand.
 fn is_bot(login: &str) -> bool {
     let l = login.to_ascii_lowercase();
-    l.ends_with("[bot]") || l == "dependabot" || l.starts_with("dependabot")
+    l.ends_with("[bot]") || l == "dependabot" || l == "dependabot-preview"
 }
 
 fn rate_limited_snapshot(retry_after_secs: Option<u64>) -> Snapshot {
@@ -616,6 +704,200 @@ fn rate_limited_snapshot(retry_after_secs: Option<u64>) -> Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ts(s: &str) -> Option<DateTime<Utc>> {
+        Some(
+            DateTime::parse_from_rfc3339(s)
+                .expect("test timestamp")
+                .with_timezone(&Utc),
+        )
+    }
+
+    /// A search result for `acme/api#{number}`, created inside the range and
+    /// still open. Tests move `merged_at` / `closed_at` to pick an outcome.
+    fn pr(number: u64, author: Option<&str>) -> SearchItem {
+        SearchItem {
+            number,
+            title: format!("fix: thing {number}"),
+            html_url: format!("https://github.com/acme/api/pull/{number}"),
+            author: author.map(str::to_string),
+            owner: "acme".into(),
+            repo: "api".into(),
+            created_at: ts("2026-08-07T04:00:00Z"),
+            closed_at: None,
+            merged_at: None,
+        }
+    }
+
+    /// The counts the PR activity table renders, bots filtered as they are by
+    /// default.
+    fn counts(seen: &HashMap<PrKey, SeenPr>) -> Rollup {
+        let mut rollup = Rollup::default();
+        count_cohort(seen, true, &mut rollup);
+        rollup
+    }
+
+    /// The double count this table shipped with: the tally ran once per
+    /// configured scope, so a PR that both `org:acme` and `author:dev` matched
+    /// added two to every column - while the PR list beneath it, deduped on
+    /// owner/repo/number, showed the single row it really is.
+    #[test]
+    fn a_pr_matched_by_two_scopes_is_counted_once() {
+        let mut seen = HashMap::new();
+        for _ in 0..2 {
+            upsert(&mut seen, pr(1, Some("dev")), Bucket::Created);
+        }
+
+        let r = counts(&seen);
+        assert_eq!(r.opened.get("dev"), Some(&1));
+        assert_eq!(r.open.get("dev"), Some(&1));
+        assert_eq!(r.merged.get("dev"), None);
+        assert_eq!(r.closed.get("dev"), None);
+    }
+
+    /// The invariant the whole table rests on: the three outcome columns split
+    /// Created exactly, so every row adds up.
+    #[test]
+    fn outcome_columns_split_the_created_cohort_exactly() {
+        let mut merged = pr(1, Some("dev"));
+        merged.merged_at = ts("2026-08-07T09:00:00Z");
+        merged.closed_at = ts("2026-08-07T09:00:00Z");
+        let mut abandoned = pr(2, Some("dev"));
+        abandoned.closed_at = ts("2026-08-07T10:00:00Z");
+        let waiting = pr(3, Some("dev"));
+
+        let mut seen = HashMap::new();
+        for it in [merged, abandoned, waiting] {
+            upsert(&mut seen, it, Bucket::Created);
+        }
+
+        let r = counts(&seen);
+        assert_eq!(r.merged["dev"], 1);
+        assert_eq!(r.closed["dev"], 1);
+        assert_eq!(r.open["dev"], 1);
+        assert_eq!(
+            r.merged["dev"] + r.closed["dev"] + r.open["dev"],
+            r.opened["dev"],
+            "created = merged + closed unmerged + still open"
+        );
+    }
+
+    /// A PR that only has an *event* in the range - merged or closed during it
+    /// but opened long before - belongs to the line contributions table and the
+    /// PR list, never to the counts. Counting it made "Merged" and "Closed
+    /// unmerged" sum past "Created" with nothing on screen to explain it.
+    #[test]
+    fn prs_that_only_have_an_event_in_the_range_are_not_counted() {
+        let mut old_merge = pr(1, Some("dev"));
+        old_merge.created_at = ts("2026-07-01T04:00:00Z");
+        old_merge.merged_at = ts("2026-08-07T09:00:00Z");
+        old_merge.closed_at = ts("2026-08-07T09:00:00Z");
+        let mut old_close = pr(2, Some("dev"));
+        old_close.created_at = ts("2026-07-01T04:00:00Z");
+        old_close.closed_at = ts("2026-08-07T10:00:00Z");
+
+        let mut seen = HashMap::new();
+        upsert(&mut seen, old_merge, Bucket::Merged);
+        upsert(&mut seen, old_close, Bucket::Closed);
+
+        let r = counts(&seen);
+        for (name, map) in [
+            ("created", &r.opened),
+            ("merged", &r.merged),
+            ("closed", &r.closed),
+            ("still open", &r.open),
+        ] {
+            assert!(
+                map.is_empty(),
+                "{name} counted an out-of-cohort PR: {map:?}"
+            );
+        }
+    }
+
+    /// "Still open" is derived from the absence of `closed_at`, so the order of
+    /// the outcome checks is load-bearing: a merged PR must land in Merged even
+    /// if GitHub ever omits its `closed_at`, never in Still open.
+    #[test]
+    fn merged_prs_never_land_in_still_open() {
+        let mut odd = pr(1, Some("dev"));
+        odd.merged_at = ts("2026-08-07T09:00:00Z");
+        odd.closed_at = None;
+
+        let mut seen = HashMap::new();
+        upsert(&mut seen, odd, Bucket::Created);
+
+        let r = counts(&seen);
+        assert_eq!(r.merged["dev"], 1);
+        assert!(r.open.is_empty(), "{:?}", r.open);
+    }
+
+    /// "Filter bot authors" was a dead setting: bots were dropped whatever it
+    /// said, so a user who turned it off saw no change and no explanation.
+    #[test]
+    fn the_bot_filter_follows_the_setting() {
+        let mut seen = HashMap::new();
+        upsert(&mut seen, pr(1, Some("dependabot[bot]")), Bucket::Created);
+        upsert(&mut seen, pr(2, Some("dev")), Bucket::Created);
+
+        let mut filtered = Rollup::default();
+        count_cohort(&seen, true, &mut filtered);
+        assert_eq!(filtered.opened.len(), 1);
+        assert!(!filtered.opened.contains_key("dependabot[bot]"));
+
+        let mut kept = Rollup::default();
+        count_cohort(&seen, false, &mut kept);
+        assert_eq!(kept.opened.get("dependabot[bot]"), Some(&1));
+        assert_eq!(kept.opened.get("dev"), Some(&1));
+    }
+
+    /// The prefix match this used to do erased any human whose login merely
+    /// began "dependabot", and a contributor missing from every number is
+    /// invisible until somebody counts by hand.
+    #[test]
+    fn only_real_bots_are_filtered() {
+        assert!(is_bot("dependabot[bot]"));
+        assert!(is_bot("renovate[bot]"));
+        assert!(is_bot("dependabot"));
+        assert!(is_bot("dependabot-preview"));
+        assert!(!is_bot("dependabot-mirror"));
+        assert!(!is_bot("robotnik"));
+    }
+
+    /// A PR whose author's account is gone is still a PR: it used to be skipped
+    /// by the counts while the list below rendered a row for it, so the stat
+    /// cards could read lower than the rows beneath them for no visible reason.
+    #[test]
+    fn authorless_prs_are_counted_under_one_translated_label() {
+        let mut seen = HashMap::new();
+        upsert(&mut seen, pr(1, None), Bucket::Created);
+
+        let label = aggregate::author_label(None);
+        assert_ne!(label, "github.unknownAuthor", "untranslated: {label}");
+
+        let r = counts(&seen);
+        assert_eq!(r.opened.get(&label), Some(&1));
+        assert_eq!(r.open.get(&label), Some(&1));
+    }
+
+    /// The truncation warning is the only thing standing between a capped range
+    /// and numbers that look complete, so its copy must resolve and substitute.
+    #[test]
+    fn truncation_copy_resolves() {
+        let title = i18n::t("github.truncatedTitle");
+        assert_ne!(title, "github.truncatedTitle");
+
+        let body = i18n::tf(
+            "github.truncated",
+            &[
+                ("range", "Last 7 days"),
+                ("total", "1,758"),
+                ("cap", "1,000"),
+            ],
+        );
+        assert!(body.contains("Last 7 days"), "{body}");
+        assert!(body.contains("1,758"), "{body}");
+        assert!(!body.contains('{'), "unsubstituted: {body}");
+    }
 
     /// An OAuth (Device Flow) token gets the org-grant explanation; a PAT, which
     /// the third-party app policy does not apply to, gets the generic one.
@@ -812,7 +1094,7 @@ mod live_test {
                 &Cancel::none(),
             )
             .await
-            .map(|v| v.len())
+            .map(|r| r.items.len())
             .unwrap_or(0);
         eprintln!(
             "PRs authored by {} (search, all time): {authored}",

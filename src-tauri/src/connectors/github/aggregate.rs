@@ -121,6 +121,36 @@ pub fn contributions_heatmap(
     })
 }
 
+/// How a PR's author is named in every table on this dashboard.
+///
+/// A PR whose GitHub account no longer exists comes back with no author, and
+/// the three tables each used to invent their own answer: the counts skipped it,
+/// the line contributions filed it under a hardcoded, untranslated "unknown",
+/// and the PR list rendered "-". The stat cards could therefore read lower than
+/// the rows immediately beneath them, with nothing on screen to explain it.
+pub fn author_label(login: Option<&str>) -> String {
+    login
+        .map(str::to_string)
+        .unwrap_or_else(|| i18n::t("github.unknownAuthor"))
+}
+
+/// Warn that GitHub would not serve the whole range: Search caps every query at
+/// 1000 results, so wider ranges render their newest slice and nothing about
+/// the numbers hints that the rest exists.
+pub fn results_truncated_note(range_label: &str, total: u64) -> Panel {
+    Panel::Note {
+        title: Some(i18n::t("github.truncatedTitle")),
+        message: i18n::tf(
+            "github.truncated",
+            &[
+                ("range", range_label),
+                ("total", &fmt_count(total)),
+                ("cap", &fmt_count(super::client::SEARCH_RESULT_CAP)),
+            ],
+        ),
+    }
+}
+
 /// Warn that the numbers below exclude scopes GitHub refused to search, so a
 /// partial dashboard is not mistaken for a complete one.
 pub fn scopes_failed_note(failed: &[String]) -> Panel {
@@ -197,10 +227,14 @@ fn stat_cards(rollup: &Rollup, range_label: &str) -> Panel {
                 value: total_opened.to_string(),
                 sub: None,
             },
+            // Spelled out because the line contributions table below reports a
+            // different, deliberately wider population - everything merged in
+            // the range, however old - and two "merged" numbers on one screen
+            // must say which is which.
             Stat {
                 label: i18n::t("github.stats.prsMerged"),
                 value: total_merged.to_string(),
-                sub: None,
+                sub: Some(i18n::t("github.stats.prsMergedSub")),
             },
             Stat {
                 label: i18n::t("github.stats.contributorsActive"),
@@ -256,9 +290,10 @@ fn pr_activity_table(rollup: &Rollup, range_label: &str) -> Panel {
             "github.table.prActivity",
             &[("range", range_label)],
         )),
-        // "Created" and "Still open" are one letter apart in spirit but answer
-        // different questions - an event in the window vs a state right now -
-        // so each header carries the sentence that spells the difference out.
+        // All four columns split one cohort - the PRs created in the range - so
+        // Merged, Closed unmerged and Still open add up to Created on every row.
+        // Each hint says so, because a table that reconciles is only useful if
+        // the reader knows it is supposed to.
         columns: vec![
             col("contributor", i18n::t("github.column.contributor"), false),
             col("merged", i18n::t("github.column.merged"), true)
@@ -355,7 +390,7 @@ fn pr_list_table(rollup: &Rollup, ist: FixedOffset, range: &DateRange, range_lab
     let rows = entries
         .into_iter()
         .map(|pr| {
-            let author = pr.author.clone().unwrap_or_else(|| "-".into());
+            let author = author_label(pr.author.as_deref());
             // Sorting "+120 / -4" by its characters is meaningless; churn
             // (additions + deletions) is what the column reads as - PR size.
             let delta = match (pr.additions, pr.deletions) {
@@ -525,5 +560,52 @@ mod tests {
 
         // Plain text keeps no key and falls back to comparing characters.
         assert_eq!(row[0].sort, None);
+    }
+
+    /// All three tables must name a vanished author the same way. The PR list
+    /// rendered "-" while the counts skipped the PR outright, so the same PR
+    /// was visible in one panel and absent from the one above it.
+    #[test]
+    fn the_pr_list_names_authorless_prs_like_every_other_table() {
+        let mut rollup = rollup();
+        rollup.pr_list[0].author = None;
+
+        let panel = pr_list_table(&rollup, range::ist(), &DateRange::today(), "x");
+        let Panel::Table(spec) = panel else {
+            panic!("expected a table")
+        };
+        assert_eq!(spec.rows[0][0].text, author_label(None));
+        assert_ne!(spec.rows[0][0].text, "-");
+    }
+
+    /// The merged stat card sums the created-in-range cohort, but the line
+    /// contributions table under it reports everything merged in the range,
+    /// however old. Two "merged" numbers on one screen need the card to say
+    /// which one it is.
+    #[test]
+    fn the_merged_stat_card_names_its_population() {
+        let Panel::StatCards { stats, .. } = stat_cards(&rollup(), "Today") else {
+            panic!("expected stat cards")
+        };
+        let sub = stats[1]
+            .sub
+            .as_deref()
+            .expect("the merged card must say which PRs it counts");
+        assert_ne!(sub, "github.stats.prsMergedSub", "untranslated: {sub}");
+    }
+
+    /// A capped range must announce itself: the note names the range and both
+    /// numbers, or the reader has no way to tell a partial answer from a whole
+    /// one.
+    #[test]
+    fn the_truncation_note_names_the_range_and_the_limit() {
+        let Panel::Note { title, message } = results_truncated_note("Last 7 days", 1758) else {
+            panic!("expected a note")
+        };
+        let title = title.expect("the note needs a title");
+        assert_ne!(title, "github.truncatedTitle", "untranslated: {title}");
+        assert!(message.contains("Last 7 days"), "{message}");
+        assert!(message.contains("1,758"), "{message}");
+        assert!(message.contains("1,000"), "{message}");
     }
 }

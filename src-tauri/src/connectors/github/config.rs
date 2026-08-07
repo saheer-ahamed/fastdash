@@ -32,6 +32,11 @@ pub struct GithubConfig {
     /// Account label the token was resolved for (diagnostics only).
     #[allow(dead_code)]
     pub label: String,
+    /// The app-wide "Filter bot authors" toggle, resolved here so the fetch
+    /// path never re-reads the config file. It used to be settings-only: the
+    /// connector dropped bots unconditionally, so turning the toggle off
+    /// changed nothing and bot PRs stayed missing with no explanation.
+    pub filter_bots: bool,
 }
 
 impl GithubConfig {
@@ -56,7 +61,9 @@ impl GithubConfig {
     /// available for the label. When `org` is `None` the account's full org list
     /// is used (the "All" sub-tab).
     pub fn for_account(label: &str, org: Option<&str>) -> Option<Self> {
-        let account = crate::engine::config::load()
+        let config = crate::engine::config::load();
+        let filter_bots = config.filter_bots;
+        let account = config
             .github
             .accounts
             .into_iter()
@@ -87,6 +94,7 @@ impl GithubConfig {
             token,
             orgs,
             label: label.to_string(),
+            filter_bots,
         })
     }
 }

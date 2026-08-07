@@ -13,6 +13,8 @@ const GRAPHQL_URL: &str = "https://api.github.com/graphql";
 /// Search returns at most 1000 results (10 pages of 100); cap accordingly.
 const MAX_PAGES: u32 = 10;
 const PER_PAGE: u32 = 100;
+/// The hard ceiling GitHub puts on one Search query, however it is paginated.
+pub const SEARCH_RESULT_CAP: u64 = (MAX_PAGES * PER_PAGE) as u64;
 /// PRs per GraphQL request. Each PR is a small `repository { pullRequest }`
 /// sub-tree; 50 keeps the query well within GitHub's node limits.
 const GRAPHQL_CHUNK: usize = 50;
@@ -74,6 +76,26 @@ impl SearchItem {
 
     pub fn key(&self) -> (String, String, u64) {
         (self.owner.clone(), self.repo.clone(), self.number)
+    }
+}
+
+/// One Search query's results, alongside what a complete answer would have held.
+///
+/// GitHub serves at most [`SEARCH_RESULT_CAP`] results per query and says
+/// nothing about the ones it drops - the last page simply comes back full and
+/// the next one does not exist. `total` is its own `total_count`, so it is the
+/// only way to tell a whole range apart from the newest slice of one.
+#[derive(Debug, Default)]
+pub struct SearchResults {
+    pub items: Vec<SearchItem>,
+    pub total: u64,
+}
+
+impl SearchResults {
+    /// GitHub had more matches than it will ever serve for this query, so
+    /// `items` under-reports the range.
+    pub fn truncated(&self) -> bool {
+        self.total > SEARCH_RESULT_CAP
     }
 }
 
@@ -189,12 +211,19 @@ impl GithubClient {
     /// value, e.g. `org:z-roworld type:pr created:<bounds>`. `cancel` is checked
     /// before every page: a superseded fetch must not keep spending the Search
     /// budget (30 requests/minute) on a view nobody is looking at.
+    ///
+    /// Ordering is pinned to newest-created-first rather than GitHub's default
+    /// relevance ranking. Beyond [`SEARCH_RESULT_CAP`] matches something has to
+    /// be dropped, and which results survive must not depend on an undocumented
+    /// scoring heuristic: the newest slice of the range is at least a slice a
+    /// human can reason about, and the returned `total` says how much was lost.
     pub async fn search_issues(
         &self,
         query: &str,
         cancel: &Cancel,
-    ) -> Result<Vec<SearchItem>, GithubError> {
+    ) -> Result<SearchResults, GithubError> {
         let mut items = Vec::new();
+        let mut total = 0u64;
         let mut page = 1u32;
 
         loop {
@@ -206,6 +235,8 @@ impl GithubClient {
                 .get(SEARCH_URL)
                 .query(&[
                     ("q", query),
+                    ("sort", "created"),
+                    ("order", "desc"),
                     ("per_page", &PER_PAGE.to_string()),
                     ("page", &page.to_string()),
                 ])
@@ -237,6 +268,7 @@ impl GithubClient {
                 .await
                 .map_err(|e| GithubError::Parse(e.to_string()))?;
 
+            total = total.max(body.total_count);
             let count = body.items.len();
             for raw in body.items {
                 if let Some(item) = raw.normalize() {
@@ -258,7 +290,7 @@ impl GithubClient {
             }
         }
 
-        Ok(items)
+        Ok(SearchResults { items, total })
     }
 
     /// Enrich a set of PRs (by owner/repo/number) with additions, deletions,
@@ -650,6 +682,10 @@ fn parse_ts(s: &str) -> Option<DateTime<Utc>> {
 
 #[derive(Debug, Deserialize)]
 struct SearchResponse {
+    /// How many results the query really has, capped or not. Without it a
+    /// truncated answer is indistinguishable from a complete one.
+    #[serde(default)]
+    total_count: u64,
     #[serde(default)]
     items: Vec<RawSearchItem>,
 }
@@ -716,4 +752,34 @@ fn owner_repo_from_url(url: &str) -> Option<(String, String)> {
 struct GraphQlResponse {
     data: Option<HashMap<String, serde_json::Value>>,
     errors: Option<serde_json::Value>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `total_count` is the whole point of parsing the search envelope: a capped
+    /// answer looks exactly like a complete one without it, and the dashboard
+    /// then presents the newest 1000 PRs as if they were the entire range.
+    #[test]
+    fn the_search_envelope_carries_the_real_total() {
+        let body: SearchResponse =
+            serde_json::from_str(r#"{"total_count": 1758, "items": []}"#).unwrap();
+        assert_eq!(body.total_count, 1758);
+    }
+
+    #[test]
+    fn truncation_is_exactly_more_matches_than_github_will_serve() {
+        let at_cap = SearchResults {
+            items: vec![],
+            total: SEARCH_RESULT_CAP,
+        };
+        assert!(!at_cap.truncated(), "a query that just fits is complete");
+
+        let over_cap = SearchResults {
+            items: vec![],
+            total: SEARCH_RESULT_CAP + 1,
+        };
+        assert!(over_cap.truncated());
+    }
 }
