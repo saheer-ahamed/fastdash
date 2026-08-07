@@ -22,6 +22,7 @@ import type {
   Snapshot,
 } from "./types";
 import Settings from "./Settings";
+import Welcome from "./Welcome";
 import Connectors from "./connectors/ConnectorsPage";
 import RangeFilter from "./RangeFilter";
 import { rangeKey, todayRange, type PresetId } from "./range";
@@ -53,6 +54,10 @@ export default function App() {
   const [listed, setListed] = useState(false);
   const [active, setActive] = useState<string | null>(null);
   const [page, setPage] = useState<Page | null>(null);
+  // Which connector's form the Connectors page should open on, when it was
+  // reached from a first-run card rather than the sidebar. Read once as that
+  // page mounts, so it seeds the sub-tab without owning it afterwards.
+  const [openConnector, setOpenConnector] = useState<string | null>(null);
   const [snapshots, setSnapshots] = useState<Record<string, Snapshot>>({});
   // Latest snapshots, readable inside the seeding effect without making it a
   // dependency (which would re-run it on every fetch).
@@ -235,6 +240,13 @@ export default function App() {
     };
   }, [focused, live, connectors, range, refresh]);
 
+  // Jump from a first-run card straight to that connector's setup form, rather
+  // than dropping the user on the Connectors page to find it themselves.
+  const openConnectorTab = useCallback((id: string) => {
+    setOpenConnector(id);
+    setPage("connectors");
+  }, []);
+
   const onRange = useCallback((next: DateRange, p: PresetId) => {
     setRange(next);
     setPreset(p);
@@ -284,7 +296,12 @@ export default function App() {
         <div className="sidebar-footer">
           <button
             className={"tab" + (page === "connectors" ? " active" : "")}
-            onClick={() => setPage("connectors")}
+            // Clearing the deep link matters: without it a card clicked earlier
+            // would keep re-seeding the sub-tab on every later visit here.
+            onClick={() => {
+              setOpenConnector(null);
+              setPage("connectors");
+            }}
           >
             <span className="dot idle" />
             {t("app.connectors")}
@@ -301,7 +318,7 @@ export default function App() {
 
       <main className="content">
         {page === "connectors" ? (
-          <Connectors onRefresh={onConnectorSaved} />
+          <Connectors initialId={openConnector ?? undefined} onRefresh={onConnectorSaved} />
         ) : page === "settings" ? (
           <>
             <header className="topbar">
@@ -313,16 +330,7 @@ export default function App() {
           // Nothing connected, so there is no connector to name in a topbar and
           // no range to filter - just the way in. Held back until the list has
           // actually answered, so it never flashes on the way to a dashboard.
-          // This is the whole of a first run for now; the landing page that
-          // replaces it is its own change.
-          listed && (
-            <div className="empty">
-              <p>{t("app.nothingConnected")}</p>
-              <button className="save-btn empty-cta" onClick={() => setPage("connectors")}>
-                {t("app.openConnectors")}
-              </button>
-            </div>
-          )
+          listed && <Welcome onConnect={openConnectorTab} />
         ) : active === "github" ? (
           <GithubView state={github} range={range} preset={preset} onRange={onRange} />
         ) : (

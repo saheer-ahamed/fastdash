@@ -6,8 +6,23 @@ import { t } from "../i18n";
 // The Connectors page: one sub-tab per connector, each owning its own form and
 // its own Save button. Saving one connector never touches another's settings.
 
-export default function Connectors({ onRefresh }: { onRefresh: (connectorId: string) => void }) {
-  const [activeId, setActiveId] = useState(CONNECTOR_TABS[0]?.id ?? "");
+export default function Connectors({
+  initialId,
+  onRefresh,
+}: {
+  /// Sub-tab to land on, for a caller that already knows which connector the
+  /// user asked for (the first-run cards). Only a seed: `page` flips from null
+  /// to "connectors", which mounts this fresh, so it never fights the sub-tab
+  /// the user clicks afterwards. Validated against the registry, so an id from
+  /// a connector that has since gone away falls back instead of blanking.
+  initialId?: string;
+  onRefresh: (connectorId: string) => void;
+}) {
+  const [activeId, setActiveId] = useState(
+    initialId && CONNECTOR_TABS.some((c) => c.id === initialId)
+      ? initialId
+      : (CONNECTOR_TABS[0]?.id ?? ""),
+  );
   const { message, flash, error } = useFlash();
 
   const active = CONNECTOR_TABS.find((c) => c.id === activeId) ?? CONNECTOR_TABS[0];

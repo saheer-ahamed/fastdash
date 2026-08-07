@@ -16,5 +16,9 @@ export interface ConnectorTab {
   id: string;
   /// i18n key for the sub-tab label.
   labelKey: string;
+  /// i18n key for the one line saying what this connector puts on the dashboard,
+  /// shown on the first-run page. Required so a connector added later cannot
+  /// silently render a card with nothing in it.
+  blurbKey: string;
   Component: ComponentType<ConnectorTabProps>;
 }
