@@ -3,6 +3,7 @@
     "stats": {
       "prsOpened": "PRs created",
       "prsMerged": "PRs merged",
+      "prsMergedSub": "of those created",
       "contributorsActive": "Contributors active"
     },
     "table": {
@@ -13,11 +14,11 @@
     "column": {
       "contributor": "Contributor",
       "created": "Created",
-      "createdHint": "PRs this contributor created in this date range, whatever state they are in now.",
+      "createdHint": "PRs this contributor created in this date range, whatever state they are in now. Merged, Closed unmerged and Still open split exactly this number.",
       "merged": "Merged",
-      "mergedHint": "PRs merged in this date range. Some may have been created earlier, so this is not a subset of Created.",
+      "mergedHint": "Of the PRs created in this date range, the ones that have since been merged. Always a subset of Created; it does not include older PRs merged during the range.",
       "closedUnmerged": "Closed unmerged",
-      "closedUnmergedHint": "PRs closed in this date range without ever being merged.",
+      "closedUnmergedHint": "Of the PRs created in this date range, the ones closed without ever being merged. Always a subset of Created.",
       "stillOpen": "Still open",
       "stillOpenHint": "Of the PRs created in this date range, the ones neither merged nor closed as of now. Always a subset of Created; it does not include older PRs still waiting.",
       "total": "Total",
@@ -27,7 +28,7 @@
       "net": "Net",
       "netHint": "Additions minus deletions.",
       "prs": "PRs",
-      "prsHint": "How many merged PRs these line counts come from.",
+      "prsHint": "How many PRs these line counts come from: everything merged in this date range, whenever it was created. That is a wider set than the Merged column above, which only counts PRs created in the range.",
       "repo": "Repo",
       "title": "Title",
       "state": "State",
@@ -60,6 +61,9 @@
     "scopesFailed": "GitHub can't search {scopes}. Check the name under Connectors - use the org's login, user:login for that account's own repos, or author:login for PRs you wrote anywhere - and that your token is authorized for it.",
     "scopesFailedTitle": "Some scopes couldn't be searched",
     "scopesPartial": "Excludes {scopes}: GitHub wouldn't search it. The totals below cover the remaining scopes only.",
+    "truncatedTitle": "This date range is wider than GitHub will search",
+    "truncated": "GitHub's search API returns at most {cap} results per query, and {range} matched {total} pull requests. Everything below covers only the {cap} most recent of them, so the counts are lower than the truth. Pick a shorter date range for exact numbers.",
+    "unknownAuthor": "(unknown)",
     "allOrgs": "All orgs",
     "noAccounts": "No GitHub accounts connected yet. Add one in Connectors."
   }
