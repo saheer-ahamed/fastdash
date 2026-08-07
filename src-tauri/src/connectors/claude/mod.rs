@@ -46,6 +46,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
+use crate::engine::config::AppConfig;
 use crate::engine::connector::{Connector, ConnectorError, ConnectorMeta, FetchCtx, Snapshot};
 use crate::engine::i18n;
 use crate::engine::panel::{Bar, Cell, Column, Panel, Stat, TableSpec};
@@ -84,6 +85,13 @@ fn console_key() -> Option<String> {
         .flatten()
         .map(|k| k.trim().to_string())
         .filter(|k| !k.is_empty())
+}
+
+/// Whether Claude Code has left anything on this machine to read. Its login and
+/// its transcripts both live under `~/.claude`, so the directory existing is
+/// what says the plan meters and the local panels have a source.
+fn has_local_state() -> bool {
+    parse::claude_dir().map(|p| p.exists()).unwrap_or(false)
 }
 
 pub struct ClaudeConnector {
@@ -138,6 +146,21 @@ impl Connector for ClaudeConnector {
             icon: "claude".into(),
             default_refresh_secs: REFRESH_SECS,
         }
+    }
+
+    /// Either source alone is enough, because either alone renders a dashboard:
+    /// `fetch` never reports `NeedsAuth`, and the Console key is enrichment on
+    /// top of what Claude Code already left on this machine.
+    ///
+    /// Deliberately not `cfg.claude.console_org`, and not the key alone.
+    /// Anthropic issues Admin keys only to Console organizations, so an
+    /// individual Pro/Max account can never connect one - keying the tab on it
+    /// would hide the app's headline dashboard from exactly the people it was
+    /// built for, permanently. `console_org` is a display mirror written after
+    /// the key is stored, which makes it a second source of truth that a failed
+    /// patch or a credential cleared in the OS store desynchronises.
+    fn is_configured(&self, _cfg: &AppConfig) -> bool {
+        console_key().is_some() || has_local_state()
     }
 
     async fn fetch(&self, ctx: &FetchCtx) -> Result<Snapshot, ConnectorError> {
@@ -737,5 +760,33 @@ mod tests {
         let in_range = i18n::tf("claude.inRange", &[("range", "Today")]);
         assert!(in_range.contains("Today"), "{in_range}");
         assert!(!in_range.contains("{range}"), "{in_range}");
+    }
+
+    /// The tab must not hang off `claude.consoleOrg`. That field only mirrors
+    /// the stored key, and an individual account can never obtain one at all -
+    /// a config-driven answer would leave those users staring at an empty
+    /// sidebar forever.
+    #[test]
+    fn the_config_does_not_decide_whether_claude_is_configured() {
+        let connector = ClaudeConnector::new();
+        let mut cfg = AppConfig::default();
+        let without_org = connector.is_configured(&cfg);
+
+        cfg.claude.console_org = "Acme Inc".into();
+        assert_eq!(
+            connector.is_configured(&cfg),
+            without_org,
+            "the console org in the config moved the answer",
+        );
+    }
+
+    /// Local state is looked for where Claude Code actually keeps it: one
+    /// directory up from the transcripts `scan_transcripts` reads, so a machine
+    /// that has run Claude Code can never read as unconnected.
+    #[test]
+    fn local_state_is_the_directory_the_transcripts_live_under() {
+        let claude = parse::claude_dir().unwrap();
+        assert!(claude.ends_with(".claude"), "{claude:?}");
+        assert_eq!(parse::projects_dir().unwrap(), claude.join("projects"));
     }
 }

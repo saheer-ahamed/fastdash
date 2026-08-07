@@ -30,6 +30,7 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
 
+use crate::engine::config::AppConfig;
 use crate::engine::connector::Health;
 use crate::engine::connector::{Connector, ConnectorError, ConnectorMeta, FetchCtx, Snapshot};
 use crate::engine::i18n;
@@ -65,6 +66,19 @@ impl Connector for GithubConnector {
             icon: "github".into(),
             default_refresh_secs: REFRESH_SECS,
         }
+    }
+
+    /// `cfg` is unused deliberately: going through `GithubConfig::resolve()` is
+    /// the point, because that is the exact call `fetch` makes below before
+    /// reporting `NeedsAuth`, env fallbacks and all. A saved account row is
+    /// neither sufficient (the Connectors page stores a label with no token
+    /// happily) nor necessary (`GITHUB_TOKEN` covers a dev run with an empty
+    /// config) - the token is, and it lives in the keychain rather than in
+    /// `cfg`. The selected orgs stay out of it too: a token with none resolves,
+    /// fetches, and reports a `Misconfigured` banner naming what to fix, which
+    /// hiding the tab would hide as well.
+    fn is_configured(&self, _cfg: &AppConfig) -> bool {
+        GithubConfig::resolve().is_some()
     }
 
     /// The generic entry point: the first account, all orgs. The GitHub tab
@@ -616,6 +630,33 @@ fn rate_limited_snapshot(retry_after_secs: Option<u64>) -> Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The stored token decides the tab, not the config file. Asking the same
+    /// resolver `fetch` asks is what keeps the two from disagreeing, and it is
+    /// why an account row saved without a token - which the Connectors page
+    /// allows - cannot light the tab up on its own.
+    #[test]
+    fn github_is_configured_follows_the_token_not_the_config() {
+        let connector = GithubConnector::new();
+        let mut cfg = AppConfig::default();
+        assert_eq!(
+            connector.is_configured(&cfg),
+            GithubConfig::resolve().is_some(),
+            "the answer stopped coming from the resolver `fetch` uses",
+        );
+
+        cfg.github
+            .accounts
+            .push(crate::engine::config::GithubAccount {
+                label: "fastdash-test-account-with-no-token".into(),
+                orgs: vec!["acme".into()],
+            });
+        assert_eq!(
+            connector.is_configured(&cfg),
+            GithubConfig::resolve().is_some(),
+            "a tokenless account row moved the answer",
+        );
+    }
 
     /// An OAuth (Device Flow) token gets the org-grant explanation; a PAT, which
     /// the third-party app policy does not apply to, gets the generic one.

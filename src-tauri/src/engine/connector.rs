@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
+use crate::engine::config::AppConfig;
 use crate::engine::panel::Panel;
 use crate::engine::range::DateRange;
 
@@ -100,6 +101,21 @@ pub struct FetchCtx {
 #[async_trait]
 pub trait Connector: Send + Sync {
     fn meta(&self) -> ConnectorMeta;
+
+    /// Whether this connector has what it needs to show a dashboard. The sidebar
+    /// only offers the ones that answer `true`, so a connector nobody has set up
+    /// never sits there as a tab that opens onto an error.
+    ///
+    /// Answer it by calling the same resolver `fetch` consults before deciding
+    /// it has nothing to fetch - never by re-deriving the rule here, or the two
+    /// drift and the sidebar starts hiding a connector that would have worked.
+    /// `cfg` is the non-secret half only: credentials live in the OS keychain,
+    /// so for most connectors the real signal is not in it at all.
+    ///
+    /// Required rather than defaulted on purpose. Adding a connector needs zero
+    /// UI changes, which only holds while every connector answers this itself; a
+    /// `true` default would let the next one ship permanently visible instead.
+    fn is_configured(&self, cfg: &AppConfig) -> bool;
 
     /// Fetch the latest snapshot. Driven entirely by the UI: when the
     /// connector's tab is opened, on `default_refresh_secs` for as long as that

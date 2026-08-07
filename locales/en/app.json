@@ -7,7 +7,9 @@
     "refreshFailed": "couldn't refresh - showing the last data",
     "settings": "Settings",
     "connectors": "Connectors",
-    "noConnectors": "No connectors available."
+    "noConnectors": "No connectors available.",
+    "nothingConnected": "Nothing connected yet. Set up a connector and its dashboard appears here.",
+    "openConnectors": "Open Connectors"
   },
   "range": {
     "today": "Today",

@@ -25,6 +25,7 @@ mod config;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
+use crate::engine::config::AppConfig;
 use crate::engine::connector::{Connector, ConnectorError, ConnectorMeta, FetchCtx, Snapshot};
 use crate::engine::i18n;
 use crate::engine::panel::Panel;
@@ -65,6 +66,16 @@ impl Connector for SentryConnector {
             icon: "sentry".into(),
             default_refresh_secs: REFRESH_SECS,
         }
+    }
+
+    /// The same guard `fetch` opens with, for the same reason: a connection is
+    /// an account that has both a label and a resolvable token, so `cfg` alone
+    /// cannot answer it - the token lives in the keychain, and a half-filled
+    /// account row is one the user is still typing. `connections()` also carries
+    /// the `SENTRY_AUTH_TOKEN` fallback, which a config-derived answer would
+    /// miss on a dev run.
+    fn is_configured(&self, _cfg: &AppConfig) -> bool {
+        !config::connections().is_empty()
     }
 
     async fn fetch(&self, ctx: &FetchCtx) -> Result<Snapshot, ConnectorError> {
@@ -229,6 +240,34 @@ fn forbidden_message(conn: &SentryConnection) -> String {
 mod tests {
     use super::*;
     use chrono::NaiveDate;
+
+    /// The resolved connections decide the tab, not the config file. A row with
+    /// a label but no stored token is one the user is still filling in, and
+    /// `connections()` is what already knows that - so the answer has to keep
+    /// coming from there.
+    #[test]
+    fn sentry_is_configured_follows_the_connections_not_the_config() {
+        let connector = SentryConnector::new();
+        let mut cfg = AppConfig::default();
+        assert_eq!(
+            connector.is_configured(&cfg),
+            !config::connections().is_empty(),
+            "the answer stopped coming from the guard `fetch` uses",
+        );
+
+        cfg.sentry
+            .accounts
+            .push(crate::engine::config::SentryAccount {
+                label: "fastdash-test-account-with-no-token".into(),
+                base_url: String::new(),
+                organizations: vec!["acme".into()],
+            });
+        assert_eq!(
+            connector.is_configured(&cfg),
+            !config::connections().is_empty(),
+            "a tokenless account row moved the answer",
+        );
+    }
 
     fn day(y: i32, m: u32, d: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(y, m, d).unwrap()

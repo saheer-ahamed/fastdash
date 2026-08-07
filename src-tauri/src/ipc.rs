@@ -2,6 +2,7 @@
 
 use std::sync::{Arc, RwLock};
 
+use serde::Serialize;
 use tauri::{AppHandle, State};
 
 use crate::engine::cache::SnapshotCache;
@@ -11,9 +12,49 @@ use crate::engine::range::DateRange;
 use crate::engine::registry::Registry;
 use crate::engine::{refresh, secrets};
 
+/// One connector as the sidebar sees it: its fixed identity plus whether it is
+/// connected right now.
+///
+/// Flattened rather than a field on `ConnectorMeta`, because `meta()` takes no
+/// config and cannot know the answer - it would have to invent a placeholder
+/// that only this command overwrites, leaving every other `meta()` caller
+/// reading a lie. The wire shape stays what it always was with one field added.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectorEntry {
+    #[serde(flatten)]
+    pub meta: ConnectorMeta,
+    pub configured: bool,
+}
+
+/// Every registered connector, each saying whether it is connected.
+///
+/// Async because `is_configured` reads the OS keychain and the filesystem and
+/// this is on the path to first paint - a sync command would do that on the main
+/// thread. The config is cloned out of the lock first: a std `RwLock` guard held
+/// across an async body makes the future non-Send.
 #[tauri::command]
-pub fn list_connectors(registry: State<'_, Arc<Registry>>) -> Vec<ConnectorMeta> {
-    registry.all().iter().map(|c| c.meta()).collect()
+pub async fn list_connectors(
+    registry: State<'_, Arc<Registry>>,
+    config: State<'_, Arc<RwLock<AppConfig>>>,
+) -> Result<Vec<ConnectorEntry>, String> {
+    let cfg = config.read().unwrap().clone();
+    Ok(entries(registry.inner(), &cfg))
+}
+
+/// The list itself, split out so its invariants are testable without a Tauri
+/// `State`. Nothing is filtered here: the sidebar decides what to show, while
+/// `fetch_connector` and `github_fetch` still have to resolve a connector by id
+/// after its credential is removed mid-session.
+fn entries(registry: &Registry, cfg: &AppConfig) -> Vec<ConnectorEntry> {
+    registry
+        .all()
+        .iter()
+        .map(|c| ConnectorEntry {
+            meta: c.meta(),
+            configured: c.is_configured(cfg),
+        })
+        .collect()
 }
 
 /// The latest cached snapshot for a connector, or `None` if nothing has fetched
@@ -175,4 +216,42 @@ pub fn open_external(url: String) -> Result<(), String> {
         return Err(format!("refusing to open non-http(s) url: {url}"));
     }
     open::that(&url).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `#[serde(flatten)]` is checked by nothing at compile time, and `types.ts`
+    /// reads all five of these off the top level - a nested or renamed field
+    /// would break the sidebar at runtime with a green build.
+    #[test]
+    fn a_connector_entry_serializes_flat_and_camel_case() {
+        let entry = ConnectorEntry {
+            meta: ConnectorMeta {
+                id: "claude".into(),
+                name: "Claude".into(),
+                icon: "claude".into(),
+                default_refresh_secs: 60,
+            },
+            configured: true,
+        };
+
+        let json = serde_json::to_value(&entry).unwrap();
+        for key in ["id", "name", "icon", "defaultRefreshSecs", "configured"] {
+            assert!(json.get(key).is_some(), "missing `{key}` in {json}");
+        }
+        assert!(json.get("meta").is_none(), "meta stayed nested: {json}");
+    }
+
+    /// The sidebar filters, the registry never does. Dropping an unconfigured
+    /// connector here instead would make `registry.get(id)` miss the moment a
+    /// token is removed, and an in-flight refresh would start failing with
+    /// "unknown connector".
+    #[test]
+    fn every_registered_connector_is_listed() {
+        let registry = Registry::with_default_connectors();
+        let listed = entries(&registry, &AppConfig::default());
+        assert_eq!(listed.len(), registry.all().len());
+    }
 }

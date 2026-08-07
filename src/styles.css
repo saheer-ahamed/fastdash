@@ -347,6 +347,16 @@ button {
   color: var(--muted);
 }
 
+/* The way out of an empty state, under its sentence rather than beside it. The
+   paragraph drops its UA margin so the 12px is the whole gap. */
+.empty p {
+  margin: 0;
+}
+
+.empty-cta {
+  margin-top: 12px;
+}
+
 /* GitHub account sub-tabs: a row of buttons under the topbar. */
 .subtabs {
   display: flex;
