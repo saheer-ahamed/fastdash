@@ -41,10 +41,15 @@ pub struct Turn {
     pub service_tier: Option<String>,
 }
 
+/// Resolve `~/.claude`, everything Claude Code keeps on this machine.
+pub fn claude_dir() -> Result<PathBuf, ParseError> {
+    let base = directories::BaseDirs::new().ok_or(ParseError::NoHome)?;
+    Ok(base.home_dir().join(".claude"))
+}
+
 /// Resolve `~/.claude/projects`.
 pub fn projects_dir() -> Result<PathBuf, ParseError> {
-    let base = directories::BaseDirs::new().ok_or(ParseError::NoHome)?;
-    Ok(base.home_dir().join(".claude").join("projects"))
+    Ok(claude_dir()?.join("projects"))
 }
 
 /// Cold full-scan of every `*.jsonl` transcript, returning all assistant turns.

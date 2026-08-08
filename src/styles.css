@@ -347,6 +347,59 @@ button {
   color: var(--muted);
 }
 
+/* First run - the content pane while nothing is connected (see src/Welcome.tsx).
+   Built out of .panels, .section-heading, .card and .save-btn so it reads as the
+   app's own empty state rather than a splash screen bolted onto it; only the
+   measure and the card grid are new here. Nothing declares a colour, which is
+   what makes every theme right by construction instead of by review. */
+.welcome-lede {
+  margin: 0;
+  max-width: 72ch;
+  color: var(--bright);
+  line-height: 1.6;
+}
+
+/* 240px is the width at which a card stops wrapping to a new row, but it must
+   not become a floor: on a window narrow enough that one column no longer fits
+   it, a bare minmax() would push the cards out of the pane and hand .panels a
+   horizontal scrollbar. min() lets the last column shrink instead. */
+.welcome-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
+  gap: 12px;
+}
+
+/* The action sits on the card's bottom edge, so a longer blurb in one card never
+   leaves the row of buttons ragged. */
+.connector-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.connector-blurb {
+  margin: 0 0 14px;
+  line-height: 1.6;
+}
+
+.connector-card .field-actions {
+  margin-top: auto;
+}
+
+/* These buttons are the whole point of the page and all three read "Connect", so
+   the keyboard focus ring has to be unmissable - the UA default washes out on a
+   flat monochrome panel. */
+.connector-card .save-btn:focus-visible {
+  outline: 2px solid var(--fill);
+  outline-offset: 2px;
+}
+
+.welcome-note {
+  margin: 4px 0 0;
+  max-width: 72ch;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 /* GitHub account sub-tabs: a row of buttons under the topbar. */
 .subtabs {
   display: flex;

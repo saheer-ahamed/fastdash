@@ -9,6 +9,17 @@
     "connectors": "Connectors",
     "noConnectors": "No connectors available."
   },
+  "welcome": {
+    "title": "Getting started",
+    "lede": "One window for what you did today: Claude usage, pull requests, errors. All of it read straight from the tools you already use.",
+    "connectors": "Connect one to begin",
+    "connect": "Connect",
+    "connectAria": "Connect {name}",
+    "footnote": "Keys and tokens go straight into your computer's own secure store, never a plain file. You can change any of this later under Connectors.",
+    "claudeBlurb": "Token usage and what it cost, plus how much of your 5-hour and weekly limits is left.",
+    "githubBlurb": "Pull requests opened, merged and closed by each person, across the orgs you follow.",
+    "sentryBlurb": "Unresolved issues that fired today, which projects they came from, and how many people they hit."
+  },
   "range": {
     "today": "Today",
     "yesterday": "Yesterday",

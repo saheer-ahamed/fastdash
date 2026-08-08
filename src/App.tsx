@@ -22,6 +22,7 @@ import type {
   Snapshot,
 } from "./types";
 import Settings from "./Settings";
+import Welcome from "./Welcome";
 import Connectors from "./connectors/ConnectorsPage";
 import RangeFilter from "./RangeFilter";
 import { rangeKey, todayRange, type PresetId } from "./range";
@@ -47,8 +48,16 @@ const isFresh = (snap: Snapshot | undefined, cadence: number) =>
 
 export default function App() {
   const [connectors, setConnectors] = useState<ConnectorMeta[]>([]);
+  // Whether the connector list has come back yet. Until it has, `active` is null
+  // for a reason nobody should be shown copy about - "nothing connected" in the
+  // frame before the list lands would flash at everyone who does have one.
+  const [listed, setListed] = useState(false);
   const [active, setActive] = useState<string | null>(null);
   const [page, setPage] = useState<Page | null>(null);
+  // Which connector's form the Connectors page should open on, when it was
+  // reached from a first-run card rather than the sidebar. Read once as that
+  // page mounts, so it seeds the sub-tab without owning it afterwards.
+  const [openConnector, setOpenConnector] = useState<string | null>(null);
   const [snapshots, setSnapshots] = useState<Record<string, Snapshot>>({});
   // Latest snapshots, readable inside the seeding effect without making it a
   // dependency (which would re-run it on every fetch).
@@ -71,14 +80,32 @@ export default function App() {
   // component, drops its cache, and flashes "Loading..." on every return.
   const github = useGithubState(range, focused && live === "github");
 
+  // Read the connector list: once on startup, and again whenever a connector's
+  // settings are saved. Whether a connector is connected is the backend's
+  // answer, per its own credentials - the frontend knows no per-connector rules,
+  // which is what keeps adding a connector a zero-UI-change job.
+  const reloadConnectors = useCallback(
+    () =>
+      invoke<ConnectorMeta[]>("list_connectors")
+        .then((cs) => {
+          setConnectors(cs);
+          const visible = cs.filter((c) => c.configured);
+          // Keep the current selection while it is still connected, otherwise
+          // fall back to the first one. Set in the same update as the list, so
+          // there is never a frame rendering a dashboard for a tab that has just
+          // disappeared from the sidebar.
+          setActive((cur) =>
+            cur && visible.some((c) => c.id === cur) ? cur : (visible[0]?.id ?? null),
+          );
+        })
+        .catch((e) => console.error(e))
+        .finally(() => setListed(true)),
+    [],
+  );
+
   useEffect(() => {
-    invoke<ConnectorMeta[]>("list_connectors")
-      .then((cs) => {
-        setConnectors(cs);
-        if (cs.length > 0) setActive(cs[0].id);
-      })
-      .catch((e) => console.error(e));
-  }, []);
+    reloadConnectors();
+  }, [reloadConnectors]);
 
   // Apply the saved language on startup.
   useEffect(() => {
@@ -114,20 +141,23 @@ export default function App() {
 
   // After a connector's settings are saved its cached snapshots describe the old
   // settings, so drop them - the tab refetches when it is next opened rather
-  // than now, while the Connectors page is what's on screen. The GitHub account
-  // list is re-read so an account added just now shows up as a sub-tab without
-  // restarting the app.
+  // than now, while the Connectors page is what's on screen. The connector list
+  // is re-read too, since connecting or disconnecting one is exactly what makes
+  // its sidebar tab appear or vanish, and it must do so without a restart. The
+  // GitHub account list follows for the same reason: an account added just now
+  // shows up as a sub-tab straight away.
   const onConnectorSaved = useCallback(
     (id: string) => {
       setSnapshots((s) =>
         Object.fromEntries(Object.entries(s).filter(([k]) => !k.startsWith(`${id}|`))),
       );
+      reloadConnectors();
       if (id === "github") {
         github.reloadAccounts();
         github.clear();
       }
     },
-    [github],
+    [github, reloadConnectors],
   );
 
   // Switch language: update the frontend catalog and re-render the chrome. Panel
@@ -210,6 +240,13 @@ export default function App() {
     };
   }, [focused, live, connectors, range, refresh]);
 
+  // Jump from a first-run card straight to that connector's setup form, rather
+  // than dropping the user on the Connectors page to find it themselves.
+  const openConnectorTab = useCallback((id: string) => {
+    setOpenConnector(id);
+    setPage("connectors");
+  }, []);
+
   const onRange = useCallback((next: DateRange, p: PresetId) => {
     setRange(next);
     setPreset(p);
@@ -217,6 +254,9 @@ export default function App() {
 
   const snap = active ? snapshots[snapKey(active, range)] : undefined;
   const activeName = connectors.find((c) => c.id === active)?.name ?? "";
+  // The connectors with a dashboard worth opening. `connectors` keeps every one
+  // the backend returned, because the polling cadence is read off it by id.
+  const visible = useMemo(() => connectors.filter((c) => c.configured), [connectors]);
 
   // A sidebar dot reports the health of what that tab last loaded, so a tab not
   // opened yet stays idle rather than claiming a status nothing measured.
@@ -235,7 +275,11 @@ export default function App() {
       <aside className="sidebar">
         <div className="brand">fastdash</div>
         <nav>
-          {connectors.map((c) => (
+          {/* Only the connected ones get a tab. The Connectors page below still
+              lists every connector on purpose - it is where you go to connect
+              one, so filtering it too would make an unconnected connector
+              permanently unreachable. */}
+          {visible.map((c) => (
             <button
               key={c.id}
               className={"tab" + (!page && c.id === active ? " active" : "")}
@@ -252,7 +296,12 @@ export default function App() {
         <div className="sidebar-footer">
           <button
             className={"tab" + (page === "connectors" ? " active" : "")}
-            onClick={() => setPage("connectors")}
+            // Clearing the deep link matters: without it a card clicked earlier
+            // would keep re-seeding the sub-tab on every later visit here.
+            onClick={() => {
+              setOpenConnector(null);
+              setPage("connectors");
+            }}
           >
             <span className="dot idle" />
             {t("app.connectors")}
@@ -269,7 +318,7 @@ export default function App() {
 
       <main className="content">
         {page === "connectors" ? (
-          <Connectors onRefresh={onConnectorSaved} />
+          <Connectors initialId={openConnector ?? undefined} onRefresh={onConnectorSaved} />
         ) : page === "settings" ? (
           <>
             <header className="topbar">
@@ -277,6 +326,11 @@ export default function App() {
             </header>
             <Settings onLocaleChange={onLocaleChange} />
           </>
+        ) : active === null ? (
+          // Nothing connected, so there is no connector to name in a topbar and
+          // no range to filter - just the way in. Held back until the list has
+          // actually answered, so it never flashes on the way to a dashboard.
+          listed && <Welcome onConnect={openConnectorTab} />
         ) : active === "github" ? (
           <GithubView state={github} range={range} preset={preset} onRange={onRange} />
         ) : (

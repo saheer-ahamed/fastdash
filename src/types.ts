@@ -91,6 +91,13 @@ export interface ConnectorMeta {
   name: string;
   icon: string;
   defaultRefreshSecs: number;
+  /**
+   * Whether the connector is connected - the backend decides, per its own
+   * credentials. The dashboard sidebar shows only these; the Connectors page
+   * deliberately shows every connector, since that is where you go to connect
+   * one.
+   */
+  configured: boolean;
 }
 
 // Payload of the `connector:update` Tauri event, emitted by every backend fetch.
