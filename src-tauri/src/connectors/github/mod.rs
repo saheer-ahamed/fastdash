@@ -9,10 +9,12 @@
 //!
 //! The per-contributor counts obey two rules that the table is unreadable
 //! without, and both are enforced in [`count_cohort`] rather than at fetch time:
-//! every PR is counted once across all configured scopes, and all four columns
-//! split a single cohort - the PRs *created* in the range - by what became of
-//! them, so a row always reconciles as
-//! `created = merged + closed unmerged + still open`.
+//! every PR is counted once across all configured scopes, and the four outcome
+//! columns split a single cohort - the PRs *created* in the range - by what
+//! became of them, so a row always reconciles as
+//! `created = merged + closed unmerged + still open`. Drafts is the one count
+//! outside that split: it narrows still-open rather than standing beside it, so
+//! it never joins a total.
 //!
 //! The range comes from the UI's date filter and is applied the way GitHub
 //! itself filters - as `created:` / `merged:` / `closed:` qualifiers on the
@@ -339,6 +341,12 @@ async fn run_fetch(
             (PrState::Merged, merged_at)
         } else if is_closed {
             (PrState::Closed, s.item.closed_at.or(s.item.created_at))
+        } else if s.item.draft {
+            // Getting this far already means neither merged nor closed, so the
+            // draft flag can be trusted here - the same intersection the Drafts
+            // column counts, which is why a row marked Draft is always one of
+            // the PRs behind that number.
+            (PrState::Draft, s.item.created_at)
         } else {
             (PrState::Open, s.item.created_at)
         };
@@ -619,7 +627,7 @@ fn upsert(seen: &mut HashMap<PrKey, SeenPr>, item: SearchItem, bucket: Bucket) {
     }
 }
 
-/// Fill the four per-contributor count maps the PR activity table renders.
+/// Fill the per-contributor count maps the PR activity table renders.
 ///
 /// Two properties make those columns trustworthy, and both come from counting
 /// here - once, over the deduped union - rather than inside the scope loop:
@@ -629,7 +637,7 @@ fn upsert(seen: &mut HashMap<PrKey, SeenPr>, item: SearchItem, bucket: Bucket) {
 ///   plus `author:me`, a pairing the Connectors copy actively suggests) adds one
 ///   rather than two. Tallying per scope made the table disagree with the PR
 ///   list directly beneath it, which was already deduped this way.
-/// * **One cohort, split by outcome.** All four columns describe the PRs
+/// * **One cohort, split by outcome.** The four outcome columns describe the PRs
 ///   *created* in the range, so a row always reconciles as
 ///   `created = merged + closed unmerged + still open`. Reading "merged" and
 ///   "closed unmerged" off the event-based `merged:` / `closed:` searches
@@ -639,6 +647,10 @@ fn upsert(seen: &mut HashMap<PrKey, SeenPr>, item: SearchItem, bucket: Bucket) {
 /// The outcome split needs no extra request, because a search result already
 /// carries `merged_at` and `closed_at`, and a merged PR is always closed too -
 /// so "no `closed_at`" is exactly "still open right now".
+///
+/// Drafts is the fifth map and the only one outside that split: it counts the
+/// still-open PRs whose author has not asked for review yet, so it is always a
+/// subset of Still open and must never be added to a total.
 fn count_cohort(seen: &HashMap<PrKey, SeenPr>, filter_bots: bool, rollup: &mut Rollup) {
     for s in seen.values() {
         if !s.created_in_range || filtered_out(s.item.author.as_deref(), filter_bots) {
@@ -647,14 +659,23 @@ fn count_cohort(seen: &HashMap<PrKey, SeenPr>, filter_bots: bool, rollup: &mut R
         let author = aggregate::author_label(s.item.author.as_deref());
         *rollup.opened.entry(author.clone()).or_insert(0) += 1;
 
-        let outcome = if s.item.merged_at.is_some() {
-            &mut rollup.merged
+        let (outcome, still_open) = if s.item.merged_at.is_some() {
+            (&mut rollup.merged, false)
         } else if s.item.closed_at.is_some() {
-            &mut rollup.closed
+            (&mut rollup.closed, false)
         } else {
-            &mut rollup.open
+            (&mut rollup.open, true)
         };
-        *outcome.entry(author).or_insert(0) += 1;
+        *outcome.entry(author.clone()).or_insert(0) += 1;
+
+        // `draft` is a right-now flag that outlives the state it was set in:
+        // GitHub keeps reporting it on PRs that were later merged or closed, so
+        // counting it on its own would tally PRs already sitting in the columns
+        // to the left. Intersecting it with still-open is what makes Drafts a
+        // narrowing of one column rather than a fifth bucket beside them.
+        if still_open && s.item.draft {
+            *rollup.drafts.entry(author).or_insert(0) += 1;
+        }
     }
 }
 
@@ -740,6 +761,7 @@ mod tests {
             created_at: ts("2026-08-07T04:00:00Z"),
             closed_at: None,
             merged_at: None,
+            draft: false,
         }
     }
 
@@ -826,6 +848,51 @@ mod tests {
                 "{name} counted an out-of-cohort PR: {map:?}"
             );
         }
+    }
+
+    /// GitHub's `draft` flag survives whatever happened to the PR afterwards -
+    /// a merged PR can still report `draft: true` - so counting the flag alone
+    /// would tally PRs already shown under Merged and Closed unmerged. Drafts
+    /// only ever means "still open and still a draft".
+    #[test]
+    fn drafts_count_only_the_prs_that_are_still_open() {
+        let mut waiting = pr(1, Some("dev"));
+        waiting.draft = true;
+        let mut merged = pr(2, Some("dev"));
+        merged.draft = true;
+        merged.merged_at = ts("2026-08-07T09:00:00Z");
+        merged.closed_at = ts("2026-08-07T09:00:00Z");
+        let mut abandoned = pr(3, Some("dev"));
+        abandoned.draft = true;
+        abandoned.closed_at = ts("2026-08-07T10:00:00Z");
+        let ready = pr(4, Some("dev"));
+
+        let mut seen = HashMap::new();
+        for it in [waiting, merged, abandoned, ready] {
+            upsert(&mut seen, it, Bucket::Created);
+        }
+
+        let r = counts(&seen);
+        assert_eq!(r.drafts["dev"], 1, "only the still-open draft counts");
+        assert_eq!(r.open["dev"], 2, "the draft is still one of the open PRs");
+        assert_eq!(
+            r.merged["dev"] + r.closed["dev"] + r.open["dev"],
+            r.opened["dev"],
+            "Drafts must stay out of the split: created = merged + closed unmerged + still open"
+        );
+    }
+
+    /// A contributor with no drafts must be absent from the map rather than
+    /// present with a zero: the column renders `unwrap_or(&0)`, and a phantom
+    /// key would be the one thing able to widen the contributor union.
+    #[test]
+    fn contributors_without_drafts_are_not_in_the_drafts_map() {
+        let mut seen = HashMap::new();
+        upsert(&mut seen, pr(1, Some("dev")), Bucket::Created);
+
+        let r = counts(&seen);
+        assert_eq!(r.open["dev"], 1);
+        assert!(r.drafts.is_empty(), "{:?}", r.drafts);
     }
 
     /// "Still open" is derived from the absence of `closed_at`, so the order of
