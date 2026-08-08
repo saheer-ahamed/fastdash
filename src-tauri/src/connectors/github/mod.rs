@@ -7,20 +7,26 @@
 //! three tables: PR counts per contributor, line contributions per contributor
 //! (based on PRs MERGED in the range), and the PR list with repos.
 //!
-//! The per-contributor counts obey two rules that the table is unreadable
-//! without, and both are enforced in [`count_cohort`] rather than at fetch time:
-//! every PR is counted once across all configured scopes, and the four outcome
-//! columns split a single cohort - the PRs *created* in the range - by what
-//! became of them, so a row always reconciles as
-//! `created = merged + closed unmerged + still open`. Drafts is the one count
-//! outside that split: it narrows still-open rather than standing beside it, so
-//! it never joins a total.
+//! The per-contributor columns answer three independent questions about the
+//! range plus one about right now, and [`count_activity`] is where that is
+//! decided - never at fetch time, so a PR matched by two configured scopes is
+//! still counted once:
 //!
-//! The range comes from the UI's date filter and is applied the way GitHub
-//! itself filters - as `created:` / `merged:` / `closed:` qualifiers on the
-//! Search API - so each set matches what the same query shows on github.com.
-//! It defaults to today. The contribution heatmap is deliberately exempt: it is
-//! GitHub's own rolling calendar, not a range report.
+//! * **Created / Merged / Closed unmerged** are events inside the range, each
+//!   asked on its own. A pull request opened last week and merged today is
+//!   Merged here and Created in the range covering last week, so the columns are
+//!   deliberately *not* a partition of Created and a row is not expected to sum.
+//!   Tying Merged to the created cohort instead would answer "what did we open
+//!   that has landed", which is not what a dashboard filtered to a day is asked.
+//! * **Still open** is the one state reading, because staying open is the
+//!   absence of an event: it is the pull requests opened in the range that have
+//!   not closed since. **Drafts** narrows it further and never stands beside it.
+//!
+//! The range comes from the UI's date filter. Created and Merged are applied the
+//! way GitHub itself filters, as `created:` / `merged:` qualifiers, so each set
+//! matches what the same query shows on github.com; the closed set cannot be
+//! (see [`search_scope`]). It defaults to today. The contribution heatmap is
+//! deliberately exempt: it is GitHub's own rolling calendar, not a range report.
 //!
 //! Search hands back at most 1000 results per query and gives no sign that it
 //! dropped the rest, so every query's `total_count` is checked and a range
@@ -223,6 +229,9 @@ async fn run_fetch(
     let ist = range::ist();
     let range = range.normalized();
     let bounds = range.ist_bounds();
+    // The same window as `bounds`, for the one question no search qualifier can
+    // answer (see `search_scope`).
+    let window = range.ist_window();
     let client = GithubClient::new(&cfg.token)?;
 
     let mut rollup = Rollup::default();
@@ -249,7 +258,7 @@ async fn run_fetch(
         // rather than being reported as a settings mistake that retrying cannot
         // fix. A rate limit is global too: trying the remaining scopes would
         // only burn more quota.
-        let Some(sets) = search_scope(&client, &scope, &bounds, cancel).await? else {
+        let Some(sets) = search_scope(&client, &scope, &bounds, window, cancel).await? else {
             eprintln!("github: scope {scope} is unsearchable with this token");
             failed.push(scope);
             continue;
@@ -277,7 +286,7 @@ async fn run_fetch(
         )));
     }
 
-    count_cohort(&seen, cfg.filter_bots, &mut rollup);
+    count_activity(&seen, cfg.filter_bots, &mut rollup);
 
     // Enrich every PR the dashboard will call merged - the ones merged inside
     // the range, which drive line contributions, plus the ones created inside it
@@ -427,12 +436,27 @@ async fn search_scope(
     client: &GithubClient,
     scope: &str,
     bounds: &str,
+    window: (DateTime<Utc>, DateTime<Utc>),
     cancel: &Cancel,
 ) -> Result<Option<ScopeSets>, GithubError> {
+    // `closed:` cannot answer the third question. Measured against the live API:
+    // for one IST day on org:z-roworld, `closed:{bounds}` returns 99 and
+    // `closed:{bounds} is:merged` returns the same 99, while
+    // `closed:{bounds} is:unmerged` and `closed:{bounds} -is:merged` both return
+    // 0 - on a day when five pull requests were genuinely closed without being
+    // merged. GitHub indexes `closed:` off the merge, so the qualifier is
+    // structurally incapable of finding an unmerged close, and the old query
+    // could only ever report zero.
+    //
+    // Closing a pull request always touches it, so `updated:` over the same
+    // window is a superset; the real closes are then picked out locally by
+    // `closed_at`. It is a superset and not an equivalent - a PR closed earlier
+    // and merely commented on today also matches - which is exactly why the
+    // filter below is not optional.
     let queries = [
         format!("{scope} type:pr created:{bounds}"),
         format!("{scope} type:pr merged:{bounds}"),
-        format!("{scope} type:pr closed:{bounds} is:unmerged"),
+        format!("{scope} type:pr is:closed is:unmerged updated:{bounds}"),
     ];
 
     let mut results = Vec::with_capacity(queries.len());
@@ -452,10 +476,22 @@ async fn search_scope(
         .unwrap_or(0);
 
     let mut results = results.into_iter().map(|r| r.items);
+    let opened = results.next().unwrap_or_default();
+    let merged = results.next().unwrap_or_default();
+    // Narrow the `updated:` superset to the closes that actually happened in the
+    // window. A PR with no `closed_at` cannot have been closed in it, so the
+    // absent case drops rather than counting.
+    let closed = results
+        .next()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|it| matches!(it.closed_at, Some(at) if at >= window.0 && at <= window.1))
+        .collect();
+
     Ok(Some(ScopeSets {
-        opened: results.next().unwrap_or_default(),
-        merged: results.next().unwrap_or_default(),
-        closed: results.next().unwrap_or_default(),
+        opened,
+        merged,
+        closed,
         truncated_total,
     }))
 }
@@ -651,30 +687,46 @@ fn upsert(seen: &mut HashMap<PrKey, SeenPr>, item: SearchItem, bucket: Bucket) {
 /// Drafts is the fifth map and the only one outside that split: it counts the
 /// still-open PRs whose author has not asked for review yet, so it is always a
 /// subset of Still open and must never be added to a total.
-fn count_cohort(seen: &HashMap<PrKey, SeenPr>, filter_bots: bool, rollup: &mut Rollup) {
+fn count_activity(seen: &HashMap<PrKey, SeenPr>, filter_bots: bool, rollup: &mut Rollup) {
     for s in seen.values() {
-        if !s.created_in_range || filtered_out(s.item.author.as_deref(), filter_bots) {
+        if filtered_out(s.item.author.as_deref(), filter_bots) {
             continue;
         }
         let author = aggregate::author_label(s.item.author.as_deref());
-        *rollup.opened.entry(author.clone()).or_insert(0) += 1;
+        let bump = |m: &mut HashMap<String, u64>| *m.entry(author.clone()).or_insert(0) += 1;
 
-        let (outcome, still_open) = if s.item.merged_at.is_some() {
-            (&mut rollup.merged, false)
-        } else if s.item.closed_at.is_some() {
-            (&mut rollup.closed, false)
-        } else {
-            (&mut rollup.open, true)
-        };
-        *outcome.entry(author.clone()).or_insert(0) += 1;
+        // Three independent events. A pull request contributes to each column it
+        // qualifies for and to no other, so one merged today after being opened
+        // last week counts under Merged here and under Created in whichever
+        // range covers last week.
+        if s.created_in_range {
+            bump(&mut rollup.opened);
+        }
+        if s.merged_in_range {
+            bump(&mut rollup.merged);
+        }
+        if s.closed_in_range {
+            bump(&mut rollup.closed);
+        }
 
-        // `draft` is a right-now flag that outlives the state it was set in:
-        // GitHub keeps reporting it on PRs that were later merged or closed, so
-        // counting it on its own would tally PRs already sitting in the columns
-        // to the left. Intersecting it with still-open is what makes Drafts a
-        // narrowing of one column rather than a fifth bucket beside them.
-        if still_open && s.item.draft {
-            *rollup.drafts.entry(author).or_insert(0) += 1;
+        // The one state reading. "Still open" has no event of its own - staying
+        // open is the absence of one - so it is the opened-in-range cohort that
+        // has not closed since, which is what makes it the only column tied to
+        // Created.
+        // `merged_at` is checked as well as `closed_at` even though a merged PR
+        // is always closed too: if GitHub ever omits one, the fallback must be
+        // to under-report Still open rather than to call a merged PR open.
+        if s.created_in_range && s.item.closed_at.is_none() && s.item.merged_at.is_none() {
+            bump(&mut rollup.open);
+            // `draft` is a right-now flag that outlives the state it was set in:
+            // GitHub keeps reporting it on pull requests that were later merged
+            // or closed, so counting it on its own would tally ones already
+            // sitting in the columns to the left. Intersecting it with still-open
+            // is what makes Drafts a narrowing of that column rather than a
+            // bucket beside it.
+            if s.item.draft {
+                bump(&mut rollup.drafts);
+            }
         }
     }
 }
@@ -769,7 +821,7 @@ mod tests {
     /// default.
     fn counts(seen: &HashMap<PrKey, SeenPr>) -> Rollup {
         let mut rollup = Rollup::default();
-        count_cohort(seen, true, &mut rollup);
+        count_activity(seen, true, &mut rollup);
         rollup
     }
 
@@ -791,63 +843,61 @@ mod tests {
         assert_eq!(r.closed.get("dev"), None);
     }
 
-    /// The invariant the whole table rests on: the three outcome columns split
-    /// Created exactly, so every row adds up.
+    /// Created, Merged and Closed unmerged are three independent questions about
+    /// the range, so each PR lands in exactly the columns whose event it had -
+    /// and a row is not a partition of Created. Tying Merged to the created
+    /// cohort instead reported 77 where github.com said 99 for the same day.
     #[test]
-    fn outcome_columns_split_the_created_cohort_exactly() {
-        let mut merged = pr(1, Some("dev"));
-        merged.merged_at = ts("2026-08-07T09:00:00Z");
-        merged.closed_at = ts("2026-08-07T09:00:00Z");
-        let mut abandoned = pr(2, Some("dev"));
-        abandoned.closed_at = ts("2026-08-07T10:00:00Z");
-        let waiting = pr(3, Some("dev"));
-
-        let mut seen = HashMap::new();
-        for it in [merged, abandoned, waiting] {
-            upsert(&mut seen, it, Bucket::Created);
-        }
-
-        let r = counts(&seen);
-        assert_eq!(r.merged["dev"], 1);
-        assert_eq!(r.closed["dev"], 1);
-        assert_eq!(r.open["dev"], 1);
-        assert_eq!(
-            r.merged["dev"] + r.closed["dev"] + r.open["dev"],
-            r.opened["dev"],
-            "created = merged + closed unmerged + still open"
-        );
-    }
-
-    /// A PR that only has an *event* in the range - merged or closed during it
-    /// but opened long before - belongs to the line contributions table and the
-    /// PR list, never to the counts. Counting it made "Merged" and "Closed
-    /// unmerged" sum past "Created" with nothing on screen to explain it.
-    #[test]
-    fn prs_that_only_have_an_event_in_the_range_are_not_counted() {
+    fn each_event_column_counts_its_own_event() {
+        // Opened before the range and merged inside it: Merged only.
         let mut old_merge = pr(1, Some("dev"));
         old_merge.created_at = ts("2026-07-01T04:00:00Z");
         old_merge.merged_at = ts("2026-08-07T09:00:00Z");
         old_merge.closed_at = ts("2026-08-07T09:00:00Z");
+        // Opened before the range and abandoned inside it: Closed unmerged only.
         let mut old_close = pr(2, Some("dev"));
         old_close.created_at = ts("2026-07-01T04:00:00Z");
         old_close.closed_at = ts("2026-08-07T10:00:00Z");
+        // Opened inside the range and still waiting: Created and Still open.
+        let waiting = pr(3, Some("dev"));
 
         let mut seen = HashMap::new();
         upsert(&mut seen, old_merge, Bucket::Merged);
         upsert(&mut seen, old_close, Bucket::Closed);
+        upsert(&mut seen, waiting, Bucket::Created);
 
         let r = counts(&seen);
-        for (name, map) in [
-            ("created", &r.opened),
-            ("merged", &r.merged),
-            ("closed", &r.closed),
-            ("still open", &r.open),
-        ] {
-            assert!(
-                map.is_empty(),
-                "{name} counted an out-of-cohort PR: {map:?}"
-            );
-        }
+        assert_eq!(
+            r.merged["dev"], 1,
+            "a merge in the range counts, however old"
+        );
+        assert_eq!(r.closed["dev"], 1, "so does a close in the range");
+        assert_eq!(r.opened["dev"], 1, "only the one opened in the range");
+        assert_eq!(r.open["dev"], 1);
+    }
+
+    /// The same PR opened AND merged inside the range is one event of each, so
+    /// it appears under both columns rather than being made to choose. This is
+    /// what stops Merged from being read as a slice of Created.
+    #[test]
+    fn a_pr_opened_and_merged_in_the_range_counts_in_both_columns() {
+        let mut it = pr(1, Some("dev"));
+        it.merged_at = ts("2026-08-07T09:00:00Z");
+        it.closed_at = ts("2026-08-07T09:00:00Z");
+
+        let mut seen = HashMap::new();
+        upsert(&mut seen, it.clone(), Bucket::Created);
+        upsert(&mut seen, it, Bucket::Merged);
+
+        let r = counts(&seen);
+        assert_eq!(r.opened["dev"], 1);
+        assert_eq!(r.merged["dev"], 1);
+        assert_eq!(
+            r.open.get("dev"),
+            None,
+            "it closed, so it is not still open"
+        );
+        assert_eq!(r.closed.get("dev"), None, "merged is not closed-unmerged");
     }
 
     /// GitHub's `draft` flag survives whatever happened to the PR afterwards -
@@ -875,10 +925,9 @@ mod tests {
         let r = counts(&seen);
         assert_eq!(r.drafts["dev"], 1, "only the still-open draft counts");
         assert_eq!(r.open["dev"], 2, "the draft is still one of the open PRs");
-        assert_eq!(
-            r.merged["dev"] + r.closed["dev"] + r.open["dev"],
-            r.opened["dev"],
-            "Drafts must stay out of the split: created = merged + closed unmerged + still open"
+        assert!(
+            r.drafts["dev"] <= r.open["dev"],
+            "Drafts narrows Still open, it never stands beside it"
         );
     }
 
@@ -895,11 +944,12 @@ mod tests {
         assert!(r.drafts.is_empty(), "{:?}", r.drafts);
     }
 
-    /// "Still open" is derived from the absence of `closed_at`, so the order of
-    /// the outcome checks is load-bearing: a merged PR must land in Merged even
-    /// if GitHub ever omits its `closed_at`, never in Still open.
+    /// "Still open" is the absence of a close, so it is the column most exposed
+    /// to a missing timestamp: a merged PR whose `closed_at` GitHub omitted would
+    /// otherwise be reported as waiting on a reviewer. `merged_at` is checked too
+    /// so the failure mode is under-reporting, never calling a merged PR open.
     #[test]
-    fn merged_prs_never_land_in_still_open() {
+    fn a_merged_pr_is_never_still_open_even_without_closed_at() {
         let mut odd = pr(1, Some("dev"));
         odd.merged_at = ts("2026-08-07T09:00:00Z");
         odd.closed_at = None;
@@ -908,7 +958,7 @@ mod tests {
         upsert(&mut seen, odd, Bucket::Created);
 
         let r = counts(&seen);
-        assert_eq!(r.merged["dev"], 1);
+        assert_eq!(r.opened["dev"], 1, "it was still opened in the range");
         assert!(r.open.is_empty(), "{:?}", r.open);
     }
 
@@ -921,12 +971,12 @@ mod tests {
         upsert(&mut seen, pr(2, Some("dev")), Bucket::Created);
 
         let mut filtered = Rollup::default();
-        count_cohort(&seen, true, &mut filtered);
+        count_activity(&seen, true, &mut filtered);
         assert_eq!(filtered.opened.len(), 1);
         assert!(!filtered.opened.contains_key("dependabot[bot]"));
 
         let mut kept = Rollup::default();
-        count_cohort(&seen, false, &mut kept);
+        count_activity(&seen, false, &mut kept);
         assert_eq!(kept.opened.get("dependabot[bot]"), Some(&1));
         assert_eq!(kept.opened.get("dev"), Some(&1));
     }
@@ -1116,6 +1166,97 @@ mod tests {
 #[cfg(test)]
 mod live_test {
     use super::*;
+
+    /// What each count column reports for one scope and day, against the real
+    /// API, next to the answer github.com gives for the same question. This is
+    /// the check that catches a column quietly meaning something else: the unit
+    /// tests can only prove the code does what it says, never that what it says
+    /// is what GitHub reports. Run with:
+    ///   GITHUB_TOKEN=<token> FASTDASH_DIAG_SCOPE=org:acme \
+    ///     cargo test --lib github::live_test::counts_diag -- --ignored --nocapture
+    /// `FASTDASH_DIAG_DAY` (YYYY-MM-DD, IST) defaults to today.
+    #[ignore = "hits the live GitHub API; run with --ignored and GITHUB_TOKEN set"]
+    #[tokio::test]
+    async fn counts_diag() {
+        let token = std::env::var("GITHUB_TOKEN").expect("GITHUB_TOKEN");
+        let scope = std::env::var("FASTDASH_DIAG_SCOPE").expect("FASTDASH_DIAG_SCOPE");
+        let day = std::env::var("FASTDASH_DIAG_DAY")
+            .ok()
+            .and_then(|d| NaiveDate::parse_from_str(&d, "%Y-%m-%d").ok())
+            .unwrap_or_else(range::today_ist);
+        let range = DateRange {
+            start: day,
+            end: day,
+        };
+        let bounds = range.ist_bounds();
+        let client = GithubClient::new(&token).expect("client");
+
+        let sets = search_scope(
+            &client,
+            &scope,
+            &bounds,
+            range.ist_window(),
+            &Cancel::none(),
+        )
+        .await
+        .expect("search failed")
+        .expect("scope is unsearchable with this token");
+
+        let mut seen = HashMap::new();
+        for it in sets.opened {
+            upsert(&mut seen, it, Bucket::Created);
+        }
+        for it in sets.merged {
+            upsert(&mut seen, it, Bucket::Merged);
+        }
+        for it in sets.closed {
+            upsert(&mut seen, it, Bucket::Closed);
+        }
+        let mut rollup = Rollup::default();
+        count_activity(&seen, true, &mut rollup);
+
+        let total = |m: &HashMap<String, u64>| -> u64 { m.values().sum() };
+        // Bots are filtered above, so a small gap against github.com is expected
+        // here and is not the drift this diagnostic is looking for.
+        async fn truth(client: &GithubClient, scope: &str, q: &str) -> u64 {
+            client
+                .search_issues(&format!("{scope} type:pr {q}"), &Cancel::none())
+                .await
+                .map(|r| r.total)
+                .unwrap_or(0)
+        }
+
+        eprintln!("scope {scope}  day {day} (IST)");
+        eprintln!(
+            "  Created         {:>5}   github.com: {:>5}",
+            total(&rollup.opened),
+            truth(&client, &scope, &format!("created:{bounds}")).await
+        );
+        eprintln!(
+            "  Merged          {:>5}   github.com: {:>5}",
+            total(&rollup.merged),
+            truth(&client, &scope, &format!("merged:{bounds}")).await
+        );
+        eprintln!(
+            "  Closed unmerged {:>5}   github.com: (no query can answer this)",
+            total(&rollup.closed),
+        );
+        eprintln!(
+            "  Still open      {:>5}   github.com: {:>5}",
+            total(&rollup.open),
+            truth(&client, &scope, &format!("created:{bounds} is:open")).await
+        );
+        eprintln!(
+            "  Drafts          {:>5}   github.com: {:>5}",
+            total(&rollup.drafts),
+            truth(
+                &client,
+                &scope,
+                &format!("created:{bounds} is:open draft:true")
+            )
+            .await
+        );
+    }
 
     /// Switching view while a fetch is running must cancel the one being left,
     /// against the real API - the whole point being that the abandoned view

@@ -237,14 +237,14 @@ fn stat_cards(rollup: &Rollup, range_label: &str) -> Panel {
                 value: total_opened.to_string(),
                 sub: None,
             },
-            // Spelled out because the line contributions table below reports a
-            // different, deliberately wider population - everything merged in
-            // the range, however old - and two "merged" numbers on one screen
-            // must say which is which.
+            // No qualifier needed any more: this and the line contributions
+            // table below now report the same population - everything merged in
+            // the range, however old - so the two "merged" numbers on screen
+            // agree instead of needing a note to explain why they differ.
             Stat {
                 label: i18n::t("github.stats.prsMerged"),
                 value: total_merged.to_string(),
-                sub: Some(i18n::t("github.stats.prsMergedSub")),
+                sub: None,
             },
             Stat {
                 label: i18n::t("github.stats.contributorsActive"),
@@ -664,20 +664,21 @@ mod tests {
         assert_eq!(spec.rows[1].last().unwrap().text, "2");
     }
 
-    /// The merged stat card sums the created-in-range cohort, but the line
-    /// contributions table under it reports everything merged in the range,
-    /// however old. Two "merged" numbers on one screen need the card to say
-    /// which one it is.
+    /// The merged card and the line contributions table below it now report the
+    /// same population - everything merged in the range, however old - so the
+    /// card carries no qualifier. A sub-label reappearing here means the two
+    /// have drifted apart again and one of them is answering a different
+    /// question than the reader thinks.
     #[test]
-    fn the_merged_stat_card_names_its_population() {
-        let Panel::StatCards { stats, .. } = stat_cards(&rollup(), "Today") else {
+    fn the_merged_stat_card_needs_no_qualifier() {
+        let mut r = rollup();
+        r.merged.insert("dev".into(), 9);
+
+        let Panel::StatCards { stats, .. } = stat_cards(&r, "Today") else {
             panic!("expected stat cards")
         };
-        let sub = stats[1]
-            .sub
-            .as_deref()
-            .expect("the merged card must say which PRs it counts");
-        assert_ne!(sub, "github.stats.prsMergedSub", "untranslated: {sub}");
+        assert_eq!(stats[1].value, "9", "the card sums the merged-in-range map");
+        assert_eq!(stats[1].sub, None, "{:?}", stats[1].sub);
     }
 
     /// A capped range must announce itself: the note names the range and both

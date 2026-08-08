@@ -11,7 +11,7 @@
 //! for "today"; see `AppConfig::timezone` for the setting this will eventually
 //! read.
 
-use chrono::{Duration, FixedOffset, NaiveDate, Utc};
+use chrono::{DateTime, Duration, FixedOffset, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::engine::i18n;
@@ -73,6 +73,27 @@ impl DateRange {
             start = self.start.format("%Y-%m-%d"),
             end = self.end.format("%Y-%m-%d")
         )
+    }
+
+    /// The same window as [`ist_bounds`] as instants, for deciding locally
+    /// whether a timestamp falls inside the range.
+    ///
+    /// Needed because not every question can be asked of a search qualifier:
+    /// GitHub's `closed:` only ever matches *merged* pull requests, so "closed
+    /// without merging in this window" has to be answered by filtering a wider
+    /// result set on its own `closed_at`. Both ends are inclusive, matching the
+    /// string form exactly so the two can never disagree about a boundary PR.
+    pub fn ist_window(&self) -> (DateTime<Utc>, DateTime<Utc>) {
+        let ist = ist();
+        let at = |day: NaiveDate, h, m, s| {
+            day.and_hms_opt(h, m, s)
+                .expect("literal time is valid")
+                .and_local_timezone(ist)
+                .single()
+                .expect("IST has no DST, so every local time is unambiguous")
+                .with_timezone(&Utc)
+        };
+        (at(self.start, 0, 0, 0), at(self.end, 23, 59, 59))
     }
 
     /// How the range is named in panel titles, relative to `today`. Recognizes

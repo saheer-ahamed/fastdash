@@ -3,7 +3,6 @@
     "stats": {
       "prsOpened": "PRs created",
       "prsMerged": "PRs merged",
-      "prsMergedSub": "of those created",
       "contributorsActive": "Contributors active"
     },
     "table": {
@@ -14,15 +13,15 @@
     "column": {
       "contributor": "Contributor",
       "created": "Created",
-      "createdHint": "PRs this contributor created in this date range, whatever state they are in now. Merged, Closed unmerged and Still open split exactly this number.",
+      "createdHint": "PRs this contributor opened in this date range, whatever state they are in now. Merged and Closed unmerged are counted separately and are not carved out of this number, so a row is not expected to add up.",
       "merged": "Merged",
-      "mergedHint": "Of the PRs created in this date range, the ones that have since been merged. Always a subset of Created; it does not include older PRs merged during the range.",
+      "mergedHint": "PRs merged in this date range, whenever they were opened. This is what github.com reports for the same window, so a PR opened last week and merged today counts here and not under Created.",
       "closedUnmerged": "Closed unmerged",
-      "closedUnmergedHint": "Of the PRs created in this date range, the ones closed without ever being merged. Always a subset of Created.",
+      "closedUnmergedHint": "PRs closed in this date range without ever being merged, whenever they were opened. Counted from each PR's own close time, because GitHub's closed: search filter only ever matches merged PRs.",
       "stillOpen": "Still open",
-      "stillOpenHint": "Of the PRs created in this date range, the ones neither merged nor closed as of now. Always a subset of Created; it does not include older PRs still waiting.",
+      "stillOpenHint": "Of the PRs opened in this date range, the ones neither merged nor closed as of now. The one column that reads the present rather than the range, and the only one tied to Created; it does not include older PRs still waiting.",
       "drafts": "Drafts",
-      "draftsHint": "Of the PRs still open from this date range, the ones GitHub still marks as a draft right now. Always a subset of Still open, never a bucket beside it, so it is not part of what Created splits into.",
+      "draftsHint": "Of the PRs still open from this date range, the ones GitHub still marks as a draft right now. Always a subset of Still open, never a column beside it.",
       "total": "Total",
       "totalHint": "Additions plus deletions across the PRs merged in this range.",
       "additions": "Additions",
