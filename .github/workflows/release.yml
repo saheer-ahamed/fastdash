@@ -38,6 +38,21 @@ on:
 permissions:
   contents: write
 
+# One release at a time. The next version is read from the highest v* tag, so
+# two runs that overlap both read the same tag and both compute the same version
+# - whichever pushes second dies on "tag already exists", and the commits it was
+# releasing stay unreleased with nothing but a red run to say so. Two PRs merged
+# a few seconds apart is all it takes, and that is exactly how v0.10.0 shipped
+# without the commit that the second run was building.
+#
+# Queued rather than cancelled: a superseded run here is a release that never
+# happened, and `cancel-in-progress` would throw away the very run that carries
+# the newest commits. Waiting instead lets the second run recompute against the
+# tag the first one just pushed, which is the version it should have had.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: windows-latest
