@@ -208,12 +208,13 @@ pub async fn github_fetch(
     .await
 }
 
-/// The widget's GitHub reading: the signed-in user's own PRs and line counts
-/// over `range` (defaults to today). A separate, much cheaper fetch than the
+/// The widget's GitHub reading for one account: that login's own PRs and line
+/// counts over `range` (defaults to today), with `label` naming the account
+/// (`None` = the first configured one). A separate, much cheaper fetch than the
 /// dashboard's - see `connectors::github::fetch_mine`.
 #[tauri::command]
-pub async fn pip_github(range: Option<DateRange>) -> Snapshot {
-    crate::connectors::github::fetch_mine(range.unwrap_or_default()).await
+pub async fn pip_github(label: Option<String>, range: Option<DateRange>) -> Snapshot {
+    crate::connectors::github::fetch_mine(label, range.unwrap_or_default()).await
 }
 
 /// The widget's Claude reading: the live 5-hour session and weekly plan meters,
