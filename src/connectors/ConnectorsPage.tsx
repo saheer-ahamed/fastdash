@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { CONNECTOR_TABS } from "./index";
 import { useFlash } from "../flash";
 import { t } from "../i18n";
@@ -9,6 +9,7 @@ import { t } from "../i18n";
 export default function Connectors({
   initialId,
   onRefresh,
+  pipToggle,
 }: {
   /// Sub-tab to land on, for a caller that already knows which connector the
   /// user asked for (the first-run cards). Only a seed: `page` flips from null
@@ -17,6 +18,8 @@ export default function Connectors({
   /// a connector that has since gone away falls back instead of blanking.
   initialId?: string;
   onRefresh: (connectorId: string) => void;
+  /// The widget toggle, so this page's topbar carries it like every other.
+  pipToggle: ReactNode;
 }) {
   const [activeId, setActiveId] = useState(
     initialId && CONNECTOR_TABS.some((c) => c.id === initialId)
@@ -31,6 +34,7 @@ export default function Connectors({
     <>
       <header className="topbar">
         <h1>{t("app.connectors")}</h1>
+        <div className="actions">{pipToggle}</div>
       </header>
 
       <div className="subtabs">

@@ -64,14 +64,17 @@ Fetches are also serialized per connector: starting a new one cancels the previo
 
 ## The widget
 
-The button next to the fastdash name in the sidebar shrinks the whole app into a small always-on-top panel you can leave in the corner of the screen while you work.
+The button at the end of the topbar shrinks the whole app into a small always-on-top panel you can leave in the corner of the screen while you work.
 It carries one tab per connected connector, and only for GitHub and Claude: your own PRs merged and created today plus the lines those merged PRs touched, and Claude's live session and weekly plan meters.
+GitHub adds a row of sub-tabs when more than one account is configured, so each login's own numbers are one click apart.
 Drag it by its header, and press the arrow in its top-right corner to grow back into the dashboard - at exactly the size and position it had before.
 
 Nothing in the widget refreshes on a timer, not even while it is on screen.
 A tab fetches once when you first open it with nothing to show, and after that only when you press its refresh button, so the timestamp along the bottom is part of the reading.
+Each account is its own reading, cached separately, so switching between them repaints rather than refetches.
 
 The button is absent when neither GitHub nor Claude is connected, since there would be nothing to put in it.
+
 ## Settings
 
 Under **Settings -> General**:

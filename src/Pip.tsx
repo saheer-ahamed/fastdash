@@ -10,7 +10,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { Health, Panel, Snapshot } from "./types";
+import type { AppConfig, Health, Panel, Snapshot } from "./types";
 import { t } from "./i18n";
 import { todayRange } from "./range";
 
@@ -22,9 +22,38 @@ export interface PipAvailability {
   claude: boolean;
 }
 
+/// The control that shrinks the app into the widget.
+///
+/// It lives in the topbar of every page rather than in one of them, because it
+/// acts on the window rather than on what is being shown: a control that came
+/// and went as you moved between Settings and a dashboard would read as
+/// something you had lost. The window's own title bar is the OS's, so the
+/// topbar is as close to it as the app can put a button.
+export function PipToggle({ onOpen }: { onOpen: () => void }) {
+  return (
+    <button
+      className="pip-toggle"
+      onClick={onOpen}
+      title={t("pip.openHint")}
+      aria-label={t("pip.openHint")}
+    >
+      {"⤢"}
+    </button>
+  );
+}
+
 type Tab = "github" | "claude";
 
 const TAB_LABEL: Record<Tab, string> = { github: "GitHub", claude: "Claude" };
+
+/// One view the widget can show: a connector, and for GitHub the account within
+/// it. Everything - the cache, the in-flight flag, the fetch - is keyed on this
+/// rather than on the tab, so two accounts are two separate readings and
+/// switching between them can never paint one under the other's name.
+type View = { tab: Tab; account: string | null };
+
+/// Cache key for a view. A label cannot contain `|`, so this cannot collide.
+const viewKey = (v: View) => `${v.tab}|${v.account ?? ""}`;
 
 export default function Pip({
   available,
@@ -38,8 +67,12 @@ export default function Pip({
     [available],
   );
   const [tab, setTab] = useState<Tab>(tabs[0] ?? "github");
-  const [snaps, setSnaps] = useState<Partial<Record<Tab, Snapshot>>>({});
-  const [loading, setLoading] = useState<Partial<Record<Tab, boolean>>>({});
+  // The configured GitHub accounts, in the order the Connectors page lists
+  // them. Read once: the widget cannot reach the settings that change it.
+  const [accounts, setAccounts] = useState<string[]>([]);
+  const [account, setAccount] = useState<string | null>(null);
+  const [snaps, setSnaps] = useState<Record<string, Snapshot>>({});
+  const [loading, setLoading] = useState<Record<string, boolean>>({});
   // Read inside the auto-fetch effect without making it a dependency, which
   // would re-run it - and fetch again - every time a snapshot lands.
   const snapsRef = useRef(snaps);
@@ -47,39 +80,70 @@ export default function Pip({
   const loadingRef = useRef(loading);
   loadingRef.current = loading;
 
+  useEffect(() => {
+    let cancelled = false;
+    invoke<AppConfig>("get_config")
+      .then((cfg) => {
+        if (cancelled) return;
+        const labels = cfg.github.accounts.map((a) => a.label);
+        setAccounts(labels);
+        // Pick the first account up front rather than leaving it null: the
+        // fetch would resolve null to the first account anyway, and then the
+        // sub-tab row would light up nothing while showing that account.
+        setAccount(labels[0] ?? null);
+      })
+      .catch((e) => console.error(e));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // A connector disconnected while the widget was open takes its tab with it.
   useEffect(() => {
     if (!available[tab] && tabs.length > 0) setTab(tabs[0]);
   }, [available, tab, tabs]);
 
-  const load = useCallback((which: Tab) => {
+  // The account only qualifies the GitHub view; Claude has one reading.
+  const view: View = { tab, account: tab === "github" ? account : null };
+  const key = viewKey(view);
+
+  const load = useCallback((which: View) => {
     // The Refresh button is a button, so it can be pressed twice: a second
-    // fetch of the same tab piled on the first would spend the rate limit
+    // fetch of the same view piled on the first would spend the rate limit
     // twice to paint the same numbers.
-    if (loadingRef.current[which]) return;
-    setLoading((l) => ({ ...l, [which]: true }));
+    const k = viewKey(which);
+    if (loadingRef.current[k]) return;
+    setLoading((l) => ({ ...l, [k]: true }));
     const call =
-      which === "github"
-        ? invoke<Snapshot>("pip_github", { range: todayRange() })
+      which.tab === "github"
+        ? invoke<Snapshot>("pip_github", {
+            label: which.account,
+            range: todayRange(),
+          })
         : invoke<Snapshot>("pip_claude");
     call
-      .then((snap) => setSnaps((s) => ({ ...s, [which]: snap })))
+      .then((snap) => setSnaps((s) => ({ ...s, [k]: snap })))
       .catch((e) => console.error(e))
-      .finally(() => setLoading((l) => ({ ...l, [which]: false })));
+      .finally(() => setLoading((l) => ({ ...l, [k]: false })));
   }, []);
 
-  // Fetch on arrival at a tab that has nothing to show, and only then. Coming
-  // back to a tab already loaded paints what it had - however old that is -
+  // Fetch on arrival at a view that has nothing to show, and only then. Coming
+  // back to one already loaded paints what it had - however old that is -
   // because the alternative is a widget that quietly fetches every time the eye
   // passes over it.
+  //
+  // The GitHub view waits for the account list, so the first fetch is filed
+  // under the account it actually belongs to rather than under `null` and then
+  // fetched a second time when the label arrives.
+  const waitingForAccounts = tab === "github" && account === null && accounts.length > 0;
   useEffect(() => {
-    if (!available[tab]) return;
-    if (snapsRef.current[tab]) return;
-    load(tab);
-  }, [tab, available, load]);
+    if (!available[tab] || waitingForAccounts) return;
+    if (snapsRef.current[key]) return;
+    load({ tab, account: tab === "github" ? account : null });
+  }, [tab, account, key, available, waitingForAccounts, load]);
 
-  const snap = snaps[tab];
-  const busy = !!loading[tab];
+  const snap = snaps[key];
+  const busy = !!loading[key];
 
   return (
     <div className="pip">
@@ -101,7 +165,7 @@ export default function Pip({
         <div className="pip-head-actions">
           <button
             className="pip-icon"
-            onClick={() => load(tab)}
+            onClick={() => load(view)}
             disabled={busy}
             title={t("pip.refresh")}
             aria-label={t("pip.refresh")}
@@ -118,6 +182,24 @@ export default function Pip({
           </button>
         </div>
       </header>
+
+      {/* One row per GitHub account, as the dashboard has. Only when there is
+          more than one: a single account is already named in the footer, and a
+          lone chip in a 300px window is a row spent saying nothing. */}
+      {tab === "github" && accounts.length > 1 && (
+        <div className="pip-accounts">
+          {accounts.map((label) => (
+            <button
+              key={label}
+              className={"pip-account" + (label === account ? " active" : "")}
+              onClick={() => setAccount(label)}
+              title={label}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className="pip-body">
         {snap ? <PipSnapshot snapshot={snap} /> : busy ? null : (

@@ -212,8 +212,10 @@ pub async fn fetch_account(
     Ok(snapshot)
 }
 
-/// The signed-in user's own numbers over `range`, for the widget: PRs they
-/// merged and created, and the lines those merged PRs touched.
+/// One account's own numbers over `range`, for the widget: the PRs that
+/// account's login merged and created, and the lines those merged PRs touched.
+/// `label` picks the account (the widget's sub-tabs); `None` takes the first
+/// configured one, as the dashboard's generic entry point does.
 ///
 /// This is not the dashboard fetch narrowed down. The dashboard reports on the
 /// account's configured orgs and counts every contributor in them; this asks
@@ -224,8 +226,16 @@ pub async fn fetch_account(
 ///
 /// Every outcome comes back as a `Snapshot` carrying the right `Health`, so the
 /// widget renders a one-line status instead of a raw error.
-pub async fn fetch_mine(range: DateRange) -> Snapshot {
-    let Some(cfg) = GithubConfig::resolve() else {
+pub async fn fetch_mine(label: Option<String>, range: DateRange) -> Snapshot {
+    // A label with no token in the keychain is a real state - an account row
+    // saved before its token was pasted - and it belongs to that sub-tab alone,
+    // so it must not fall back to another account's numbers under this one's
+    // name.
+    let resolved = match &label {
+        Some(label) => GithubConfig::for_account(label, None),
+        None => GithubConfig::resolve(),
+    };
+    let Some(cfg) = resolved else {
         return Snapshot::needs_auth(i18n::t("github.needsAuth"));
     };
     match run_fetch_mine(&cfg, &range).await {

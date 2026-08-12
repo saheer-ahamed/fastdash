@@ -24,7 +24,7 @@ import type {
 import Settings from "./Settings";
 import Welcome from "./Welcome";
 import Connectors from "./connectors/ConnectorsPage";
-import Pip, { type PipAvailability } from "./Pip";
+import Pip, { PipToggle, type PipAvailability } from "./Pip";
 import RangeFilter from "./RangeFilter";
 import { rangeKey, todayRange, type PresetId } from "./range";
 import { getLocale, setLocale, t } from "./i18n";
@@ -299,23 +299,16 @@ export default function App() {
     return <Pip available={pipAvailable} onExit={() => togglePip(false)} />;
   }
 
+  // Built once and handed to whichever topbar is on screen, so every page
+  // offers the same control in the same place - and pages with nothing to
+  // shrink into (nothing connected) get nothing.
+  const pipToggle = canPip ? <PipToggle onOpen={() => togglePip(true)} /> : null;
+
   return (
     <div className="app">
       <UpdateBanner />
       <aside className="sidebar">
-        <div className="brand">
-          <span className="brand-name">fastdash</span>
-          {canPip && (
-            <button
-              className="pip-toggle"
-              onClick={() => togglePip(true)}
-              title={t("pip.openHint")}
-              aria-label={t("pip.openHint")}
-            >
-              {"⤢"}
-            </button>
-          )}
-        </div>
+        <div className="brand">fastdash</div>
         <nav>
           {/* Only the connected ones get a tab. The Connectors page below still
               lists every connector on purpose - it is where you go to connect
@@ -360,11 +353,16 @@ export default function App() {
 
       <main className="content">
         {page === "connectors" ? (
-          <Connectors initialId={openConnector ?? undefined} onRefresh={onConnectorSaved} />
+          <Connectors
+            initialId={openConnector ?? undefined}
+            onRefresh={onConnectorSaved}
+            pipToggle={pipToggle}
+          />
         ) : page === "settings" ? (
           <>
             <header className="topbar">
               <h1>{t("app.settings")}</h1>
+              <div className="actions">{pipToggle}</div>
             </header>
             <Settings onLocaleChange={onLocaleChange} />
           </>
@@ -374,7 +372,13 @@ export default function App() {
           // actually answered, so it never flashes on the way to a dashboard.
           listed && <Welcome onConnect={openConnectorTab} />
         ) : active === "github" ? (
-          <GithubView state={github} range={range} preset={preset} onRange={onRange} />
+          <GithubView
+            state={github}
+            range={range}
+            preset={preset}
+            onRange={onRange}
+            pipToggle={pipToggle}
+          />
         ) : (
           <>
             <header className="topbar">
@@ -392,6 +396,7 @@ export default function App() {
                 >
                   {loading ? t("app.refreshing") : t("app.refresh")}
                 </button>
+                {pipToggle}
               </div>
             </header>
 
@@ -721,11 +726,14 @@ function GithubView({
   range,
   preset,
   onRange,
+  pipToggle,
 }: {
   state: GithubState;
   range: DateRange;
   preset: PresetId;
   onRange: (next: DateRange, preset: PresetId) => void;
+  /** The widget toggle, rendered by whoever owns it - see `PipToggle`. */
+  pipToggle: ReactNode;
 }) {
   const { accounts, label, setLabel, org, setOrg, snaps, loadingKeys, failedKeys, load } =
     state;
@@ -741,6 +749,7 @@ function GithubView({
       <>
         <header className="topbar">
           <h1>GitHub</h1>
+          <div className="actions">{pipToggle}</div>
         </header>
         <div className="empty">{t("github.noAccounts")}</div>
       </>
@@ -772,6 +781,7 @@ function GithubView({
             {loading && <span className="spinner" aria-hidden />}
             {t("app.refresh")}
           </button>
+          {pipToggle}
         </div>
       </header>
 

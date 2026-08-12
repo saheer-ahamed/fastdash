@@ -168,17 +168,10 @@ body {
 }
 
 .brand {
-  display: flex;
-  align-items: center;
   font-weight: 700;
   color: var(--bright);
   padding: 6px 8px 12px;
   letter-spacing: 0.5px;
-}
-
-/* Pushes the widget toggle to the far edge of the row. */
-.brand-name {
-  margin-right: auto;
 }
 
 .brand::before {
@@ -1668,13 +1661,21 @@ a:hover {
    units - the window cannot be resized, so there is exactly one layout to get
    right, and it has to fit without scrolling. */
 
+/* Sits at the end of the topbar's actions on every page. Sized to the height
+   of the Refresh button beside it so the row keeps one baseline, and drawn as
+   an outline rather than a filled button: it acts on the window, not on the
+   data, and should not compete with the page's own action. */
 .pip-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 26px;
   background: transparent;
-  border: 1px solid transparent;
+  border: 1px solid var(--border);
   color: var(--muted);
   font: inherit;
   line-height: 1;
-  padding: 2px 5px;
   cursor: pointer;
 }
 
@@ -1759,6 +1760,47 @@ a:hover {
 .pip-icon:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* GitHub account sub-tabs. Scrolls sideways rather than wrapping: a second row
+   would push the numbers out of a window that cannot grow, and the selected
+   chip is the one that has to stay readable. */
+.pip-accounts {
+  display: flex;
+  gap: 2px;
+  padding: 5px 8px 0;
+  overflow-x: auto;
+  overscroll-behavior: none;
+  scrollbar-width: none;
+}
+
+.pip-accounts::-webkit-scrollbar {
+  display: none;
+}
+
+.pip-account {
+  flex: none;
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 7px;
+  cursor: pointer;
+}
+
+.pip-account:hover {
+  color: var(--text);
+}
+
+.pip-account.active {
+  background: var(--panel-2);
+  border-color: var(--border-bright);
+  color: var(--bright);
 }
 
 .pip-body {
