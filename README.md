@@ -1,15 +1,18 @@
 # fastdash
 
-A super-fast desktop dashboard for Claude usage, with pluggable connectors (GitHub and Sentry, with Slack planned).
+A super-fast desktop dashboard for Claude usage, with pluggable connectors (Claude, GitHub and Sentry today; Slack planned).
 
 Built with Tauri v2 (Rust core) and a React + TypeScript frontend.
 
 ## What it shows
 
-- **Claude**: token usage (total and per model), efforts used, weekly usage, the current 5-hour window, reset countdown, and cost - read from local `~/.claude` transcripts, with official `/usage` numbers overlaid when available.
-- **GitHub**: per selected org, today's per-contributor PR counts (opened / merged / closed-without-merge / open), line contributions (based on PRs merged today), and the PR list with repos.
+- **Claude**: token usage (total and per model), efforts used, the current 5-hour window, the weekly windows, reset countdowns, and cost.
+  Numbers come from this machine's local `~/.claude` transcripts by default; the plan-limit meters use Claude Code's own login, and connecting an Anthropic Console organization replaces the estimates with official token counts and the amount actually billed.
+- **GitHub**: per selected org, per-contributor PR counts for the selected range (opened / merged / closed-without-merge / open), line contributions (based on PRs merged in range), the PR list with repos, and the contribution heatmap.
 - **Sentry**: per organization, the unresolved issues that fired in the selected range - how many, how many are new, the event total, which projects they came from, and the issue list with events, users affected, and when each was last seen.
 - **Slack** (planned, not yet available): per workspace, the channels that mentioned me today.
+
+Every panel is generic: connectors emit render `Panel`s and the UI never learns connector specifics, so adding a connector needs no UI change.
 
 ## Install
 
@@ -35,12 +38,55 @@ Builds are not yet code-signed, so the browser-downloaded installer trips SmartS
 The terminal and Scoop paths above are unaffected, because only browsers apply the Mark-of-the-Web that SmartScreen keys off.
 Every release ships `SHA256SUMS.txt` so downloads can be verified.
 
+The Rust core builds on macOS too (including keychain-backed credentials), but releases are produced on Windows only, so there is no macOS download yet.
+
 ## Updating
 
 fastdash updates itself.
-On launch it checks the GitHub releases feed and, if a newer signed build exists, downloads and installs it - no need to re-run the installer or the Scoop command.
+On launch it checks the GitHub releases feed and, if a newer signed build exists, offers a non-blocking toast to install and restart - the download never starts without a click.
+The check runs once at startup, so an already-running app notices a new release on its next launch.
 
 Scoop users can still update through Scoop if they prefer (`scoop update fastdash`); both paths pull from the same release.
+
+## The date filter
+
+One filter at the top of the app applies to every dashboard: Today (the default), Yesterday, Last 7 days, Last 30 days, or a custom span.
+Presets resolve to concrete calendar days in your local timezone, and every connector fetch carries that span.
+
+Two readings deliberately ignore it, because they are "right now" values rather than a period: Claude's plan-limit meters and the GitHub contribution heatmap.
+
+## Refreshing
+
+Nothing polls on a timer in the background.
+The frontend drives every fetch, and only for the dashboard currently on screen while the app window has focus - switching tabs or clicking away costs nothing, and a cached result younger than the connector's TTL is reused instead of refetched.
+
+Fetches are also serialized per connector: starting a new one cancels the previous, so flipping between sub-tabs cannot burn through the GitHub Search budget or repaint stale numbers out of order.
+
+## Settings
+
+Under **Settings -> General**:
+
+- **Theme**: System, Dark, Light, Midnight, Amber, Green, or Paper.
+- **Language**: English today; the string catalog under `locales/<lang>/` is shared by the Rust backend and the frontend, so a new language is a set of JSON files plus one registration.
+- **Timezone** (IANA, e.g. `Asia/Kolkata`): the day boundary the date filter and the daily rollups use.
+- **Filter bot authors**: drops dependabot and similar from the GitHub contributor tables.
+
+**Settings -> About** shows the running version, and hides a developer mode behind repeated clicks on it.
+
+## Connecting Anthropic Console
+
+Optional.
+Without it, the Claude dashboard still works from local transcripts; with it, the usage and cost tiles switch from estimates to Anthropic's own numbers.
+
+Go to **Settings -> Claude**, then paste an **Admin API key** (`sk-ant-admin01-...`) created in Console under **Settings -> Admin keys**.
+The key is stored in the OS keychain, and Console shows it only once.
+
+Two limits are Anthropic's, not fastdash's:
+
+- Admin keys require the admin role in a Claude Console **organization**; they are not offered to individual accounts.
+- The reports cover **Console-billed** usage only. Claude Code running against a Pro or Max subscription is not billed through Console and never appears there, so an empty report is a normal outcome and is reported in words rather than as zeros. That is also why the local transcript scan stays.
+
+There is no "Sign in with Claude" button because Anthropic runs no third-party OAuth client registration, and their policy reserves subscription OAuth tokens for Claude Code and claude.ai.
 
 ## Connecting GitHub
 
@@ -87,6 +133,11 @@ Two more constraints come from GitHub, not fastdash:
 - A fine-grained token belongs to **one** resource owner, so it cannot span several orgs. Tracking two orgs this way means two account rows, each with its own token.
 - If the org enforces a token policy, an owner has to approve the token before it works.
 
+### Scopes beyond an org
+
+An account's tracked scope does not have to be an organization.
+A personal repository owner works, and an `author:<login>` scope counts the PRs a person wrote anywhere the token can see, which is the way to include work outside the orgs you listed.
+
 ## Connecting Sentry
 
 Add a connection under **Connectors -> Sentry**, give it a label and an auth token, then leave the rest at their defaults unless one of the notes below applies.
@@ -124,6 +175,11 @@ Two things the connector does deliberately:
 - It reports on **unresolved** issues only. That is a state filter, not a date one, so an issue that first fired months ago and is still erroring today shows up - which is the point. **New issues** is the stat that separates the two.
 - **Events** counts what happened inside the selected date range, not an issue's lifetime total. Projects are not narrowable: the connector asks for every project the token can read in one request and derives the breakdown from the results, rather than spending a round trip per project.
 
+## Where credentials live
+
+Every token and API key is stored in the OS keychain (Windows Credential Manager, Keychain on macOS), never in the config file and never in the repo.
+Config holds labels, orgs and preferences only.
+
 ## Prerequisites
 
 These are for building from source; installing a release needs none of them.
@@ -139,20 +195,37 @@ npm install
 npm run tauri dev
 ```
 
+`npm run dev` alone runs the frontend in a browser, which is enough for UI work but has no Tauri backend.
+
+Gates that CI and the git hooks enforce:
+
+```bash
+npm run lint
+npm run typecheck
+cd src-tauri && cargo fmt --all && cargo clippy --all-targets --all-features -- -D warnings
+```
+
+Commits, branches and PR titles follow Conventional Commits; see [CLAUDE.md](./CLAUDE.md) for the exact rules and where each one is enforced.
+
 ## Build
 
 ```bash
 npm run tauri build
 ```
 
+Releases are automatic: merging to `main` computes the next version from the Conventional Commits since the last tag, builds the signed installers, and publishes the GitHub release.
+Never bump a version or push a `v*` tag by hand.
+
 ## Architecture
 
 See [DESIGN.md](./DESIGN.md).
 
-The core is connector-agnostic: every connector implements one `Connector` trait and emits generic render `Panel`s, so the UI never learns connector specifics.
-Each connector is developed in its own worktree.
+- `src-tauri/src/engine/` - connector-agnostic core: the `Connector` trait, registry, config, keychain secrets, snapshot cache, the shared fetch path, i18n, and the shared date filter.
+- `src-tauri/src/connectors/` - self-contained connectors behind that trait.
+- `src-tauri/src/ipc.rs` - the Tauri command surface exposed to the frontend.
+- `src/` - the React frontend, which only ever renders generic `Panel`s.
 
 ## Status
 
-Scaffold: core engine, connector trait, generic panel renderer, and the Claude, GitHub and Sentry connectors are wired.
-Connector implementations are in progress; the Slack connector is planned but not yet implemented.
+The core engine, connector trait, generic panel renderer, and the Claude, GitHub and Sentry connectors are all shipping.
+The Slack connector is planned but not yet implemented.
