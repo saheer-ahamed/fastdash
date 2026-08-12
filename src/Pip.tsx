@@ -71,6 +71,9 @@ export default function Pip({
   // them. Read once: the widget cannot reach the settings that change it.
   const [accounts, setAccounts] = useState<string[]>([]);
   const [account, setAccount] = useState<string | null>(null);
+  // Whether the account list has come back. The GitHub view waits for it, so
+  // it is also the difference between "nothing to show" and "not yet asked".
+  const [accountsRead, setAccountsRead] = useState(false);
   const [snaps, setSnaps] = useState<Record<string, Snapshot>>({});
   const [loading, setLoading] = useState<Record<string, boolean>>({});
   // Read inside the auto-fetch effect without making it a dependency, which
@@ -92,7 +95,13 @@ export default function Pip({
         // sub-tab row would light up nothing while showing that account.
         setAccount(labels[0] ?? null);
       })
-      .catch((e) => console.error(e));
+      .catch((e) => console.error(e))
+      // A config read that fails must still release the GitHub view, or the
+      // widget waits for an account list that is never coming. The fetch then
+      // runs unlabelled, which the backend resolves to the first account.
+      .finally(() => {
+        if (!cancelled) setAccountsRead(true);
+      });
     return () => {
       cancelled = true;
     };
@@ -134,8 +143,9 @@ export default function Pip({
   //
   // The GitHub view waits for the account list, so the first fetch is filed
   // under the account it actually belongs to rather than under `null` and then
-  // fetched a second time when the label arrives.
-  const waitingForAccounts = tab === "github" && account === null && accounts.length > 0;
+  // fetched a second time - two calls on the same rate limit for one number -
+  // when the label lands a moment later.
+  const waitingForAccounts = tab === "github" && !accountsRead;
   useEffect(() => {
     if (!available[tab] || waitingForAccounts) return;
     if (snapsRef.current[key]) return;
@@ -144,6 +154,11 @@ export default function Pip({
 
   const snap = snaps[key];
   const busy = !!loading[key];
+  // Everything between opening the widget and having something to draw: the
+  // config read, the gap before the effect fires, and the fetch itself. They
+  // are one wait as far as the user is concerned, and the window is far too
+  // small for an unexplained blank to read as anything but broken.
+  const pending = busy || waitingForAccounts;
 
   return (
     <div className="pip">
@@ -202,7 +217,14 @@ export default function Pip({
       )}
 
       <div className="pip-body">
-        {snap ? <PipSnapshot snapshot={snap} /> : busy ? null : (
+        {snap ? (
+          <PipSnapshot snapshot={snap} />
+        ) : pending ? (
+          <p className="pip-loading muted" role="status">
+            <span className="spinner" aria-hidden />
+            {t("app.loading")}
+          </p>
+        ) : (
           <p className="pip-status muted">{t("pip.empty")}</p>
         )}
       </div>

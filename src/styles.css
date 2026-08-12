@@ -1842,6 +1842,17 @@ a:hover {
   text-align: center;
 }
 
+/* Shown from the moment the widget opens until it has numbers. Centred in the
+   body so the panel keeps its shape rather than jumping when the data lands. */
+.pip-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 12px;
+}
+
 .pip-status.muted {
   color: var(--muted);
 }
