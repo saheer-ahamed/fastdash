@@ -43,6 +43,17 @@ struct Restore {
 
 static RESTORE: Mutex<Option<Restore>> = Mutex::new(None);
 
+/// Where the widget was when it was last put away.
+///
+/// Without this the widget goes back to the corner the app picked every time,
+/// which quietly undoes the one bit of arranging the user did: they drag it to
+/// the spot that does not cover their work, glance at the dashboard, and it is
+/// back over the thing they moved it off. Remembered for the session only - the
+/// dashboard's own geometry is not persisted across launches either, and a
+/// widget that reappears on a monitor that is no longer there would be worse
+/// than one that starts in the corner.
+static PIP_SPOT: Mutex<Option<PhysicalPosition<i32>>> = Mutex::new(None);
+
 /// Shrink the window into the widget, or restore it. Idempotent: entering while
 /// already in widget mode keeps the saved geometry rather than overwriting it
 /// with the widget's own.
@@ -79,11 +90,21 @@ fn enter(window: &WebviewWindow) -> tauri::Result<()> {
     window.set_decorations(false)?;
     window.set_size(LogicalSize::new(PIP_WIDTH, PIP_HEIGHT))?;
     window.set_always_on_top(true)?;
-    park_bottom_right(window)?;
+
+    // Back to where the user last left it, and only otherwise to the corner.
+    match remembered_spot(window)? {
+        Some(spot) => window.set_position(spot)?,
+        None => park_bottom_right(window)?,
+    }
     Ok(())
 }
 
 fn leave(window: &WebviewWindow) -> tauri::Result<()> {
+    // Read before anything else: restoring the decorations and the size both
+    // move the window, so a position read afterwards is the dashboard's, not
+    // the widget's.
+    *PIP_SPOT.lock().unwrap() = window.outer_position().ok();
+
     window.set_always_on_top(false)?;
     window.set_decorations(true)?;
     window.set_resizable(true)?;
@@ -97,6 +118,49 @@ fn leave(window: &WebviewWindow) -> tauri::Result<()> {
         }
     }
     Ok(())
+}
+
+/// The spot the widget was last put away from, if it is still somewhere the
+/// user could reach it.
+///
+/// A monitor can go away between one toggle and the next - a laptop undocked,
+/// a display unplugged, a resolution changed - and a window restored onto
+/// coordinates nothing covers any more is invisible and, being undecorated,
+/// undraggable. So the point the user would grab is checked against the
+/// monitors that exist right now, and anything off them falls back to the
+/// corner rather than stranding the widget.
+fn remembered_spot(window: &WebviewWindow) -> tauri::Result<Option<PhysicalPosition<i32>>> {
+    let Some(spot) = *PIP_SPOT.lock().unwrap() else {
+        return Ok(None);
+    };
+    let screens: Vec<(PhysicalPosition<i32>, PhysicalSize<u32>)> = window
+        .available_monitors()?
+        .iter()
+        .map(|m| (*m.position(), *m.size()))
+        .collect();
+    Ok(reachable(spot, &screens).then_some(spot))
+}
+
+/// Whether the widget placed at `spot` would land somewhere the user can grab
+/// it. Split from the monitor lookup so the geometry is testable without a
+/// window, which is the half that has to be right on a machine whose displays
+/// come and go.
+fn reachable(
+    spot: PhysicalPosition<i32>,
+    screens: &[(PhysicalPosition<i32>, PhysicalSize<u32>)],
+) -> bool {
+    // A point a little inside the widget's header, which is its drag handle.
+    // Its top-left corner alone would be too strict: a window nudged one pixel
+    // off the left edge is still perfectly usable.
+    let x = spot.x + 40;
+    let y = spot.y + 10;
+
+    screens.iter().any(|(origin, size)| {
+        x >= origin.x
+            && x < origin.x + size.width as i32
+            && y >= origin.y
+            && y < origin.y + size.height as i32
+    })
 }
 
 /// Park the widget in the bottom-right corner of whichever monitor it is on.
@@ -117,4 +181,47 @@ fn park_bottom_right(window: &WebviewWindow) -> tauri::Result<()> {
     let x = origin.x + area.width as i32 - size.width as i32 - margin;
     let y = origin.y + area.height as i32 - size.height as i32 - margin;
     window.set_position(PhysicalPosition::new(x, y))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(x: i32, y: i32) -> PhysicalPosition<i32> {
+        PhysicalPosition::new(x, y)
+    }
+
+    /// A laptop screen with a second monitor to its left, which is where
+    /// negative coordinates come from on Windows.
+    fn two_screens() -> Vec<(PhysicalPosition<i32>, PhysicalSize<u32>)> {
+        vec![
+            (at(0, 0), PhysicalSize::new(1920, 1080)),
+            (at(-1920, -200), PhysicalSize::new(1920, 1200)),
+        ]
+    }
+
+    #[test]
+    fn a_spot_on_any_attached_screen_is_kept() {
+        assert!(reachable(at(1500, 800), &two_screens()), "primary");
+        assert!(reachable(at(-1800, 40), &two_screens()), "second screen");
+        // Hanging off the left edge, header still on screen: usable, so kept.
+        assert!(reachable(at(-30, 500), &two_screens()));
+    }
+
+    /// The case the check exists for: the monitor the widget was parked on is
+    /// gone, so those coordinates now point at nothing. An undecorated window
+    /// there cannot be seen or dragged back, so the corner is the safer answer.
+    #[test]
+    fn a_spot_on_a_detached_screen_is_dropped() {
+        let only_primary = vec![(at(0, 0), PhysicalSize::new(1920, 1080))];
+        assert!(!reachable(at(-1800, 40), &only_primary));
+        // Below a screen that shrank, and past the right edge of every screen.
+        assert!(!reachable(at(500, 1200), &only_primary));
+        assert!(!reachable(at(4000, 100), &two_screens()));
+    }
+
+    #[test]
+    fn with_no_screens_at_all_nothing_is_reachable() {
+        assert!(!reachable(at(0, 0), &[]));
+    }
 }
