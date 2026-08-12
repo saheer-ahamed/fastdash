@@ -20,6 +20,14 @@
     "githubBlurb": "Pull requests opened, merged and closed by each person, across the orgs you follow.",
     "sentryBlurb": "Unresolved issues that fired today, which projects they came from, and how many people they hit."
   },
+  "pip": {
+    "open": "Widget",
+    "openHint": "Shrink to a small always-on-top widget",
+    "exit": "Back to the dashboard",
+    "refresh": "Refresh",
+    "failed": "Couldn't load - try refresh",
+    "empty": "Nothing to show yet"
+  },
   "range": {
     "today": "Today",
     "yesterday": "Yesterday",

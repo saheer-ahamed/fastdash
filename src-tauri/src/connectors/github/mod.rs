@@ -212,6 +212,89 @@ pub async fn fetch_account(
     Ok(snapshot)
 }
 
+/// The signed-in user's own numbers over `range`, for the widget: PRs they
+/// merged and created, and the lines those merged PRs touched.
+///
+/// This is not the dashboard fetch narrowed down. The dashboard reports on the
+/// account's configured orgs and counts every contributor in them; this asks
+/// `author:<viewer>` instead, so it needs no org configuration, sees the user's
+/// work wherever it happened, and costs two Search queries plus one GraphQL
+/// enrichment rather than three per org plus the calendar. Cheap enough to run
+/// from a window that only ever fetches when the user asks it to.
+///
+/// Every outcome comes back as a `Snapshot` carrying the right `Health`, so the
+/// widget renders a one-line status instead of a raw error.
+pub async fn fetch_mine(range: DateRange) -> Snapshot {
+    let Some(cfg) = GithubConfig::resolve() else {
+        return Snapshot::needs_auth(i18n::t("github.needsAuth"));
+    };
+    match run_fetch_mine(&cfg, &range).await {
+        Ok(snapshot) => snapshot,
+        Err(GithubError::RateLimited { retry_after_secs }) => {
+            rate_limited_snapshot(retry_after_secs)
+        }
+        Err(GithubError::Misconfigured(message)) => Snapshot {
+            status: Health::Misconfigured { message },
+            panels: vec![],
+            fetched_at: Utc::now(),
+            next_refresh_secs: None,
+        },
+        Err(e) => Snapshot {
+            status: Health::Error {
+                message: e.to_string(),
+            },
+            panels: vec![],
+            fetched_at: Utc::now(),
+            next_refresh_secs: None,
+        },
+    }
+}
+
+async fn run_fetch_mine(cfg: &GithubConfig, range: &DateRange) -> Result<Snapshot, GithubError> {
+    let range = range.normalized();
+    let bounds = range.ist_bounds();
+    let client = GithubClient::new(&cfg.token)?;
+    // Nothing to cancel: the widget runs one fetch at a time, on demand.
+    let cancel = Cancel::none();
+
+    // Whose PRs to count. Taken from the token rather than the account label,
+    // which is a name the user typed and need not be their login.
+    let login = client.viewer_profile().await?.login;
+
+    let opened = client
+        .search_issues(&format!("author:{login} type:pr created:{bounds}"), &cancel)
+        .await?;
+    let merged = client
+        .search_issues(&format!("author:{login} type:pr merged:{bounds}"), &cancel)
+        .await?;
+
+    // Line counts live on the PR itself, so only the merged set is enriched -
+    // the same merged-based definition the dashboard's line table uses.
+    let refs: Vec<PrRef> = merged.items.iter().map(|it| it.pr_ref()).collect();
+    let enriched = if refs.is_empty() {
+        Vec::new()
+    } else {
+        client.enrich_prs(&refs, &cancel).await?
+    };
+    let additions = enriched.iter().map(|e| e.additions).sum();
+    let deletions = enriched.iter().map(|e| e.deletions).sum();
+
+    // The counts come from GitHub's own `total_count` rather than the rows it
+    // served: one person's PRs cannot realistically pass the 1000-result cap,
+    // but if they ever did, counting rows would quietly report the cap as the
+    // answer. The line totals can only ever cover the rows we hold.
+    Ok(Snapshot::ok(
+        vec![aggregate::mine_stats(
+            &login,
+            opened.total,
+            merged.total,
+            additions,
+            deletions,
+        )],
+        Some(REFRESH_SECS),
+    ))
+}
+
 /// One dashboard fetch. `cancel` is polled between requests, so a fetch the user
 /// has navigated away from stops after the call already in flight rather than
 /// working through every remaining scope.

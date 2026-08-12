@@ -168,10 +168,17 @@ body {
 }
 
 .brand {
+  display: flex;
+  align-items: center;
   font-weight: 700;
   color: var(--bright);
   padding: 6px 8px 12px;
   letter-spacing: 0.5px;
+}
+
+/* Pushes the widget toggle to the far edge of the row. */
+.brand-name {
+  margin-right: auto;
 }
 
 .brand::before {
@@ -1651,6 +1658,219 @@ a:hover {
 .guide-note p {
   margin: 4px 0 0;
   color: var(--muted);
+}
+
+/* Widget mode
+   ---------------------------------------------------------------------------
+   The same window, shrunk to 300px and stripped of its title bar, so this is
+   the entire UI while it is on: a header that doubles as the drag handle, and
+   one screen of numbers. Everything is sized in absolutes rather than relative
+   units - the window cannot be resized, so there is exactly one layout to get
+   right, and it has to fit without scrolling. */
+
+.pip-toggle {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted);
+  font: inherit;
+  line-height: 1;
+  padding: 2px 5px;
+  cursor: pointer;
+}
+
+.pip-toggle:hover {
+  border-color: var(--border-bright);
+  color: var(--bright);
+}
+
+.pip {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--panel);
+  /* The border stands in for the dropped window frame, so the widget still
+     reads as a distinct object against whatever it is floating over. */
+  border: 1px solid var(--border-bright);
+  overflow: hidden;
+}
+
+.pip-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  /* Nothing in the header is text worth selecting, and a stray selection while
+     dragging the window looks like a bug. */
+  user-select: none;
+}
+
+.pip-tabs {
+  display: flex;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pip-tab {
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font: inherit;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.pip-tab:hover {
+  color: var(--text);
+}
+
+.pip-tab.active {
+  color: var(--bright);
+  border-bottom-color: var(--fill);
+}
+
+.pip-head-actions {
+  display: flex;
+  gap: 2px;
+  flex: none;
+}
+
+.pip-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 22px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted);
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pip-icon:hover:not(:disabled) {
+  border-color: var(--border-bright);
+  color: var(--bright);
+}
+
+.pip-icon:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.pip-body {
+  flex: 1;
+  min-height: 0;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 12px;
+  /* A long needsAuth sentence is the one thing that can outgrow the window;
+     let it scroll rather than pushing the footer off the bottom. */
+  overflow-y: auto;
+  overscroll-behavior: none;
+}
+
+.pip-foot {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 12px 7px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* The login the GitHub numbers belong to. Truncates rather than pushing the
+   timestamp off the edge - the time is the half that is always meaningful. */
+.pip-subject {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pip-status {
+  margin: 0;
+  color: var(--warn);
+  font-size: 12px;
+  text-align: center;
+}
+
+.pip-status.muted {
+  color: var(--muted);
+}
+
+/* GitHub: one row per figure, label left, value right. A grid rather than three
+   tiles - at this width tiles would wrap, and the numbers are easier to compare
+   when they share an edge. */
+.pip-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+}
+
+.pip-stat {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.pip-stat dt {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pip-stat dd {
+  margin: 0;
+  color: var(--bright);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Claude: the two plan meters, same bar as the dashboard at a smaller size. */
+.pip-meter {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.pip-meter-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pip-meter-label {
+  color: var(--bright);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pip-meter-pct {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.pip-meter .meter-track {
+  height: 8px;
+}
+
+.pip-meter-sub {
+  font-size: 11px;
 }
 
 /* Respect a system-level request for less motion: everything still works, it

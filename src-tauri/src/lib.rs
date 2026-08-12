@@ -20,6 +20,7 @@
 mod connectors;
 mod engine;
 mod ipc;
+mod pip;
 
 use std::sync::{Arc, RwLock};
 
@@ -78,6 +79,9 @@ pub fn run() {
             ipc::github_fetch,
             ipc::claude_connect,
             ipc::claude_disconnect,
+            ipc::pip_github,
+            ipc::pip_claude,
+            ipc::set_pip_mode,
             ipc::open_external,
         ])
         .setup(|app| {

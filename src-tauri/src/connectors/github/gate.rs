@@ -43,8 +43,9 @@ const TTL: Duration = Duration::from_secs(20);
 pub struct Cancel(Arc<AtomicBool>);
 
 impl Cancel {
-    /// A token that is never cancelled, for callers outside the gate (tests).
-    #[cfg(test)]
+    /// A token that is never cancelled, for callers that do not go through the
+    /// gate: tests, and the widget's own fetch, which is a single on-demand
+    /// request with nothing to supersede it.
     pub fn none() -> Self {
         Cancel::default()
     }
