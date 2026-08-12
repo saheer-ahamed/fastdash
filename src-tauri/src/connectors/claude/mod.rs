@@ -47,7 +47,9 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use crate::engine::config::AppConfig;
-use crate::engine::connector::{Connector, ConnectorError, ConnectorMeta, FetchCtx, Snapshot};
+use crate::engine::connector::{
+    Connector, ConnectorError, ConnectorMeta, FetchCtx, Health, Snapshot,
+};
 use crate::engine::i18n;
 use crate::engine::panel::{Bar, Cell, Column, Panel, Stat, TableSpec};
 use crate::engine::range::{self, DateRange};
@@ -94,46 +96,82 @@ fn has_local_state() -> bool {
     parse::claude_dir().map(|p| p.exists()).unwrap_or(false)
 }
 
-pub struct ClaudeConnector {
-    /// Last good official usage plus when it was fetched, used to throttle the
-    /// pull and to survive a transient rate-limit.
-    official: Mutex<Option<(OfficialUsage, Instant)>>,
-}
+/// Last good official usage plus when it was fetched, used to throttle the pull
+/// and to survive a transient rate-limit.
+///
+/// Process-global rather than a field on the connector because the throttle is
+/// a property of the endpoint, not of a caller: the dashboard and the widget
+/// both read the same `/usage`, and a per-instance cache would let them take
+/// turns hammering it into a 429.
+static OFFICIAL: Mutex<Option<(OfficialUsage, Instant)>> = Mutex::new(None);
 
-impl ClaudeConnector {
-    pub fn new() -> Self {
-        ClaudeConnector {
-            official: Mutex::new(None),
+/// Official usage, pulling fresh only if the cache is older than
+/// `OFFICIAL_TTL`. On a failed pull the last good value is reused so a 429
+/// never blanks the meters. The lock is never held across the await.
+async fn official_usage() -> Option<OfficialUsage> {
+    {
+        let guard = OFFICIAL.lock().unwrap();
+        if let Some((usage, at)) = guard.as_ref() {
+            if at.elapsed() < OFFICIAL_TTL {
+                return Some(usage.clone());
+            }
         }
     }
 
-    /// Official usage, pulling fresh only if the cache is older than
-    /// `OFFICIAL_TTL`. On a failed pull the last good value is reused so a 429
-    /// never blanks the meters. The lock is never held across the await.
-    async fn official_usage(&self) -> Option<OfficialUsage> {
-        {
-            let guard = self.official.lock().unwrap();
-            if let Some((usage, at)) = guard.as_ref() {
-                if at.elapsed() < OFFICIAL_TTL {
-                    return Some(usage.clone());
-                }
-            }
-        }
+    let fresh = match usage_api::read_oauth_token() {
+        Ok(token) => usage_api::fetch_official_usage(&token).await.ok(),
+        Err(_) => None,
+    };
 
-        let fresh = match usage_api::read_oauth_token() {
-            Ok(token) => usage_api::fetch_official_usage(&token).await.ok(),
-            Err(_) => None,
+    let mut guard = OFFICIAL.lock().unwrap();
+    match fresh {
+        Some(usage) => {
+            *guard = Some((usage.clone(), Instant::now()));
+            Some(usage)
+        }
+        // Offline or rate-limited: reuse the last good value if we have one.
+        None => guard.as_ref().map(|(u, _)| u.clone()),
+    }
+}
+
+/// The two live plan meters on their own, for the widget: the rolling 5-hour
+/// session window and the weekly all-models window.
+///
+/// Anthropic publishes no daily window, so those two are the whole of it. No
+/// transcript scan and no Console call happen here - this is the cached
+/// `/usage` reading the dashboard already shares, which is why it is cheap
+/// enough to sit behind a manual refresh button.
+pub async fn plan_meters() -> Snapshot {
+    let now = Utc::now();
+    let Some(official) = official_usage().await else {
+        // Either no Claude Code login on this machine or `/usage` is refusing
+        // right now. Both are transient from the widget's point of view: the
+        // refresh button is the remedy, so it reports rather than prescribes.
+        return Snapshot {
+            status: Health::Error {
+                message: i18n::t("claude.metersUnavailable"),
+            },
+            panels: vec![],
+            fetched_at: now,
+            next_refresh_secs: None,
         };
+    };
 
-        let mut guard = self.official.lock().unwrap();
-        match fresh {
-            Some(usage) => {
-                *guard = Some((usage.clone(), Instant::now()));
-                Some(usage)
-            }
-            // Offline or rate-limited: reuse the last good value if we have one.
-            None => guard.as_ref().map(|(u, _)| u.clone()),
-        }
+    let mut panels = Vec::new();
+    if let Some(w) = &official.five_hour {
+        panels.push(limit_meter(&i18n::t("claude.currentSession"), w, now));
+    }
+    if let Some(w) = &official.weekly {
+        panels.push(limit_meter(&i18n::t("claude.weeklyAllModels"), w, now));
+    }
+    Snapshot::ok(panels, Some(REFRESH_SECS))
+}
+
+pub struct ClaudeConnector;
+
+impl ClaudeConnector {
+    pub fn new() -> Self {
+        ClaudeConnector
     }
 }
 
@@ -164,7 +202,7 @@ impl Connector for ClaudeConnector {
     }
 
     async fn fetch(&self, ctx: &FetchCtx) -> Result<Snapshot, ConnectorError> {
-        let official = self.official_usage().await;
+        let official = official_usage().await;
         let plan = usage_api::read_plan();
         let range = ctx.range.normalized();
 

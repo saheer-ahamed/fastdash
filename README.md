@@ -62,6 +62,16 @@ The frontend drives every fetch, and only for the dashboard currently on screen 
 
 Fetches are also serialized per connector: starting a new one cancels the previous, so flipping between sub-tabs cannot burn through the GitHub Search budget or repaint stale numbers out of order.
 
+## The widget
+
+The button next to the fastdash name in the sidebar shrinks the whole app into a small always-on-top panel you can leave in the corner of the screen while you work.
+It carries one tab per connected connector, and only for GitHub and Claude: your own PRs merged and created today plus the lines those merged PRs touched, and Claude's live session and weekly plan meters.
+Drag it by its header, and press the arrow in its top-right corner to grow back into the dashboard - at exactly the size and position it had before.
+
+Nothing in the widget refreshes on a timer, not even while it is on screen.
+A tab fetches once when you first open it with nothing to show, and after that only when you press its refresh button, so the timestamp along the bottom is part of the reading.
+
+The button is absent when neither GitHub nor Claude is connected, since there would be nothing to put in it.
 ## Settings
 
 Under **Settings -> General**:
@@ -223,6 +233,7 @@ See [DESIGN.md](./DESIGN.md).
 - `src-tauri/src/engine/` - connector-agnostic core: the `Connector` trait, registry, config, keychain secrets, snapshot cache, the shared fetch path, i18n, and the shared date filter.
 - `src-tauri/src/connectors/` - self-contained connectors behind that trait.
 - `src-tauri/src/ipc.rs` - the Tauri command surface exposed to the frontend.
+- `src-tauri/src/pip.rs` - widget mode: shrinking the one window and putting it back.
 - `src/` - the React frontend, which only ever renders generic `Panel`s.
 
 ## Status

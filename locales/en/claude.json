@@ -5,6 +5,8 @@
     "tokenUsage": "Token usage",
     "currentSession": "Current session",
     "allModels": "All models",
+    "weeklyAllModels": "Weekly (all models)",
+    "metersUnavailable": "Plan limits are unavailable right now - Claude Code has to be signed in on this machine.",
     "currentSessionEst": "Current session (est.)",
     "thisWeekEst": "This week (est.)",
     "thisMonth": "This month",

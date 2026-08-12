@@ -161,6 +161,32 @@ pub fn results_truncated_note(range_label: &str, total: u64) -> Panel {
     }
 }
 
+/// The widget's three tiles: the signed-in user's own PRs merged and created in
+/// the range, and the lines their merged PRs added and removed. Deliberately not
+/// the dashboard's `stat_cards` - that one is org-wide and counts everybody.
+pub fn mine_stats(login: &str, opened: u64, merged: u64, additions: u64, deletions: u64) -> Panel {
+    Panel::StatCards {
+        title: Some(login.to_string()),
+        stats: vec![
+            Stat {
+                label: i18n::t("github.stats.prsMerged"),
+                value: fmt_count(merged),
+                sub: None,
+            },
+            Stat {
+                label: i18n::t("github.stats.prsOpened"),
+                value: fmt_count(opened),
+                sub: None,
+            },
+            Stat {
+                label: i18n::t("github.stats.myLines"),
+                value: format!("+{} / -{}", fmt_count(additions), fmt_count(deletions)),
+                sub: None,
+            },
+        ],
+    }
+}
+
 /// Warn that the numbers below exclude scopes GitHub refused to search, so a
 /// partial dashboard is not mistaken for a complete one.
 pub fn scopes_failed_note(failed: &[String]) -> Panel {
@@ -694,5 +720,30 @@ mod tests {
         assert!(message.contains("Last 7 days"), "{message}");
         assert!(message.contains("1,758"), "{message}");
         assert!(message.contains("1,000"), "{message}");
+    }
+
+    /// The widget has room for three figures and no headings, so each label has
+    /// to resolve to real copy (a missing key renders as the key itself) and the
+    /// line counts have to read as one value rather than two columns.
+    #[test]
+    fn widget_stats_are_labelled_and_grouped() {
+        let Panel::StatCards { title, stats } = mine_stats("octocat", 5, 3, 1204, 318) else {
+            panic!("expected stat cards")
+        };
+
+        assert_eq!(
+            title.as_deref(),
+            Some("octocat"),
+            "names whose PRs these are"
+        );
+        let values: Vec<&str> = stats.iter().map(|s| s.value.as_str()).collect();
+        assert_eq!(values, ["3", "5", "+1,204 / -318"]);
+        for stat in &stats {
+            assert!(
+                !stat.label.starts_with("github."),
+                "unresolved i18n key: {}",
+                stat.label
+            );
+        }
     }
 }

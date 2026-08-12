@@ -92,6 +92,8 @@ Updates ride the signed NSIS installer; Scoop and `install.ps1` keep using the p
   Nothing fetches on a timer in Rust: the frontend drives every fetch, and only for the dashboard on screen while the app window has focus.
 - `src-tauri/src/connectors/` - self-contained connectors behind the trait; adding one needs zero UI changes.
 - `src-tauri/src/ipc.rs` - the Tauri command surface exposed to the frontend.
+- `src-tauri/src/pip.rs` - widget mode: the same window shrunk to a borderless always-on-top panel and put back.
+  It is one window, not two, so `src/Pip.tsx` shares the frontend's state; nothing in it fetches on a timer, only on arrival at an empty tab and on its refresh button.
 - `src/` - React frontend; the UI only ever renders generic `Panel`s.
 
 ## Build & check commands

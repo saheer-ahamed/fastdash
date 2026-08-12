@@ -3,6 +3,7 @@
     "stats": {
       "prsOpened": "PRs created",
       "prsMerged": "PRs merged",
+      "myLines": "Lines merged",
       "contributorsActive": "Contributors active"
     },
     "table": {

@@ -208,6 +208,35 @@ pub async fn github_fetch(
     .await
 }
 
+/// The widget's GitHub reading: the signed-in user's own PRs and line counts
+/// over `range` (defaults to today). A separate, much cheaper fetch than the
+/// dashboard's - see `connectors::github::fetch_mine`.
+#[tauri::command]
+pub async fn pip_github(range: Option<DateRange>) -> Snapshot {
+    crate::connectors::github::fetch_mine(range.unwrap_or_default()).await
+}
+
+/// The widget's Claude reading: the live 5-hour session and weekly plan meters,
+/// off the same throttled `/usage` cache the dashboard uses.
+#[tauri::command]
+pub async fn pip_claude() -> Snapshot {
+    crate::connectors::claude::plan_meters().await
+}
+
+/// Shrink the main window into the always-on-top widget, or restore it.
+///
+/// Window shape is decided here rather than in the frontend so the geometry to
+/// restore has one owner, and so the frontend needs no window-mutating
+/// permissions beyond dragging.
+#[tauri::command]
+pub fn set_pip_mode(app: AppHandle, enabled: bool) -> Result<(), String> {
+    use tauri::Manager;
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "main window is gone".to_string())?;
+    crate::pip::set_mode(&window, enabled).map_err(|e| e.to_string())
+}
+
 /// Open a URL in the user's default external browser. Restricted to http(s) so a
 /// panel link can never be used to launch an arbitrary scheme locally.
 #[tauri::command]
