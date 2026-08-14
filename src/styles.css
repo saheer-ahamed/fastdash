@@ -1771,9 +1771,8 @@ a:hover {
 }
 
 /* The minimized square. It is the whole window, so it fills the viewport
-   rather than sitting in it, and the rounding on the outer corners is what
-   keeps a 34px window from reading as a rendering glitch on the edge of the
-   screen. */
+   rather than sitting in it, and it is square-cornered like everything else
+   here: the app has no rounded surfaces anywhere. */
 .tiny {
   display: flex;
   align-items: center;
@@ -1783,18 +1782,11 @@ a:hover {
   padding: 0;
   background: var(--panel);
   border: 1px solid var(--border-bright);
-  border-radius: 8px;
   color: var(--muted);
   cursor: pointer;
   /* A drag that selected the mark inside would leave the square highlighted
      for the rest of the session. */
   user-select: none;
-}
-
-.tiny:hover,
-.tiny:focus-visible {
-  border-color: var(--fill);
-  color: var(--bright);
 }
 
 /* Vertical, because that is the only direction the square can be dragged -
@@ -1806,7 +1798,6 @@ a:hover {
 .tiny-mark {
   width: 12px;
   height: 12px;
-  border-radius: 3px;
   background: var(--fill);
   /* Dimmed at rest and full strength under the pointer, so the square looks
      like something to press without being bright enough to catch the eye while

@@ -3,28 +3,16 @@
 //
 // It is the same window as the dashboard, resized by the backend (see
 // `src-tauri/src/pip.rs`), so this component simply replaces the app shell while
-// widget mode is on. That also means it inherits nothing from the dashboard's
-// fetch loop, which is the point: nothing here polls. A tab fetches once when
-// you first open it with nothing to show, and after that only when you press
-// Refresh. A widget parked on screen all day costs no API budget.
+// widget mode is on. It draws what it is given and owns nothing that has to
+// outlive it: what it is looking at, and everything it has fetched, is held by
+// `App` (see `pipstate.ts`), because this component is unmounted every time the
+// window changes shape.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { AppConfig, Health, Panel, Snapshot } from "./types";
+import type { Health, Panel, Snapshot } from "./types";
+import type { PipState, Tab } from "./pipstate";
 import { t } from "./i18n";
-import { todayRange } from "./range";
-
-/// Which connectors have a tab. A connector that is not connected has none -
-/// an empty tab explaining it is not set up is exactly the kind of thing a
-/// glanceable widget has no room for.
-export interface PipAvailability {
-  github: boolean;
-  claude: boolean;
-}
-
-/// The three shapes the one window has, mirroring `pip::Mode` in Rust. The
-/// backend owns the geometry; this is only the name the frontend asks by.
-export type WindowMode = "dashboard" | "widget" | "tiny";
 
 /// How long the widget may sit unwatched before it folds itself into the
 /// minimized square. Long enough that glancing away mid-thought does not lose
@@ -52,86 +40,28 @@ export function PipToggle({ onOpen }: { onOpen: () => void }) {
   );
 }
 
-type Tab = "github" | "claude";
-
 const TAB_LABEL: Record<Tab, string> = { github: "GitHub", claude: "Claude" };
 
-/// One view the widget can show: a connector, and for GitHub the account within
-/// it. Everything - the cache, the in-flight flag, the fetch - is keyed on this
-/// rather than on the tab, so two accounts are two separate readings and
-/// switching between them can never paint one under the other's name.
-type View = { tab: Tab; account: string | null };
-
-/// Cache key for a view. A label cannot contain `|`, so this cannot collide.
-const viewKey = (v: View) => `${v.tab}|${v.account ?? ""}`;
-
 export default function Pip({
-  available,
+  state,
   watched,
   onMinimize,
   onExit,
 }: {
-  available: PipAvailability;
+  state: PipState;
   /** Whether the app holds focus - see `useWindowFocus` in `App.tsx`. */
   watched: boolean;
   onMinimize: () => void;
   onExit: () => void;
 }) {
-  const tabs = useMemo(
-    () => (["github", "claude"] as Tab[]).filter((id) => available[id]),
-    [available],
-  );
-  const [tab, setTab] = useState<Tab>(tabs[0] ?? "github");
+  const { tabs, tab, setTab, accounts, account, setAccount, snap, busy, pending, refresh } =
+    state;
   // Whether the pointer is over the widget. Focus alone is the wrong test for
   // "is this being looked at": the widget is a thing you glance at while typing
   // in another app, and it never has focus then - but a pointer resting on it
   // is someone reading it, and folding it away under their cursor would be
   // taking it away mid-glance.
   const [hovered, setHovered] = useState(false);
-  // The configured GitHub accounts, in the order the Connectors page lists
-  // them. Read once: the widget cannot reach the settings that change it.
-  const [accounts, setAccounts] = useState<string[]>([]);
-  const [account, setAccount] = useState<string | null>(null);
-  // Whether the account list has come back. The GitHub view waits for it, so
-  // it is also the difference between "nothing to show" and "not yet asked".
-  const [accountsRead, setAccountsRead] = useState(false);
-  const [snaps, setSnaps] = useState<Record<string, Snapshot>>({});
-  const [loading, setLoading] = useState<Record<string, boolean>>({});
-  // Read inside the auto-fetch effect without making it a dependency, which
-  // would re-run it - and fetch again - every time a snapshot lands.
-  const snapsRef = useRef(snaps);
-  snapsRef.current = snaps;
-  const loadingRef = useRef(loading);
-  loadingRef.current = loading;
-
-  useEffect(() => {
-    let cancelled = false;
-    invoke<AppConfig>("get_config")
-      .then((cfg) => {
-        if (cancelled) return;
-        const labels = cfg.github.accounts.map((a) => a.label);
-        setAccounts(labels);
-        // Pick the first account up front rather than leaving it null: the
-        // fetch would resolve null to the first account anyway, and then the
-        // sub-tab row would light up nothing while showing that account.
-        setAccount(labels[0] ?? null);
-      })
-      .catch((e) => console.error(e))
-      // A config read that fails must still release the GitHub view, or the
-      // widget waits for an account list that is never coming. The fetch then
-      // runs unlabelled, which the backend resolves to the first account.
-      .finally(() => {
-        if (!cancelled) setAccountsRead(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // A connector disconnected while the widget was open takes its tab with it.
-  useEffect(() => {
-    if (!available[tab] && tabs.length > 0) setTab(tabs[0]);
-  }, [available, tab, tabs]);
 
   // Left alone for a few seconds, the widget gets out of the way by itself.
   // The timer is restarted by the effect re-running, so any moment of attention
@@ -142,54 +72,6 @@ export default function Pip({
     const timer = setTimeout(onMinimize, IDLE_MINIMIZE_MS);
     return () => clearTimeout(timer);
   }, [watched, hovered, onMinimize]);
-
-  // The account only qualifies the GitHub view; Claude has one reading.
-  const view: View = { tab, account: tab === "github" ? account : null };
-  const key = viewKey(view);
-
-  const load = useCallback((which: View) => {
-    // The Refresh button is a button, so it can be pressed twice: a second
-    // fetch of the same view piled on the first would spend the rate limit
-    // twice to paint the same numbers.
-    const k = viewKey(which);
-    if (loadingRef.current[k]) return;
-    setLoading((l) => ({ ...l, [k]: true }));
-    const call =
-      which.tab === "github"
-        ? invoke<Snapshot>("pip_github", {
-            label: which.account,
-            range: todayRange(),
-          })
-        : invoke<Snapshot>("pip_claude");
-    call
-      .then((snap) => setSnaps((s) => ({ ...s, [k]: snap })))
-      .catch((e) => console.error(e))
-      .finally(() => setLoading((l) => ({ ...l, [k]: false })));
-  }, []);
-
-  // Fetch on arrival at a view that has nothing to show, and only then. Coming
-  // back to one already loaded paints what it had - however old that is -
-  // because the alternative is a widget that quietly fetches every time the eye
-  // passes over it.
-  //
-  // The GitHub view waits for the account list, so the first fetch is filed
-  // under the account it actually belongs to rather than under `null` and then
-  // fetched a second time - two calls on the same rate limit for one number -
-  // when the label lands a moment later.
-  const waitingForAccounts = tab === "github" && !accountsRead;
-  useEffect(() => {
-    if (!available[tab] || waitingForAccounts) return;
-    if (snapsRef.current[key]) return;
-    load({ tab, account: tab === "github" ? account : null });
-  }, [tab, account, key, available, waitingForAccounts, load]);
-
-  const snap = snaps[key];
-  const busy = !!loading[key];
-  // Everything between opening the widget and having something to draw: the
-  // config read, the gap before the effect fires, and the fetch itself. They
-  // are one wait as far as the user is concerned, and the window is far too
-  // small for an unexplained blank to read as anything but broken.
-  const pending = busy || waitingForAccounts;
 
   return (
     <div
@@ -215,7 +97,7 @@ export default function Pip({
         <div className="pip-head-actions">
           <button
             className="pip-icon"
-            onClick={() => load(view)}
+            onClick={refresh}
             disabled={busy}
             title={t("pip.refresh")}
             aria-label={t("pip.refresh")}
