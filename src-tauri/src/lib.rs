@@ -82,6 +82,8 @@ pub fn run() {
             ipc::pip_github,
             ipc::pip_claude,
             ipc::set_pip_mode,
+            ipc::nudge_tiny,
+            ipc::close_app,
             ipc::open_external,
         ])
         .setup(|app| {

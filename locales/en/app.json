@@ -24,9 +24,15 @@
     "open": "Widget",
     "openHint": "Shrink to a small always-on-top widget",
     "exit": "Back to the dashboard",
+    "minimize": "Minimize to the edge of the screen",
+    "close": "Close fastdash",
     "refresh": "Refresh",
     "failed": "Couldn't load - try refresh",
     "empty": "Nothing to show yet"
+  },
+  "tiny": {
+    "expand": "Open the widget",
+    "hint": "Click to open - drag to move along the edge"
   },
   "range": {
     "today": "Today",
