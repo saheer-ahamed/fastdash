@@ -24,7 +24,8 @@ import type {
 import Settings from "./Settings";
 import Welcome from "./Welcome";
 import Connectors from "./connectors/ConnectorsPage";
-import Pip, { PipToggle, type PipAvailability, type WindowMode } from "./Pip";
+import Pip, { PipToggle } from "./Pip";
+import { usePipState, type PipAvailability, type WindowMode } from "./pipstate";
 import Tiny from "./Tiny";
 import RangeFilter from "./RangeFilter";
 import { rangeKey, todayRange, type PresetId } from "./range";
@@ -95,6 +96,10 @@ export default function App() {
     [connectors],
   );
   const canPip = pipAvailable.github || pipAvailable.claude;
+  // Held here rather than inside the widget, which is unmounted every time the
+  // window changes shape - so the tab, the account and the readings survive
+  // folding into the square and going back to the dashboard.
+  const pipState = usePipState(mode === "widget", pipAvailable);
 
   // Resize the window first and swap the view only once it has actually
   // resized: painting the widget into a full-size window, or the dashboard into
@@ -310,7 +315,7 @@ export default function App() {
   if (mode === "widget") {
     return (
       <Pip
-        available={pipAvailable}
+        state={pipState}
         watched={focused}
         onMinimize={minimizePip}
         onExit={exitPip}
