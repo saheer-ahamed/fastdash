@@ -22,6 +22,16 @@ export interface PipAvailability {
   claude: boolean;
 }
 
+/// The three shapes the one window has, mirroring `pip::Mode` in Rust. The
+/// backend owns the geometry; this is only the name the frontend asks by.
+export type WindowMode = "dashboard" | "widget" | "tiny";
+
+/// How long the widget may sit unwatched before it folds itself into the
+/// minimized square. Long enough that glancing away mid-thought does not lose
+/// the panel, short enough that a widget forgotten behind other work stops
+/// covering it.
+const IDLE_MINIMIZE_MS = 5000;
+
 /// The control that shrinks the app into the widget.
 ///
 /// It lives in the topbar of every page rather than in one of them, because it
@@ -57,9 +67,14 @@ const viewKey = (v: View) => `${v.tab}|${v.account ?? ""}`;
 
 export default function Pip({
   available,
+  watched,
+  onMinimize,
   onExit,
 }: {
   available: PipAvailability;
+  /** Whether the app holds focus - see `useWindowFocus` in `App.tsx`. */
+  watched: boolean;
+  onMinimize: () => void;
   onExit: () => void;
 }) {
   const tabs = useMemo(
@@ -67,6 +82,12 @@ export default function Pip({
     [available],
   );
   const [tab, setTab] = useState<Tab>(tabs[0] ?? "github");
+  // Whether the pointer is over the widget. Focus alone is the wrong test for
+  // "is this being looked at": the widget is a thing you glance at while typing
+  // in another app, and it never has focus then - but a pointer resting on it
+  // is someone reading it, and folding it away under their cursor would be
+  // taking it away mid-glance.
+  const [hovered, setHovered] = useState(false);
   // The configured GitHub accounts, in the order the Connectors page lists
   // them. Read once: the widget cannot reach the settings that change it.
   const [accounts, setAccounts] = useState<string[]>([]);
@@ -111,6 +132,16 @@ export default function Pip({
   useEffect(() => {
     if (!available[tab] && tabs.length > 0) setTab(tabs[0]);
   }, [available, tab, tabs]);
+
+  // Left alone for a few seconds, the widget gets out of the way by itself.
+  // The timer is restarted by the effect re-running, so any moment of attention
+  // - focus returning, the pointer arriving - buys another full interval rather
+  // than a fraction of one.
+  useEffect(() => {
+    if (watched || hovered) return;
+    const timer = setTimeout(onMinimize, IDLE_MINIMIZE_MS);
+    return () => clearTimeout(timer);
+  }, [watched, hovered, onMinimize]);
 
   // The account only qualifies the GitHub view; Claude has one reading.
   const view: View = { tab, account: tab === "github" ? account : null };
@@ -161,7 +192,11 @@ export default function Pip({
   const pending = busy || waitingForAccounts;
 
   return (
-    <div className="pip">
+    <div
+      className="pip"
+      onPointerEnter={() => setHovered(true)}
+      onPointerLeave={() => setHovered(false)}
+    >
       {/* The whole header drags the window: with the title bar gone this is the
           only way to move the widget. Buttons inside it opt out, or a click on
           Refresh would register as the start of a drag. */}
@@ -194,6 +229,26 @@ export default function Pip({
             aria-label={t("pip.exit")}
           >
             {"↗"}
+          </button>
+          {/* The window has no title bar of its own, so the last two controls
+              every window is expected to have live here. Minimize folds the
+              widget into the square rather than into the taskbar: a widget the
+              taskbar swallowed is one the user has to go and find. */}
+          <button
+            className="pip-icon"
+            onClick={onMinimize}
+            title={t("pip.minimize")}
+            aria-label={t("pip.minimize")}
+          >
+            {"–"}
+          </button>
+          <button
+            className="pip-icon pip-close"
+            onClick={() => void invoke("close_app").catch((e) => console.error(e))}
+            title={t("pip.close")}
+            aria-label={t("pip.close")}
+          >
+            {"✕"}
           </button>
         </div>
       </header>

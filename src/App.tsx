@@ -24,7 +24,8 @@ import type {
 import Settings from "./Settings";
 import Welcome from "./Welcome";
 import Connectors from "./connectors/ConnectorsPage";
-import Pip, { PipToggle, type PipAvailability } from "./Pip";
+import Pip, { PipToggle, type PipAvailability, type WindowMode } from "./Pip";
+import Tiny from "./Tiny";
 import RangeFilter from "./RangeFilter";
 import { rangeKey, todayRange, type PresetId } from "./range";
 import { getLocale, setLocale, t } from "./i18n";
@@ -85,7 +86,7 @@ export default function App() {
   // gets a tab - so with neither connected there is nothing to shrink into and
   // the toggle is not offered at all. Read off the same `configured` flag the
   // sidebar filters on, so the two can never disagree about what is set up.
-  const [pip, setPip] = useState(false);
+  const [mode, setMode] = useState<WindowMode>("dashboard");
   const pipAvailable: PipAvailability = useMemo(
     () => ({
       github: connectors.some((c) => c.id === "github" && c.configured),
@@ -98,11 +99,17 @@ export default function App() {
   // Resize the window first and swap the view only once it has actually
   // resized: painting the widget into a full-size window, or the dashboard into
   // a 300px one, is a visible flash of the wrong layout either way.
-  const togglePip = useCallback((next: boolean) => {
-    invoke("set_pip_mode", { enabled: next })
-      .then(() => setPip(next))
+  const goMode = useCallback((next: WindowMode) => {
+    invoke("set_pip_mode", { mode: next })
+      .then(() => setMode(next))
       .catch((e) => console.error(e));
   }, []);
+  // Stable callbacks, not inline arrows: the widget's idle timer is keyed on
+  // its handlers, so a fresh identity on every render of this component would
+  // restart the countdown before it could ever finish.
+  const openPip = useCallback(() => goMode("widget"), [goMode]);
+  const minimizePip = useCallback(() => goMode("tiny"), [goMode]);
+  const exitPip = useCallback(() => goMode("dashboard"), [goMode]);
 
   // Read the connector list: once on startup, and again whenever a connector's
   // settings are saved. Whether a connector is connected is the backend's
@@ -294,15 +301,27 @@ export default function App() {
       : snapshots[snapKey(id, range)]?.status;
 
   // Widget mode replaces the whole shell rather than rendering inside it: the
-  // window is 300px wide by this point, and a sidebar would be most of it.
-  if (pip) {
-    return <Pip available={pipAvailable} onExit={() => togglePip(false)} />;
+  // window is 300px wide by this point, and a sidebar would be most of it. The
+  // minimized square replaces even that: by then the window is 34px, which is
+  // room for one glyph.
+  if (mode === "tiny") {
+    return <Tiny onExpand={openPip} />;
+  }
+  if (mode === "widget") {
+    return (
+      <Pip
+        available={pipAvailable}
+        watched={focused}
+        onMinimize={minimizePip}
+        onExit={exitPip}
+      />
+    );
   }
 
   // Built once and handed to whichever topbar is on screen, so every page
   // offers the same control in the same place - and pages with nothing to
   // shrink into (nothing connected) get nothing.
-  const pipToggle = canPip ? <PipToggle onOpen={() => togglePip(true)} /> : null;
+  const pipToggle = canPip ? <PipToggle onOpen={openPip} /> : null;
 
   return (
     <div className="app">

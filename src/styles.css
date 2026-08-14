@@ -1762,6 +1762,63 @@ a:hover {
   cursor: default;
 }
 
+/* The one destructive control in the header, marked the way every title bar
+   marks it: the same as its neighbours until you are over it. */
+.pip-close:hover:not(:disabled) {
+  background: var(--err);
+  border-color: transparent;
+  color: #fff;
+}
+
+/* The minimized square. It is the whole window, so it fills the viewport
+   rather than sitting in it, and the rounding on the outer corners is what
+   keeps a 34px window from reading as a rendering glitch on the edge of the
+   screen. */
+.tiny {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100vw;
+  height: 100vh;
+  padding: 0;
+  background: var(--panel);
+  border: 1px solid var(--border-bright);
+  border-radius: 8px;
+  color: var(--muted);
+  cursor: pointer;
+  /* A drag that selected the mark inside would leave the square highlighted
+     for the rest of the session. */
+  user-select: none;
+}
+
+.tiny:hover,
+.tiny:focus-visible {
+  border-color: var(--fill);
+  color: var(--bright);
+}
+
+/* Vertical, because that is the only direction the square can be dragged -
+   the cursor says so before the user finds out by trying. */
+.tiny.dragging {
+  cursor: ns-resize;
+}
+
+.tiny-mark {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  background: var(--fill);
+  /* Dimmed at rest and full strength under the pointer, so the square looks
+     like something to press without being bright enough to catch the eye while
+     you are working on something else. */
+  opacity: 0.75;
+}
+
+.tiny:hover .tiny-mark,
+.tiny:focus-visible .tiny-mark {
+  opacity: 1;
+}
+
 /* GitHub account sub-tabs. Scrolls sideways rather than wrapping: a second row
    would push the numbers out of a window that cannot grow, and the selected
    chip is the one that has to stay readable. */

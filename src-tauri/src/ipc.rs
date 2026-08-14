@@ -224,18 +224,35 @@ pub async fn pip_claude() -> Snapshot {
     crate::connectors::claude::plan_meters().await
 }
 
-/// Shrink the main window into the always-on-top widget, or restore it.
+/// Give the main window one of its three shapes: the dashboard, the always-on-
+/// top widget, or the square the widget minimizes into.
 ///
 /// Window shape is decided here rather than in the frontend so the geometry to
 /// restore has one owner, and so the frontend needs no window-mutating
 /// permissions beyond dragging.
 #[tauri::command]
-pub fn set_pip_mode(app: AppHandle, enabled: bool) -> Result<(), String> {
+pub fn set_pip_mode(app: AppHandle, mode: crate::pip::Mode) -> Result<(), String> {
+    crate::pip::set_mode(&main_window(&app)?, mode).map_err(|e| e.to_string())
+}
+
+/// Slide the minimized square up or down its edge by `dy` physical pixels.
+/// Ignored in any other mode, so a drag that races the widget unfolding cannot
+/// move the widget itself.
+#[tauri::command]
+pub fn nudge_tiny(app: AppHandle, dy: i32) -> Result<(), String> {
+    crate::pip::nudge_tiny(&main_window(&app)?, dy).map_err(|e| e.to_string())
+}
+
+/// Close the app from a window that has no title bar to close it with.
+#[tauri::command]
+pub fn close_app(app: AppHandle) -> Result<(), String> {
+    main_window(&app)?.close().map_err(|e| e.to_string())
+}
+
+fn main_window(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
     use tauri::Manager;
-    let window = app
-        .get_webview_window("main")
-        .ok_or_else(|| "main window is gone".to_string())?;
-    crate::pip::set_mode(&window, enabled).map_err(|e| e.to_string())
+    app.get_webview_window("main")
+        .ok_or_else(|| "main window is gone".to_string())
 }
 
 /// Open a URL in the user's default external browser. Restricted to http(s) so a
