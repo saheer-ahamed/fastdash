@@ -3,6 +3,7 @@
 // to concrete dates, so the backend has a single contract - a start and an end
 // day - and derives panel titles from it.
 
+import { useEffect, useState } from "react";
 import type { DateRange } from "./types";
 
 export type PresetId = "today" | "yesterday" | "last7" | "last30" | "custom";
@@ -59,3 +60,59 @@ export function isSameRange(a: DateRange, b: DateRange): boolean {
 
 // Stable cache key for a range. `_` can't appear in an ISO date.
 export const rangeKey = (r: DateRange): string => `${r.start}_${r.end}`;
+
+// Milliseconds from `now` to the next local midnight, never zero or negative so
+// a timer built on it always moves forward.
+export function msUntilNextDay(now: Date = new Date()): number {
+  const midnight = new Date(now);
+  midnight.setHours(24, 0, 0, 0);
+  return Math.max(1, midnight.getTime() - now.getTime());
+}
+
+// Today's local calendar day, re-read as the day rolls over.
+//
+// Every preset except "custom" is relative to today, and the app is long-lived:
+// left running past midnight it would otherwise keep fetching - and keep
+// polling - the day it was opened on, with the "Today" chip still lit. The
+// numbers then never move again until the app is relaunched, which is exactly
+// what a stale connector looks like.
+//
+// Two triggers, because neither alone is enough. The timer is aimed at the next
+// midnight, but a timer does not run while the machine sleeps and fires late
+// when it wakes; focus and visibility catch the case where the app was suspended
+// across the boundary. Both funnel into the same re-read, and the state only
+// changes when the day string actually does, so a spurious wakeup costs nothing.
+export function useToday(): string {
+  const [today, setToday] = useState(() => toISODate(new Date()));
+
+  useEffect(() => {
+    let timer = 0;
+
+    const check = () => {
+      setToday((cur) => {
+        const now = toISODate(new Date());
+        return now === cur ? cur : now;
+      });
+      // Re-aimed after every check rather than set on an interval: a fixed
+      // 24h interval would drift off midnight, and the wake-up checks below
+      // must not leave a stale timeout aimed at yesterday's boundary.
+      schedule();
+    };
+
+    const schedule = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(check, msUntilNextDay());
+    };
+
+    schedule();
+    window.addEventListener("focus", check);
+    document.addEventListener("visibilitychange", check);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("focus", check);
+      document.removeEventListener("visibilitychange", check);
+    };
+  }, []);
+
+  return today;
+}

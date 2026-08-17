@@ -28,7 +28,14 @@ import Pip, { PipToggle } from "./Pip";
 import { usePipState, type PipAvailability, type WindowMode } from "./pipstate";
 import Tiny from "./Tiny";
 import RangeFilter from "./RangeFilter";
-import { rangeKey, todayRange, type PresetId } from "./range";
+import {
+  isSameRange,
+  presetRange,
+  rangeKey,
+  todayRange,
+  useToday,
+  type PresetId,
+} from "./range";
 import { getLocale, setLocale, t } from "./i18n";
 import { useDevMode } from "./devmode";
 import { checkForUpdate, installUpdate, type Update } from "./updater";
@@ -67,10 +74,16 @@ export default function App() {
   const snapshotsRef = useRef(snapshots);
   snapshotsRef.current = snapshots;
   const [loading, setLoading] = useState(false);
+  // Whether the last fetch of a (non-GitHub) dashboard failed outright. The
+  // cached snapshot stays on screen; the topbar says it is not what it looks
+  // like. GitHub keeps its own per-view flag - see `useGithubState`.
+  const [failed, setFailed] = useState(false);
   // The date filter, shared by every connector so switching tabs keeps showing
   // the same days. Defaults to today; `preset` is only which chip is lit.
   const [range, setRange] = useState<DateRange>(todayRange);
   const [preset, setPreset] = useState<PresetId>("today");
+  // The day the app believes it is on, re-read as the calendar rolls over.
+  const today = useToday();
   // Bumped on language change to re-render chrome that calls t().
   const [, setLang] = useState("en");
   // Fetching is gated on the app actually being watched: the window has focus
@@ -153,6 +166,25 @@ export default function App() {
       .catch(() => {});
   }, []);
 
+  // Follow the calendar. Every preset but "custom" is relative to today, and the
+  // range resolved when the app opened is what every fetch carries and what the
+  // polling interval is keyed on - so an app left running past midnight went on
+  // asking for the day it was launched on, with the "Today" chip still lit, and
+  // no amount of refreshing could move it until it was relaunched.
+  //
+  // Re-resolving here, in one place, keeps that the date filter's own business:
+  // the fetch paths below simply see the range change and do what they already
+  // do for a chip click. The identity is kept when the days did not actually
+  // move, so a wake-up on the same day cannot restart the polling interval, and
+  // "custom" is left alone - it is the one span the user pinned by hand.
+  useEffect(() => {
+    if (preset === "custom") return;
+    setRange((cur) => {
+      const next = presetRange(preset, cur);
+      return isSameRange(cur, next) ? cur : next;
+    });
+  }, [today, preset]);
+
   // Every backend fetch emits `connector:update`, whoever asked for it, so a
   // snapshot lands here exactly once no matter which path produced it.
   useEffect(() => {
@@ -167,13 +199,30 @@ export default function App() {
     };
   }, []);
 
+  // A failure surfaces as a fetch that returns nothing at all - the backend
+  // reports everything it can name (auth, rate limits, HTTP) inside the snapshot
+  // as a banner. Without this the topbar kept showing the last good reading and
+  // its old timestamp, which is indistinguishable from a refresh that found
+  // nothing new; the GitHub view has said so for a while, and every other
+  // dashboard now says it the same way.
   const refresh = useCallback((id: string, r: DateRange) => {
     setLoading(true);
     return invoke<Snapshot>("fetch_connector", { id, range: r })
-      .then((snap) => setSnapshots((s) => ({ ...s, [snapKey(id, r)]: snap })))
-      .catch((e) => console.error(e))
+      .then((snap) => {
+        setSnapshots((s) => ({ ...s, [snapKey(id, r)]: snap }));
+        setFailed(false);
+      })
+      .catch((e) => {
+        console.error(e);
+        setFailed(true);
+      })
       .finally(() => setLoading(false));
   }, []);
+
+  // The flag belongs to one dashboard's last fetch, so moving to another tab or
+  // another range starts clean instead of accusing a view of a failure that was
+  // never its own.
+  useEffect(() => setFailed(false), [active, range]);
 
   // After a connector's settings are saved its cached snapshots describe the old
   // settings, so drop them - the tab refetches when it is next opened rather
@@ -408,10 +457,16 @@ export default function App() {
             <header className="topbar">
               <h1>{activeName}</h1>
               <div className="actions">
-                {snap && (
-                  <span className="muted">
-                    {t("app.updated", { time: fetchedLabel(snap.fetchedAt) })}
+                {failed && !loading ? (
+                  <span className="stale" role="status">
+                    {t("app.refreshFailed")}
                   </span>
+                ) : (
+                  snap && (
+                    <span className="muted">
+                      {t("app.updated", { time: fetchedLabel(snap.fetchedAt) })}
+                    </span>
+                  )
                 )}
                 <button
                   className="refresh"
