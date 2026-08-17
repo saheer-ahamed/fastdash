@@ -13,7 +13,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AppConfig, Snapshot } from "./types";
-import { todayRange } from "./range";
+import { todayRange, useToday } from "./range";
 
 /// Which connectors have a tab. A connector that is not connected has none -
 /// an empty tab explaining it is not set up is exactly the kind of thing a
@@ -35,8 +35,15 @@ export type Tab = "github" | "claude";
 /// switching between them can never paint one under the other's name.
 type View = { tab: Tab; account: string | null };
 
-/// Cache key for a view. A label cannot contain `|`, so this cannot collide.
-const viewKey = (v: View) => `${v.tab}|${v.account ?? ""}`;
+/// Cache key for a view on a given day. A label cannot contain `|`, so this
+/// cannot collide.
+///
+/// The day is part of the key because a reading is about a day: the widget
+/// fetches once per view and then keeps what it has, so without it a widget left
+/// open past midnight would show yesterday's numbers under today's date forever.
+/// With it, the new day is simply a view nothing has fetched yet, and the
+/// arrival fetch below covers it - no polling, no second code path.
+const viewKey = (v: View, day: string) => `${day}|${v.tab}|${v.account ?? ""}`;
 
 /// Everything the widget is looking at, and what it has already fetched.
 export interface PipState {
@@ -110,28 +117,35 @@ export function usePipState(active: boolean, available: PipAvailability): PipSta
     if (!available[tab] && tabs.length > 0) setTab(tabs[0]);
   }, [available, tab, tabs]);
 
+  // The day the readings belong to, re-read as the calendar rolls over.
+  const today = useToday();
   // The account only qualifies the GitHub view; Claude has one reading.
-  const key = viewKey({ tab, account: tab === "github" ? account : null });
+  const key = viewKey({ tab, account: tab === "github" ? account : null }, today);
 
-  const load = useCallback((which: View) => {
-    // The Refresh button is a button, so it can be pressed twice: a second
-    // fetch of the same view piled on the first would spend the rate limit
-    // twice to paint the same numbers.
-    const k = viewKey(which);
-    if (loadingRef.current[k]) return;
-    setLoading((l) => ({ ...l, [k]: true }));
-    const call =
-      which.tab === "github"
-        ? invoke<Snapshot>("pip_github", {
-            label: which.account,
-            range: todayRange(),
-          })
-        : invoke<Snapshot>("pip_claude");
-    call
-      .then((snap) => setSnaps((s) => ({ ...s, [k]: snap })))
-      .catch((e) => console.error(e))
-      .finally(() => setLoading((l) => ({ ...l, [k]: false })));
-  }, []);
+  const load = useCallback(
+    (which: View, day: string) => {
+      // The Refresh button is a button, so it can be pressed twice: a second
+      // fetch of the same view piled on the first would spend the rate limit
+      // twice to paint the same numbers.
+      const k = viewKey(which, day);
+      if (loadingRef.current[k]) return;
+      setLoading((l) => ({ ...l, [k]: true }));
+      const call =
+        which.tab === "github"
+          ? invoke<Snapshot>("pip_github", {
+              label: which.account,
+              // Resolved at fetch time, not when the widget opened, so a
+              // request made after midnight asks about the day it is made on.
+              range: todayRange(),
+            })
+          : invoke<Snapshot>("pip_claude");
+      call
+        .then((snap) => setSnaps((s) => ({ ...s, [k]: snap })))
+        .catch((e) => console.error(e))
+        .finally(() => setLoading((l) => ({ ...l, [k]: false })));
+    },
+    [],
+  );
 
   // Fetch on arrival at a view that has nothing to show, and only then. Coming
   // back to one already loaded paints what it had - however old that is -
@@ -146,15 +160,15 @@ export function usePipState(active: boolean, available: PipAvailability): PipSta
   useEffect(() => {
     if (!active || !available[tab] || waitingForAccounts) return;
     if (snapsRef.current[key]) return;
-    load({ tab, account: tab === "github" ? account : null });
-  }, [active, tab, account, key, available, waitingForAccounts, load]);
+    load({ tab, account: tab === "github" ? account : null }, today);
+  }, [active, tab, account, today, key, available, waitingForAccounts, load]);
 
   const busy = !!loading[key];
-  // Keyed on the view's two parts rather than on a view object, which is
-  // rebuilt every render and would hand the header a new Refresh every time.
+  // Keyed on the view's parts rather than on a view object, which is rebuilt
+  // every render and would hand the header a new Refresh every time.
   const refresh = useCallback(
-    () => load({ tab, account: tab === "github" ? account : null }),
-    [load, tab, account],
+    () => load({ tab, account: tab === "github" ? account : null }, today),
+    [load, tab, account, today],
   );
 
   return {
