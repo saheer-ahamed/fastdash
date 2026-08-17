@@ -92,7 +92,11 @@ export default function Tiny({ onExpand }: { onExpand: () => void }) {
       title={t("tiny.hint")}
       aria-label={t("tiny.expand")}
     >
-      <span className="tiny-mark" aria-hidden />
+      {/* The app's own icon, so the docked square is recognisably this app and
+          not an anonymous handle. It is inert: the square owns the gesture, and
+          an image left draggable would let the webview start its own drag in
+          the middle of one of ours. */}
+      <img className="tiny-mark" src="/favicon.png" alt="" draggable={false} aria-hidden />
     </button>
   );
 }
