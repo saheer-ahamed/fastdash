@@ -1795,10 +1795,18 @@ a:hover {
   cursor: ns-resize;
 }
 
+/* The app icon, sized so it sits in the 34px window the way an icon sits in a
+   dock - inset enough that the square still reads as a frame around it. The
+   source is the 128px master, so it stays sharp on a scaled display, and the
+   fixed box plus `contain` keeps it square whatever the file's aspect is. */
 .tiny-mark {
-  width: 12px;
-  height: 12px;
-  background: var(--fill);
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+  /* The square is a click-or-drag gesture; the image must not intercept a
+     pointer or offer a drag of its own. */
+  pointer-events: none;
+  -webkit-user-drag: none;
   /* Dimmed at rest and full strength under the pointer, so the square looks
      like something to press without being bright enough to catch the eye while
      you are working on something else. */
