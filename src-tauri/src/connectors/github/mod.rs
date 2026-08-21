@@ -40,6 +40,7 @@
 //! first account, all orgs.
 
 mod aggregate;
+mod cache;
 mod client;
 mod config;
 pub mod device_flow;
@@ -499,6 +500,7 @@ async fn run_fetch(
 }
 
 /// The date-filtered PR sets for one scope over the selected range.
+#[derive(Clone)]
 struct ScopeSets {
     /// PRs created inside the range: the cohort every count column splits.
     opened: Vec<SearchItem>,
@@ -518,6 +520,13 @@ struct ScopeSets {
 /// entry. `Ok(None)` means the Search API answered 422 - GitHub's way of saying
 /// this token cannot see the scope, whether because it does not exist or because
 /// the token is not allowed to view it.
+///
+/// A poll that changes nothing costs one request, not three paginated ones:
+/// `updated:{bounds}` is a superset of all three queries below - creating,
+/// merging and closing a PR all touch it - so a probe of that superset
+/// (`search_probe`) that matches the last one taken for this scope and range
+/// proves every result set is still exactly what it was, and the cached sets
+/// are handed back untouched.
 ///
 /// Three queries, and deliberately no fourth for "still open": a merged PR is
 /// closed too, so the `created` results that carry no `closed_at` are precisely
@@ -552,6 +561,23 @@ async fn search_scope(
         format!("{scope} type:pr is:closed is:unmerged updated:{bounds}"),
     ];
 
+    // One request that answers "has anything in this window moved at all?".
+    // A 422 here means the same thing it means below: the token cannot see
+    // this scope.
+    let probe = match client
+        .search_probe(&format!("{scope} type:pr updated:{bounds}"))
+        .await
+    {
+        Ok(p) => Some(p),
+        Err(GithubError::Status { code: 422, .. }) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    if let Some(probe) = &probe {
+        if let Some(sets) = cache::unchanged_scope(client.token(), scope, bounds, probe) {
+            return Ok(Some(sets));
+        }
+    }
+
     let mut results = Vec::with_capacity(queries.len());
     for q in queries {
         match client.search_issues(&q, cancel).await {
@@ -581,12 +607,18 @@ async fn search_scope(
         .filter(|it| matches!(it.closed_at, Some(at) if at >= window.0 && at <= window.1))
         .collect();
 
-    Ok(Some(ScopeSets {
+    let sets = ScopeSets {
         opened,
         merged,
         closed,
         truncated_total,
-    }))
+    };
+    // Store against the probe taken *before* the searches, never a fresher one:
+    // anything that landed while they were in flight must still invalidate this.
+    if let Some(probe) = probe {
+        cache::store_scope(client.token(), scope, bounds, probe, &sets);
+    }
+    Ok(Some(sets))
 }
 
 /// Why every configured scope came back unsearchable, phrased for whoever has
@@ -905,6 +937,7 @@ mod tests {
             repo: "api".into(),
             created_at: ts("2026-08-07T04:00:00Z"),
             closed_at: None,
+            updated_at: ts("2026-08-07T04:00:00Z"),
             merged_at: None,
             draft: false,
         }
@@ -1399,6 +1432,72 @@ mod live_test {
         eprintln!("panels: {}", snapshot.panels.len());
         let json = serde_json::to_string_pretty(&snapshot.panels).unwrap();
         eprintln!("{json}");
+    }
+
+    /// What a second poll of the same dashboard actually costs. Fetches one
+    /// org twice, back to back, and reports how much of the second fetch was
+    /// answered without asking GitHub for data: scopes whose one-request probe
+    /// proved nothing in the window had moved, so the paginated searches were
+    /// skipped, and PRs whose `updated_at` had not moved, so GraphQL was never
+    /// asked about them.
+    /// Run with:
+    ///   GITHUB_TOKEN=<token> FASTDASH_DIAG_SCOPE=org:acme     ///     cargo test --lib github::live_test::polling_cost_diag -- --ignored --nocapture
+    #[ignore = "hits the live GitHub API; run with --ignored and GITHUB_TOKEN set"]
+    #[tokio::test]
+    async fn polling_cost_diag() {
+        let token = std::env::var("GITHUB_TOKEN").expect("GITHUB_TOKEN");
+        let scope = std::env::var("FASTDASH_DIAG_SCOPE").expect("FASTDASH_DIAG_SCOPE");
+        let day = range::today_ist();
+        let range = DateRange {
+            start: day,
+            end: day,
+        };
+        let bounds = range.ist_bounds();
+        let client = GithubClient::new(&token).expect("client");
+        let window = range.ist_window();
+
+        let poll = |label: &'static str| {
+            let client = &client;
+            let scope = scope.clone();
+            let bounds = bounds.clone();
+            async move {
+                let before = cache::savings();
+                let sets = search_scope(client, &scope, &bounds, window, &Cancel::none())
+                    .await
+                    .expect("search failed")
+                    .expect("scope is unsearchable with this token");
+                let refs: Vec<PrRef> = sets.merged.iter().map(|it| it.pr_ref()).collect();
+                if !refs.is_empty() {
+                    client
+                        .enrich_prs(&refs, &Cancel::none())
+                        .await
+                        .expect("enrich failed");
+                }
+                let after = cache::savings();
+                eprintln!(
+                    "{label}: scopes {} reused / {} searched   PRs {} cached / {} asked",
+                    after.0 - before.0,
+                    after.1 - before.1,
+                    after.2 - before.2,
+                    after.3 - before.3,
+                );
+                after
+            }
+        };
+
+        poll("first  poll").await;
+        let before_second = cache::savings();
+        poll("second poll").await;
+        let after = cache::savings();
+
+        assert!(
+            after.0 > before_second.0,
+            "the second poll re-ran the searches; the change probe is not gating them"
+        );
+        assert_eq!(
+            after.1, before_second.1,
+            "nothing changed between the polls, so nothing should have been re-searched"
+        );
     }
 
     /// Why a contribution heatmap is empty for a given account: prints the token's

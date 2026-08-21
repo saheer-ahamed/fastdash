@@ -8,7 +8,10 @@ import reactRefresh from "eslint-plugin-react-refresh";
 
 export default tseslint.config(
   // Build output, deps, and Rust artifacts are never linted.
-  { ignores: ["dist", "node_modules", "src-tauri/target"] },
+  // `.claude/worktrees` holds agent checkouts of this same repo. Linting them
+  // is meaningless and, worse, gives the TS parser two candidate roots for one
+  // file, which fails every parse in the project.
+  { ignores: ["dist", "node_modules", "src-tauri/target", ".claude"] },
   {
     files: ["src/**/*.{ts,tsx}"],
     extends: [js.configs.recommended, ...tseslint.configs.recommended],

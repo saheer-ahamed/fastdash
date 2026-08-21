@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
+use super::cache;
 use super::gate::Cancel;
 
 const SEARCH_URL: &str = "https://api.github.com/search/issues";
@@ -49,6 +50,10 @@ pub struct PrRef {
     pub owner: String,
     pub repo: String,
     pub number: u64,
+    /// When GitHub last touched this PR. Anything the enrichment reads - title,
+    /// state, additions, deletions - moves it, so it doubles as the cache
+    /// validator that decides whether the PR must be asked about again.
+    pub updated_at: Option<DateTime<Utc>>,
 }
 
 /// A single search result item, normalized from the REST Search API.
@@ -63,6 +68,9 @@ pub struct SearchItem {
     pub created_at: Option<DateTime<Utc>>,
     pub closed_at: Option<DateTime<Utc>>,
     pub merged_at: Option<DateTime<Utc>>,
+    /// GitHub's own last-touched stamp, carried through solely to validate the
+    /// enrichment cache (see [`PrRef::updated_at`]).
+    pub updated_at: Option<DateTime<Utc>>,
     /// GitHub's draft flag *as of this fetch*, not a state the PR was ever in
     /// during the range. It survives the PR being merged or closed, so it only
     /// means "waiting on its author" once intersected with "still open".
@@ -75,6 +83,7 @@ impl SearchItem {
             owner: self.owner.clone(),
             repo: self.repo.clone(),
             number: self.number,
+            updated_at: self.updated_at,
         }
     }
 
@@ -101,6 +110,16 @@ impl SearchResults {
     pub fn truncated(&self) -> bool {
         self.total > SEARCH_RESULT_CAP
     }
+}
+
+/// What a Search query matched at one moment, cheap enough to ask every poll.
+/// Equal probes mean an unchanged result set - see [`GithubClient::search_probe`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchProbe {
+    pub total: u64,
+    /// The newest `updated_at` among the matches, absent only when there are
+    /// none (or GitHub omitted the field).
+    pub latest: Option<DateTime<Utc>>,
 }
 
 /// GraphQL-enriched view of a merged-today PR.
@@ -161,6 +180,8 @@ impl CalendarWindow {
 
 pub struct GithubClient {
     http: reqwest::Client,
+    /// Scopes every cache lookup to this account - see [`cache`].
+    token: u64,
     /// `x-oauth-scopes` from the last response that carried it. Classic tokens
     /// advertise their scopes on every response; fine-grained PATs send none,
     /// so this stays `None` and callers must not infer anything from that.
@@ -193,8 +214,14 @@ impl GithubClient {
 
         Ok(Self {
             http,
+            token: cache::token_fingerprint(token),
             scopes: std::sync::Mutex::new(None),
         })
+    }
+
+    /// The fingerprint that scopes this account's cache entries.
+    pub fn token(&self) -> u64 {
+        self.token
     }
 
     /// Scopes GitHub reported for this token, once any request has been made.
@@ -248,24 +275,8 @@ impl GithubClient {
                 .await
                 .map_err(|e| GithubError::Http(e.to_string()))?;
 
-            let status = resp.status();
+            let resp = search_ok(resp).await?;
             let remaining = header_u64(resp.headers(), "x-ratelimit-remaining");
-
-            // Primary/secondary rate limits surface as 403/429.
-            if status.as_u16() == 403 || status.as_u16() == 429 {
-                if remaining == Some(0) || status.as_u16() == 429 {
-                    return Err(GithubError::RateLimited {
-                        retry_after_secs: retry_after(resp.headers()),
-                    });
-                }
-                return Err(status_error(status.as_u16(), resp).await);
-            }
-            if !status.is_success() {
-                // e.g. 422 when an org can't be searched (missing, or the token
-                // isn't SSO/OAuth-authorized for it). Carry GitHub's own message
-                // so the UI banner explains why instead of showing a bare code.
-                return Err(status_error(status.as_u16(), resp).await);
-            }
 
             let body: SearchResponse = resp
                 .json()
@@ -297,6 +308,51 @@ impl GithubClient {
         Ok(SearchResults { items, total })
     }
 
+    /// A cheap fingerprint of what a Search query matches right now: how many
+    /// results it has, and the newest `updated_at` among them. One request, one
+    /// result, whatever the size of the answer.
+    ///
+    /// This is what stands in for conditional requests, which the Search API
+    /// does not offer - it sends `Cache-Control: no-cache` and no `ETag`, so
+    /// `If-None-Match` has nothing to validate against.
+    ///
+    /// Over an `updated:` window the pair is a sound change detector. For the
+    /// live window - today, the only one the dashboard polls - membership only
+    /// ever grows, since an update cannot un-happen, and touching a PR already
+    /// in the set moves the maximum forward; two polls agreeing on both saw the
+    /// same set. Over a past window a PR touched since simply leaves, which
+    /// moves the total instead. The one thing neither number catches is a
+    /// same-second arrival and departure, and the next poll catches that.
+    pub async fn search_probe(&self, query: &str) -> Result<SearchProbe, GithubError> {
+        let resp = self
+            .http
+            .get(SEARCH_URL)
+            .query(&[
+                ("q", query),
+                ("sort", "updated"),
+                ("order", "desc"),
+                ("per_page", "1"),
+            ])
+            .send()
+            .await
+            .map_err(|e| GithubError::Http(e.to_string()))?;
+
+        let body: SearchResponse = search_ok(resp)
+            .await?
+            .json()
+            .await
+            .map_err(|e| GithubError::Parse(e.to_string()))?;
+
+        Ok(SearchProbe {
+            total: body.total_count,
+            latest: body
+                .items
+                .first()
+                .and_then(|it| it.updated_at.as_deref())
+                .and_then(parse_ts),
+        })
+    }
+
     /// Enrich a set of PRs (by owner/repo/number) with additions, deletions,
     /// author, state, title, `nameWithOwner`, and url in batched GraphQL calls.
     pub async fn enrich_prs(
@@ -304,9 +360,14 @@ impl GithubClient {
         prs: &[PrRef],
         cancel: &Cancel,
     ) -> Result<Vec<EnrichedPr>, GithubError> {
-        let mut out = Vec::with_capacity(prs.len());
+        // GraphQL has no conditional requests and charges points for every
+        // node it serves, so the only saving available is not asking. A PR
+        // whose `updated_at` has not moved since it was last enriched cannot
+        // have changed anything read here, and is answered from the cache.
+        let (mut out, stale) = cache::take_enriched(self.token, prs);
+        out.reserve(stale.len());
 
-        for chunk in prs.chunks(GRAPHQL_CHUNK) {
+        for chunk in stale.chunks(GRAPHQL_CHUNK) {
             if cancel.cancelled() {
                 return Err(GithubError::Cancelled);
             }
@@ -315,6 +376,7 @@ impl GithubClient {
             let Some(data) = self.graphql(&build_graphql_query(chunk)).await? else {
                 continue;
             };
+            let mut fresh = Vec::with_capacity(chunk.len());
             for i in 0..chunk.len() {
                 let alias = format!("r{i}");
                 let Some(repo) = data.get(&alias) else {
@@ -324,9 +386,11 @@ impl GithubClient {
                     continue;
                 }
                 if let Some(enriched) = parse_enriched(repo) {
-                    out.push(enriched);
+                    fresh.push(enriched);
                 }
             }
+            cache::store_enriched(self.token, chunk, &fresh);
+            out.append(&mut fresh);
         }
 
         Ok(out)
@@ -334,7 +398,15 @@ impl GithubClient {
 
     /// The viewer's login and the year they joined, used to decide how many
     /// year tabs the contribution heatmap can offer.
+    ///
+    /// Neither can change for a given token, so this is asked once per process
+    /// and then served from the cache - every dashboard poll would otherwise
+    /// spend a GraphQL round trip re-learning a constant.
     pub async fn viewer_profile(&self) -> Result<ViewerProfile, GithubError> {
+        if let Some(cached) = cache::viewer_profile(self.token) {
+            return Ok(cached);
+        }
+
         let data = self
             .graphql("query { viewer { login createdAt } }")
             .await?
@@ -343,7 +415,7 @@ impl GithubClient {
         let viewer = data
             .get("viewer")
             .ok_or_else(|| GithubError::GraphQl("viewer missing".into()))?;
-        Ok(ViewerProfile {
+        let profile = ViewerProfile {
             login: viewer
                 .get("login")
                 .and_then(|v| v.as_str())
@@ -353,7 +425,9 @@ impl GithubClient {
                 .get("createdAt")
                 .and_then(|v| v.as_str())
                 .and_then(parse_ts),
-        })
+        };
+        cache::store_viewer_profile(self.token, &profile);
+        Ok(profile)
     }
 
     /// The viewer's contribution calendar for each window, in one batched call.
@@ -614,6 +688,27 @@ fn parse_enriched(repo: &serde_json::Value) -> Option<EnrichedPr> {
     })
 }
 
+/// Map a Search API response onto `GithubError`, or hand it back untouched.
+/// Primary and secondary rate limits both surface as 403/429; anything else
+/// unsuccessful (notably the 422 an unsearchable org gets) carries GitHub's own
+/// message, so the UI banner can explain the cause instead of showing a code.
+async fn search_ok(resp: reqwest::Response) -> Result<reqwest::Response, GithubError> {
+    let status = resp.status().as_u16();
+    if status == 403 || status == 429 {
+        let exhausted = header_u64(resp.headers(), "x-ratelimit-remaining") == Some(0);
+        if exhausted || status == 429 {
+            return Err(GithubError::RateLimited {
+                retry_after_secs: retry_after(resp.headers()),
+            });
+        }
+        return Err(status_error(status, resp).await);
+    }
+    if !resp.status().is_success() {
+        return Err(status_error(status, resp).await);
+    }
+    Ok(resp)
+}
+
 /// Build a `Status` error, folding GitHub's JSON error body into a readable
 /// message. GitHub returns `{ "message": "...", "errors": [{ "message": ... }] }`.
 /// For a Search 422 the top-level `message` is only "Validation Failed"; the
@@ -701,6 +796,7 @@ struct RawSearchItem {
     html_url: String,
     created_at: Option<String>,
     closed_at: Option<String>,
+    updated_at: Option<String>,
     draft: Option<bool>,
     repository_url: String,
     user: Option<RawUser>,
@@ -729,6 +825,7 @@ impl RawSearchItem {
             repo,
             created_at: self.created_at.as_deref().and_then(parse_ts),
             closed_at: self.closed_at.as_deref().and_then(parse_ts),
+            updated_at: self.updated_at.as_deref().and_then(parse_ts),
             merged_at: self
                 .pull_request
                 .and_then(|p| p.merged_at)
