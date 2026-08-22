@@ -20,7 +20,7 @@
 use std::sync::Mutex;
 
 use serde::Deserialize;
-use tauri::{LogicalSize, PhysicalPosition, PhysicalSize, WebviewWindow};
+use tauri::{LogicalSize, PhysicalPosition, PhysicalSize, WebviewWindow, Window};
 
 /// Widget size, in logical pixels. Tall enough for the header, the taller of
 /// the two views (Claude's pair of meters, 120px) and the timestamp footer, and
@@ -148,6 +148,44 @@ pub fn nudge_tiny(window: &WebviewWindow, dy: i32) -> tauri::Result<()> {
     let at = window.outer_position()?;
     let y = clamp_y(at.y + dy, origin, area, size.height);
     window.set_position(PhysicalPosition::new(at.x, y))
+}
+
+/// Pull the widget back onto the desktop if the drag that just moved it took
+/// it off. Called on every `Moved` event, which on Windows arrives throughout
+/// the OS move loop, so the widget stops against the edge while the cursor
+/// keeps going - the same wall a decorated window meets.
+///
+/// Only the widget needs this. The dashboard is decorated, so Windows keeps its
+/// title bar reachable already, and the tiny square is confined to its edge by
+/// `nudge_tiny` and deliberately overhangs by its invisible border.
+///
+/// The mode is read with `try_lock`, not `lock`. `set_mode` holds that lock
+/// while it moves and resizes the window, and every one of those moves comes
+/// back here on the event loop thread: blocking would deadlock the two against
+/// each other. A contended lock means a shape change is in flight and is
+/// placing the window on purpose, which is exactly when this must stay out of
+/// the way.
+pub fn keep_in_bounds(window: &Window) -> tauri::Result<()> {
+    match MODE.try_lock() {
+        Ok(mode) if *mode == Mode::Widget => {}
+        _ => return Ok(()),
+    }
+
+    let screens: Vec<(PhysicalPosition<i32>, PhysicalSize<u32>)> = window
+        .available_monitors()?
+        .iter()
+        .map(|m| (*m.position(), *m.size()))
+        .collect();
+    let home = window
+        .current_monitor()?
+        .map(|m| (*m.position(), *m.size()));
+
+    let at = window.outer_position()?;
+    let settled = settle(at, window.outer_size()?, home, &screens);
+    if settled != at {
+        window.set_position(settled)?;
+    }
+    Ok(())
 }
 
 fn enter(window: &WebviewWindow) -> tauri::Result<()> {
@@ -340,6 +378,76 @@ fn nearest_edge(
     }
 }
 
+/// The rectangle every attached monitor together covers - the desktop as the
+/// user sees it, however their displays are arranged. `None` when there are no
+/// monitors to speak of.
+///
+/// This is what each edge of the widget is bounded by, rather than the screen
+/// it happens to be on: with a display stacked above, the top of the desktop is
+/// that display's top, and the widget should be free to travel there.
+fn desktop_bounds(
+    screens: &[(PhysicalPosition<i32>, PhysicalSize<u32>)],
+) -> Option<(PhysicalPosition<i32>, PhysicalSize<u32>)> {
+    let mut edges: Option<(i32, i32, i32, i32)> = None;
+    for (origin, size) in screens {
+        let (l, t) = (origin.x, origin.y);
+        let (r, b) = (l + size.width as i32, t + size.height as i32);
+        edges = Some(match edges {
+            None => (l, t, r, b),
+            Some((el, et, er, eb)) => (el.min(l), et.min(t), er.max(r), eb.max(b)),
+        });
+    }
+    let (l, t, r, b) = edges?;
+    Some((
+        PhysicalPosition::new(l, t),
+        PhysicalSize::new((r - l) as u32, (b - t) as u32),
+    ))
+}
+
+/// Put a window of `size` asking to sit at `at` fully inside the rectangle at
+/// `origin`. A window with no room to fit is pinned to the top-left rather than
+/// clamped against an inverted range.
+fn contain(
+    at: PhysicalPosition<i32>,
+    size: PhysicalSize<u32>,
+    origin: PhysicalPosition<i32>,
+    area: PhysicalSize<u32>,
+) -> PhysicalPosition<i32> {
+    let right = origin.x + (area.width as i32 - size.width as i32).max(0);
+    let bottom = origin.y + (area.height as i32 - size.height as i32).max(0);
+    PhysicalPosition::new(at.x.clamp(origin.x, right), at.y.clamp(origin.y, bottom))
+}
+
+/// Where a widget of `size` that was just moved to `at` is actually allowed to
+/// sit. Split from the window so the whole rule is testable against display
+/// layouts this machine does not have.
+///
+/// Two bounds, in order. The desktop's outer edges come first: they are what
+/// the user means by "the top of the screen", and they follow the layout, so a
+/// display stacked above extends the ceiling rather than being unreachable.
+/// That alone is not enough on a ragged layout - monitors of different heights,
+/// or offset from one another, leave gaps inside those outer edges that belong
+/// to no display - so a widget whose drag handle lands in one of those holes is
+/// then contained to the screen it came from. Nothing is left where it cannot
+/// be seen or grabbed.
+fn settle(
+    at: PhysicalPosition<i32>,
+    size: PhysicalSize<u32>,
+    home: Option<(PhysicalPosition<i32>, PhysicalSize<u32>)>,
+    screens: &[(PhysicalPosition<i32>, PhysicalSize<u32>)],
+) -> PhysicalPosition<i32> {
+    let Some((origin, area)) = desktop_bounds(screens) else {
+        return at;
+    };
+    let settled = contain(at, size, origin, area);
+    match home {
+        Some((origin, area)) if !reachable(settled, screens) => {
+            contain(settled, size, origin, area)
+        }
+        _ => settled,
+    }
+}
+
 /// Keep a window of `height` fully on its screen vertically. A square dragged
 /// past the bottom of the screen would be as good as gone: nothing but the
 /// dashboard could bring it back.
@@ -440,6 +548,105 @@ mod tests {
         let (origin, area) = (at(-1920, -200), PhysicalSize::new(1920, 1200));
         assert_eq!(clamp_y(-500, origin, area, 40), -200);
         assert_eq!(clamp_y(5000, origin, area, 40), 960);
+    }
+
+    /// Three 1920x1080 displays in a row, which is this machine: the desktop
+    /// runs from -1920 to 3840 across and 0 to 1080 down, and every edge of it
+    /// belongs to a real screen.
+    fn three_in_a_row() -> Vec<(PhysicalPosition<i32>, PhysicalSize<u32>)> {
+        vec![
+            (at(0, 0), PhysicalSize::new(1920, 1080)),
+            (at(-1920, 0), PhysicalSize::new(1920, 1080)),
+            (at(1920, 0), PhysicalSize::new(1920, 1080)),
+        ]
+    }
+
+    /// A laptop with a second display stacked above it, offset to the left -
+    /// the layout the top edge has to follow rather than assume.
+    fn one_above() -> Vec<(PhysicalPosition<i32>, PhysicalSize<u32>)> {
+        vec![
+            (at(0, 0), PhysicalSize::new(1920, 1080)),
+            (at(-400, -1200), PhysicalSize::new(1920, 1200)),
+        ]
+    }
+
+    const WIDGET: PhysicalSize<u32> = PhysicalSize::new(450, 324);
+
+    fn settled(
+        x: i32,
+        y: i32,
+        screens: &[(PhysicalPosition<i32>, PhysicalSize<u32>)],
+    ) -> PhysicalPosition<i32> {
+        settle(at(x, y), WIDGET, Some(screens[0]), screens)
+    }
+
+    /// The whole point: dragged past an outer edge of the desktop, the widget
+    /// stops there. All four edges, on a layout with nothing beyond any of them.
+    #[test]
+    fn the_widget_stops_at_the_edge_of_the_desktop() {
+        let screens = three_in_a_row();
+        assert_eq!(settled(600, -400, &screens).y, 0, "above the top");
+        assert_eq!(
+            settled(600, 5000, &screens).y,
+            1080 - 324,
+            "below the bottom"
+        );
+        assert_eq!(
+            settled(-9000, 100, &screens).x,
+            -1920,
+            "left of the leftmost"
+        );
+        assert_eq!(
+            settled(9000, 100, &screens).x,
+            3840 - 450,
+            "right of the rightmost"
+        );
+    }
+
+    /// Inside the desktop nothing is touched - including straddling two
+    /// displays, which is a perfectly good place to leave a widget.
+    #[test]
+    fn a_widget_on_the_desktop_is_left_where_it_is() {
+        let screens = three_in_a_row();
+        assert_eq!(settled(600, 400, &screens), at(600, 400));
+        // Half on the primary, half on the display to its right.
+        assert_eq!(settled(1700, 200, &screens), at(1700, 200));
+    }
+
+    /// The case in the ask: with a display stacked above, the ceiling is that
+    /// display's top, not the top of the screen the widget started on.
+    #[test]
+    fn a_display_above_raises_the_ceiling() {
+        let screens = one_above();
+        // Travels up onto the display above rather than stopping at 0.
+        assert_eq!(settled(100, -900, &screens), at(100, -900));
+        // And still stops at the top of *that* one.
+        assert_eq!(settled(100, -5000, &screens).y, -1200);
+    }
+
+    /// A ragged layout leaves holes inside the desktop's outer edges that
+    /// belong to no display. The outer bound alone would happily park the
+    /// widget in one, where it is invisible and, being borderless, unreachable
+    /// - so a handle that lands in a hole is pulled back onto its own screen.
+    #[test]
+    fn a_widget_dropped_in_a_gap_comes_back() {
+        let screens = one_above();
+        // The upper display is offset 400px to the left, so the strip below its
+        // left end is inside the desktop's outer edges and on no screen at all.
+        let home = screens[0];
+        let landed = settle(at(-400, 500), WIDGET, Some(home), &screens);
+        assert!(
+            reachable(landed, &screens),
+            "landed at {landed:?}, which is on no display"
+        );
+        assert_eq!(landed, at(0, 500), "contained to the screen it came from");
+    }
+
+    /// With no monitors to measure - a display asleep or mid-reconfiguration -
+    /// guessing is worse than doing nothing.
+    #[test]
+    fn with_no_screens_the_widget_is_left_alone() {
+        assert_eq!(settle(at(50, -700), WIDGET, None, &[]), at(50, -700));
     }
 
     /// A window taller than the screen it is on has no legal range at all; the
