@@ -225,11 +225,18 @@ pub fn open_external(url: String) -> Result<(), String> {
     open::that(&url).map_err(|e| e.to_string())
 }
 
-/// Re-read the numbers on the taskbar readout and redraw it. The frontend
-/// calls this on its own schedule; nothing in Rust refreshes it on a timer.
+/// Re-read the numbers on the taskbar readout and redraw it, as the saved
+/// settings describe it - or hide it, when it is turned off. The frontend calls
+/// this on its own schedule; nothing in Rust refreshes it on a timer.
 #[tauri::command]
-pub async fn taskbar_refresh() {
-    taskbar::refresh(&taskbar::default_lines()).await;
+pub async fn taskbar_refresh(state: State<'_, Arc<RwLock<AppConfig>>>) -> Result<(), String> {
+    let settings = state.read().map_err(|e| e.to_string())?.taskbar.clone();
+    if settings.enabled {
+        taskbar::refresh(&settings.lines).await;
+    } else {
+        taskbar::clear();
+    }
+    Ok(())
 }
 
 #[cfg(test)]

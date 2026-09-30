@@ -1137,6 +1137,36 @@ a:hover {
   border-color: var(--fill);
 }
 
+.seg:disabled {
+  cursor: default;
+}
+
+/* Taskbar readout settings: one row per metric, its line picker on the right */
+.taskbar-lede {
+  margin: 12px 0 4px;
+}
+
+.metric-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+
+.metric-row:first-child {
+  border-top: none;
+}
+
+.metric-rows.disabled {
+  opacity: 0.5;
+}
+
+.metric-rows .segmented {
+  flex-wrap: nowrap;
+}
+
 /* GitHub "Connect" primary action sits just above the manual-token fallback. */
 .connect-actions {
   margin-top: 0;

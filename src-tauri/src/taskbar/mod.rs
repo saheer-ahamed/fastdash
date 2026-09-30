@@ -41,6 +41,44 @@ impl Metric {
     }
 }
 
+/// The readout's settings, saved in the app config and edited under Settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct TaskbarConfig {
+    /// Whether the readout shows at all.
+    pub enabled: bool,
+    /// What each line shows, top to bottom.
+    #[serde(deserialize_with = "known_metrics")]
+    pub lines: Vec<Vec<Metric>>,
+}
+
+impl Default for TaskbarConfig {
+    fn default() -> Self {
+        TaskbarConfig {
+            enabled: true,
+            lines: default_lines(),
+        }
+    }
+}
+
+/// Read `lines`, skipping any metric this build does not know. A config written
+/// by a newer build, or one naming a metric since retired, must lose that one
+/// metric - not fail to parse, which would reset every other setting with it.
+fn known_metrics<'de, D>(de: D) -> Result<Vec<Vec<Metric>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw: Vec<Vec<serde_json::Value>> = Deserialize::deserialize(de)?;
+    Ok(raw
+        .into_iter()
+        .map(|line| {
+            line.into_iter()
+                .filter_map(|m| serde_json::from_value(m).ok())
+                .collect()
+        })
+        .collect())
+}
+
 /// The readout's layout: each inner list is one line of text, top to bottom.
 /// Two lines, like the clock beside it: Claude above, GitHub below.
 pub fn default_lines() -> Vec<Vec<Metric>> {
@@ -220,6 +258,28 @@ mod tests {
             compose(&lines, &full()),
             ["Session 3% \u{b7} PRs 2 merged \u{b7} 4 opened"]
         );
+    }
+
+    #[test]
+    fn an_unknown_metric_is_dropped_not_fatal() {
+        let cfg: TaskbarConfig = toml::from_str(
+            r#"
+            enabled = false
+            lines = [["claudeWeekly", "somethingNew"], ["githubMerged"]]
+            "#,
+        )
+        .unwrap();
+        assert!(!cfg.enabled);
+        assert_eq!(
+            cfg.lines,
+            [vec![Metric::ClaudeWeekly], vec![Metric::GithubMerged]]
+        );
+    }
+
+    #[test]
+    fn a_config_without_the_section_gets_the_default() {
+        let cfg: crate::engine::config::AppConfig = toml::from_str("locale = \"en\"").unwrap();
+        assert_eq!(cfg.taskbar, TaskbarConfig::default());
     }
 
     #[test]
