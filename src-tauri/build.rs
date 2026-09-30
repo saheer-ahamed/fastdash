@@ -10,7 +10,12 @@ fn main() {
 
     embed_build_env();
 
-    tauri_build::build()
+    // A custom Windows manifest, for its compatibility section: see the file.
+    println!("cargo:rerun-if-changed=windows-app-manifest.xml");
+    let windows = tauri_build::WindowsAttributes::new()
+        .app_manifest(include_str!("windows-app-manifest.xml"));
+    tauri_build::try_build(tauri_build::Attributes::new().windows_attributes(windows))
+        .expect("failed to run tauri-build");
 }
 
 /// Bake env-file config into the binary at build time so it ships to end users.

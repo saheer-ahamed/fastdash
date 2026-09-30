@@ -11,6 +11,7 @@ use crate::engine::connector::{ConnectorMeta, Snapshot};
 use crate::engine::range::DateRange;
 use crate::engine::registry::Registry;
 use crate::engine::{refresh, secrets};
+use crate::taskbar;
 
 /// One connector as the sidebar sees it: its fixed identity plus whether it is
 /// connected right now.
@@ -222,6 +223,13 @@ pub fn open_external(url: String) -> Result<(), String> {
         return Err(format!("refusing to open non-http(s) url: {url}"));
     }
     open::that(&url).map_err(|e| e.to_string())
+}
+
+/// Re-read the numbers on the taskbar readout and redraw it. The frontend
+/// calls this on its own schedule; nothing in Rust refreshes it on a timer.
+#[tauri::command]
+pub async fn taskbar_refresh() {
+    taskbar::refresh(&taskbar::default_lines()).await;
 }
 
 #[cfg(test)]

@@ -20,6 +20,18 @@
     "githubBlurb": "Pull requests opened, merged and closed by each person, across the orgs you follow.",
     "sentryBlurb": "Unresolved issues that fired today, which projects they came from, and how many people they hit."
   },
+  "taskbar": {
+    "session": "Session {pct}%",
+    "weekly": "Week {pct}%",
+    "prs": "PRs",
+    "opened": "{n} opened",
+    "merged": "{n} merged",
+    "tooltip": "fastdash - click to open"
+  },
+  "tray": {
+    "open": "Open fastdash",
+    "quit": "Quit"
+  },
   "range": {
     "today": "Today",
     "yesterday": "Yesterday",

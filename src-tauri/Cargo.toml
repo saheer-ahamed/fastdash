@@ -15,7 +15,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 # In-app auto-update: the updater plugin checks the signed GitHub release and
 # downloads the new installer; the process plugin restarts into it.
 tauri-plugin-updater = "2"
@@ -42,6 +42,18 @@ open = "5"
 # silently loses secrets, hence the split.
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
+# The taskbar readout (`taskbar/win.rs`) is plain Win32. Pinned to the version
+# tauri itself pulls in, so it adds no second copy of the crate to the build.
+windows = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Registry",
+  "Win32_UI_Accessibility",
+  "Win32_UI_HiDpi",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_WindowsAndMessaging",
+] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }

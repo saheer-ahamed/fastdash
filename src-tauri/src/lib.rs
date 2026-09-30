@@ -20,6 +20,7 @@
 mod connectors;
 mod engine;
 mod ipc;
+mod taskbar;
 
 use std::sync::{Arc, RwLock};
 
@@ -50,11 +51,7 @@ pub fn run() {
             // runs in the *already running* instance, so all it does is surface
             // the existing window - restore it if minimised, raise it, focus it.
             .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.unminimize();
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
+                show_main(app);
             }))
             .plugin(tauri_plugin_updater::Builder::new().build())
             .plugin(tauri_plugin_process::init());
@@ -79,7 +76,20 @@ pub fn run() {
             ipc::claude_connect,
             ipc::claude_disconnect,
             ipc::open_external,
+            ipc::taskbar_refresh,
         ])
+        .on_window_event(|window, event| {
+            // Closing the dashboard hides it instead of quitting: the taskbar
+            // readout and the tray icon keep the app one click away, and
+            // "Quit" in the tray menu is the way out.
+            #[cfg(desktop)]
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .setup(|app| {
             // Force the window icon at runtime so the taskbar picks it up. In
             // `tauri dev` on Windows the default icon path is not reliably
@@ -93,8 +103,69 @@ pub fn run() {
                 let _ = window.set_icon(icon);
             }
 
+            #[cfg(desktop)]
+            {
+                tray::build(app.handle())?;
+                let handle = app.handle().clone();
+                taskbar::start(move || show_main(&handle));
+            }
+
             Ok(())
         })
         .run(tauri::generate_context!())
         .expect("error while running fastdash");
+}
+
+/// Bring the dashboard back: from the tray, the taskbar readout, or a second
+/// launch.
+#[cfg(desktop)]
+fn show_main(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+/// The notification-area icon: the way back to a hidden dashboard when the
+/// taskbar readout is off, and the only way to quit now that closing the
+/// window only hides it.
+#[cfg(desktop)]
+mod tray {
+    use tauri::menu::{Menu, MenuItem};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+    use tauri::AppHandle;
+
+    use crate::engine::i18n;
+
+    pub fn build(app: &AppHandle) -> tauri::Result<()> {
+        let open = MenuItem::with_id(app, "open", i18n::t("tray.open"), true, None::<&str>)?;
+        let quit = MenuItem::with_id(app, "quit", i18n::t("tray.quit"), true, None::<&str>)?;
+        let menu = Menu::with_items(app, &[&open, &quit])?;
+
+        let mut tray = TrayIconBuilder::with_id("main")
+            .tooltip("fastdash")
+            .menu(&menu)
+            .show_menu_on_left_click(false)
+            .on_menu_event(|app, event| match event.id.as_ref() {
+                "open" => super::show_main(app),
+                "quit" => app.exit(0),
+                _ => {}
+            })
+            .on_tray_icon_event(|tray, event| {
+                if let TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } = event
+                {
+                    super::show_main(tray.app_handle());
+                }
+            });
+        if let Some(icon) = app.default_window_icon().cloned() {
+            tray = tray.icon(icon);
+        }
+        tray.build(app)?;
+        Ok(())
+    }
 }
