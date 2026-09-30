@@ -25,8 +25,7 @@
     "weekly": "Week {pct}%",
     "prs": "PRs",
     "opened": "{n} opened",
-    "merged": "{n} merged",
-    "tooltip": "fastdash - click to open"
+    "merged": "{n} merged"
   },
   "tray": {
     "open": "Open fastdash",
