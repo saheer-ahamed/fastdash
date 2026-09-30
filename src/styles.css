@@ -255,6 +255,10 @@ body {
   justify-content: space-between;
   padding: 12px 20px;
   border-bottom: 1px solid var(--border);
+  /* As tall as a topbar carrying a Refresh button (19.5px line + 8px padding +
+     2px border, inside 24px padding + 1px border), so pages without one -
+     Settings, Connectors - do not have a shorter header. */
+  min-height: 54.5px;
 }
 
 .topbar h1 {
