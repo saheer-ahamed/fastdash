@@ -20,7 +20,6 @@
 mod connectors;
 mod engine;
 mod ipc;
-mod pip;
 
 use std::sync::{Arc, RwLock};
 
@@ -79,31 +78,8 @@ pub fn run() {
             ipc::github_fetch,
             ipc::claude_connect,
             ipc::claude_disconnect,
-            ipc::pip_github,
-            ipc::pip_claude,
-            ipc::set_pip_mode,
-            ipc::nudge_tiny,
-            ipc::close_app,
             ipc::open_external,
         ])
-        .on_window_event(|window, event| {
-            // The widget is borderless, so the OS applies none of the clamping
-            // that keeps a decorated window's title bar reachable: dragged far
-            // enough it leaves the desktop entirely, and nothing off-screen can
-            // be grabbed to bring it back. `Moved` arrives throughout the drag,
-            // so bounding it here stops it at the edge as it happens.
-            //
-            // `Resized` matters for the same reason: the widget is sized in
-            // logical pixels, so dragging it onto a display at another scale
-            // grows it, and a window that was flush against an edge grows
-            // straight through it.
-            if matches!(
-                event,
-                tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_)
-            ) {
-                let _ = crate::pip::keep_in_bounds(window);
-            }
-        })
         .setup(|app| {
             // Force the window icon at runtime so the taskbar picks it up. In
             // `tauri dev` on Windows the default icon path is not reliably

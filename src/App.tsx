@@ -24,9 +24,6 @@ import type {
 import Settings from "./Settings";
 import Welcome from "./Welcome";
 import Connectors from "./connectors/ConnectorsPage";
-import Pip, { PipToggle } from "./Pip";
-import { usePipState, type PipAvailability, type WindowMode } from "./pipstate";
-import Tiny from "./Tiny";
 import RangeFilter from "./RangeFilter";
 import {
   isSameRange,
@@ -95,40 +92,6 @@ export default function App() {
   // switches. Otherwise leaving and re-entering the GitHub tab unmounts the
   // component, drops its cache, and flashes "Loading..." on every return.
   const github = useGithubState(range, focused && live === "github");
-  // Whether the widget is the thing on screen, and which tabs it can offer.
-  // Only these two connectors have a widget reading, and only a connected one
-  // gets a tab - so with neither connected there is nothing to shrink into and
-  // the toggle is not offered at all. Read off the same `configured` flag the
-  // sidebar filters on, so the two can never disagree about what is set up.
-  const [mode, setMode] = useState<WindowMode>("dashboard");
-  const pipAvailable: PipAvailability = useMemo(
-    () => ({
-      github: connectors.some((c) => c.id === "github" && c.configured),
-      claude: connectors.some((c) => c.id === "claude" && c.configured),
-    }),
-    [connectors],
-  );
-  const canPip = pipAvailable.github || pipAvailable.claude;
-  // Held here rather than inside the widget, which is unmounted every time the
-  // window changes shape - so the tab, the account and the readings survive
-  // folding into the square and going back to the dashboard.
-  const pipState = usePipState(mode === "widget", pipAvailable);
-
-  // Resize the window first and swap the view only once it has actually
-  // resized: painting the widget into a full-size window, or the dashboard into
-  // a 300px one, is a visible flash of the wrong layout either way.
-  const goMode = useCallback((next: WindowMode) => {
-    invoke("set_pip_mode", { mode: next })
-      .then(() => setMode(next))
-      .catch((e) => console.error(e));
-  }, []);
-  // Stable callbacks, not inline arrows: the widget's idle timer is keyed on
-  // its handlers, so a fresh identity on every render of this component would
-  // restart the countdown before it could ever finish.
-  const openPip = useCallback(() => goMode("widget"), [goMode]);
-  const minimizePip = useCallback(() => goMode("tiny"), [goMode]);
-  const exitPip = useCallback(() => goMode("dashboard"), [goMode]);
-
   // Read the connector list: once on startup, and again whenever a connector's
   // settings are saved. Whether a connector is connected is the backend's
   // answer, per its own credentials - the frontend knows no per-connector rules,
@@ -354,29 +317,6 @@ export default function App() {
         : undefined
       : snapshots[snapKey(id, range)]?.status;
 
-  // Widget mode replaces the whole shell rather than rendering inside it: the
-  // window is 300px wide by this point, and a sidebar would be most of it. The
-  // minimized square replaces even that: by then the window is 34px, which is
-  // room for one glyph.
-  if (mode === "tiny") {
-    return <Tiny onExpand={openPip} />;
-  }
-  if (mode === "widget") {
-    return (
-      <Pip
-        state={pipState}
-        watched={focused}
-        onMinimize={minimizePip}
-        onExit={exitPip}
-      />
-    );
-  }
-
-  // Built once and handed to whichever topbar is on screen, so every page
-  // offers the same control in the same place - and pages with nothing to
-  // shrink into (nothing connected) get nothing.
-  const pipToggle = canPip ? <PipToggle onOpen={openPip} /> : null;
-
   return (
     <div className="app">
       <UpdateBanner />
@@ -429,13 +369,11 @@ export default function App() {
           <Connectors
             initialId={openConnector ?? undefined}
             onRefresh={onConnectorSaved}
-            pipToggle={pipToggle}
           />
         ) : page === "settings" ? (
           <>
             <header className="topbar">
               <h1>{t("app.settings")}</h1>
-              <div className="actions">{pipToggle}</div>
             </header>
             <Settings onLocaleChange={onLocaleChange} />
           </>
@@ -450,7 +388,6 @@ export default function App() {
             range={range}
             preset={preset}
             onRange={onRange}
-            pipToggle={pipToggle}
           />
         ) : (
           <>
@@ -475,7 +412,6 @@ export default function App() {
                 >
                   {loading ? t("app.refreshing") : t("app.refresh")}
                 </button>
-                {pipToggle}
               </div>
             </header>
 
@@ -805,14 +741,11 @@ function GithubView({
   range,
   preset,
   onRange,
-  pipToggle,
 }: {
   state: GithubState;
   range: DateRange;
   preset: PresetId;
   onRange: (next: DateRange, preset: PresetId) => void;
-  /** The widget toggle, rendered by whoever owns it - see `PipToggle`. */
-  pipToggle: ReactNode;
 }) {
   const { accounts, label, setLabel, org, setOrg, snaps, loadingKeys, failedKeys, load } =
     state;
@@ -828,7 +761,6 @@ function GithubView({
       <>
         <header className="topbar">
           <h1>GitHub</h1>
-          <div className="actions">{pipToggle}</div>
         </header>
         <div className="empty">{t("github.noAccounts")}</div>
       </>
@@ -860,7 +792,6 @@ function GithubView({
             {loading && <span className="spinner" aria-hidden />}
             {t("app.refresh")}
           </button>
-          {pipToggle}
         </div>
       </header>
 
