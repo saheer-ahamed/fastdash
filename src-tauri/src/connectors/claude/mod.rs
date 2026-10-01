@@ -47,9 +47,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use crate::engine::config::AppConfig;
-use crate::engine::connector::{
-    Connector, ConnectorError, ConnectorMeta, FetchCtx, Health, Snapshot,
-};
+use crate::engine::connector::{Connector, ConnectorError, ConnectorMeta, FetchCtx, Snapshot};
 use crate::engine::i18n;
 use crate::engine::panel::{Bar, Cell, Column, Panel, Stat, TableSpec};
 use crate::engine::range::{self, DateRange};
@@ -100,8 +98,8 @@ fn has_local_state() -> bool {
 /// and to survive a transient rate-limit.
 ///
 /// Process-global rather than a field on the connector because the throttle is
-/// a property of the endpoint, not of a caller: the dashboard and the widget
-/// both read the same `/usage`, and a per-instance cache would let them take
+/// a property of the endpoint, not of a caller: the dashboard and the taskbar
+/// readout both read the same `/usage`, and a per-instance cache would let them take
 /// turns hammering it into a 429.
 static OFFICIAL: Mutex<Option<(OfficialUsage, Instant)>> = Mutex::new(None);
 
@@ -134,37 +132,26 @@ async fn official_usage() -> Option<OfficialUsage> {
     }
 }
 
-/// The two live plan meters on their own, for the widget: the rolling 5-hour
-/// session window and the weekly all-models window.
-///
-/// Anthropic publishes no daily window, so those two are the whole of it. No
-/// transcript scan and no Console call happen here - this is the cached
-/// `/usage` reading the dashboard already shares, which is why it is cheap
-/// enough to sit behind a manual refresh button.
-pub async fn plan_meters() -> Snapshot {
-    let now = Utc::now();
-    let Some(official) = official_usage().await else {
-        // Either no Claude Code login on this machine or `/usage` is refusing
-        // right now. Both are transient from the widget's point of view: the
-        // refresh button is the remedy, so it reports rather than prescribes.
-        return Snapshot {
-            status: Health::Error {
-                message: i18n::t("claude.metersUnavailable"),
-            },
-            panels: vec![],
-            fetched_at: now,
-            next_refresh_secs: None,
-        };
-    };
+/// The two live plan windows as bare percentages (0..=100), for the taskbar
+/// readout: the rolling 5-hour session and the weekly all-models window.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PlanPercents {
+    pub session: Option<f64>,
+    pub weekly: Option<f64>,
+}
 
-    let mut panels = Vec::new();
-    if let Some(w) = &official.five_hour {
-        panels.push(limit_meter(&i18n::t("claude.currentSession"), w, now));
-    }
-    if let Some(w) = &official.weekly {
-        panels.push(limit_meter(&i18n::t("claude.weeklyAllModels"), w, now));
-    }
-    Snapshot::ok(panels, Some(REFRESH_SECS))
+/// The live plan windows, or `None` when there is no reading at all (no Claude
+/// Code login on this machine, or `/usage` refusing with nothing cached).
+///
+/// No transcript scan and no Console call happen here - this is the cached
+/// `/usage` reading the dashboard already shares, so asking for it again every
+/// few minutes costs nothing the dashboard is not already spending.
+pub async fn plan_percents() -> Option<PlanPercents> {
+    let official = official_usage().await?;
+    Some(PlanPercents {
+        session: official.five_hour.map(|w| w.percent),
+        weekly: official.weekly.map(|w| w.percent),
+    })
 }
 
 pub struct ClaudeConnector;

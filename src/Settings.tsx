@@ -5,6 +5,7 @@ import { useFlash } from "./flash";
 import { THEMES, getStoredTheme, setTheme, type ThemeChoice } from "./theme";
 import { LOCALES, getLocale, setLocale, t } from "./i18n";
 import { DEV_MODE_TAPS, isDevMode, setDevMode } from "./devmode";
+import TaskbarSettings from "./TaskbarSettings";
 
 // App-wide preferences. Connector credentials and per-connector options live on
 // the Connectors page instead; this section writes only its own config slice.
@@ -109,6 +110,8 @@ export default function Settings({ onLocaleChange }: { onLocaleChange: (locale: 
           </button>
         </div>
       </section>
+
+      <TaskbarSettings error={error} />
 
       <AboutCard flash={flash} />
     </div>

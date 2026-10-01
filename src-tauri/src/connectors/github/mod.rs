@@ -213,97 +213,93 @@ pub async fn fetch_account(
     Ok(snapshot)
 }
 
-/// One account's own numbers over `range`, for the widget: the PRs that
-/// account's login merged and created, and the lines those merged PRs touched.
-/// `label` picks the account (the widget's sub-tabs); `None` takes the first
-/// configured one, as the dashboard's generic entry point does.
+/// The PRs the user opened and merged over a range, for the taskbar readout.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MyPrCounts {
+    pub opened: u64,
+    pub merged: u64,
+}
+
+/// The user's own PRs opened and merged over `range`, summed across every
+/// configured account.
 ///
 /// This is not the dashboard fetch narrowed down. The dashboard reports on the
 /// account's configured orgs and counts every contributor in them; this asks
 /// `author:<viewer>` instead, so it needs no org configuration, sees the user's
-/// work wherever it happened, and costs two Search queries plus one GraphQL
-/// enrichment rather than three per org plus the calendar. Cheap enough to run
-/// from a window that only ever fetches when the user asks it to.
+/// work wherever it happened, and costs two Search queries per account.
 ///
-/// Every outcome comes back as a `Snapshot` carrying the right `Health`, so the
-/// widget renders a one-line status instead of a raw error.
-pub async fn fetch_mine(label: Option<String>, range: DateRange) -> Snapshot {
-    // A label with no token in the keychain is a real state - an account row
-    // saved before its token was pasted - and it belongs to that sub-tab alone,
-    // so it must not fall back to another account's numbers under this one's
-    // name.
-    let resolved = match &label {
-        Some(label) => GithubConfig::for_account(label, None),
-        None => GithubConfig::resolve(),
+/// Each login is counted once: two accounts can hold tokens for the same
+/// person, and adding their numbers would double every PR.
+///
+/// `Ok(None)` means no account is configured, so there is nothing to show;
+/// `Err` means every account failed, so the caller can keep the last good
+/// reading rather than blank a number over a network blip.
+pub async fn my_pr_counts(range: DateRange) -> Result<Option<MyPrCounts>, String> {
+    let labels: Vec<String> = crate::engine::config::load()
+        .github
+        .accounts
+        .into_iter()
+        .map(|a| a.label)
+        .collect();
+    let configs: Vec<GithubConfig> = if labels.is_empty() {
+        // The env-var fallback the dashboard's generic entry point also honours.
+        GithubConfig::resolve().into_iter().collect()
+    } else {
+        labels
+            .iter()
+            .filter_map(|label| GithubConfig::for_account(label, None))
+            .collect()
     };
-    let Some(cfg) = resolved else {
-        return Snapshot::needs_auth(i18n::t("github.needsAuth"));
-    };
-    match run_fetch_mine(&cfg, &range).await {
-        Ok(snapshot) => snapshot,
-        Err(GithubError::RateLimited { retry_after_secs }) => {
-            rate_limited_snapshot(retry_after_secs)
-        }
-        Err(GithubError::Misconfigured(message)) => Snapshot {
-            status: Health::Misconfigured { message },
-            panels: vec![],
-            fetched_at: Utc::now(),
-            next_refresh_secs: None,
-        },
-        Err(e) => Snapshot {
-            status: Health::Error {
-                message: e.to_string(),
-            },
-            panels: vec![],
-            fetched_at: Utc::now(),
-            next_refresh_secs: None,
-        },
+
+    if configs.is_empty() {
+        return Ok(None);
     }
+
+    let mut seen = std::collections::HashSet::new();
+    let mut total: Option<MyPrCounts> = None;
+    let mut last_error = String::new();
+    for cfg in &configs {
+        match count_mine(cfg, &range).await {
+            Ok((login, counts)) => {
+                let sum = total.get_or_insert_with(MyPrCounts::default);
+                if seen.insert(login.to_lowercase()) {
+                    sum.opened += counts.opened;
+                    sum.merged += counts.merged;
+                }
+            }
+            Err(e) => last_error = format!("{}: {e}", cfg.label),
+        }
+    }
+    total.map(Some).ok_or(last_error)
 }
 
-async fn run_fetch_mine(cfg: &GithubConfig, range: &DateRange) -> Result<Snapshot, GithubError> {
+/// One account's login and its own PR counts over `range`.
+async fn count_mine(
+    cfg: &GithubConfig,
+    range: &DateRange,
+) -> Result<(String, MyPrCounts), GithubError> {
     let range = range.normalized();
     let bounds = range.ist_bounds();
     let client = GithubClient::new(&cfg.token)?;
-    // Nothing to cancel: the widget runs one fetch at a time, on demand.
+    // Nothing to cancel: the readout runs one fetch at a time.
     let cancel = Cancel::none();
 
     // Whose PRs to count. Taken from the token rather than the account label,
     // which is a name the user typed and need not be their login.
     let login = client.viewer_profile().await?.login;
 
-    let opened = client
-        .search_issues(&format!("author:{login} type:pr created:{bounds}"), &cancel)
-        .await?;
-    let merged = client
-        .search_issues(&format!("author:{login} type:pr merged:{bounds}"), &cancel)
-        .await?;
-
-    // Line counts live on the PR itself, so only the merged set is enriched -
-    // the same merged-based definition the dashboard's line table uses.
-    let refs: Vec<PrRef> = merged.items.iter().map(|it| it.pr_ref()).collect();
-    let enriched = if refs.is_empty() {
-        Vec::new()
-    } else {
-        client.enrich_prs(&refs, &cancel).await?
-    };
-    let additions = enriched.iter().map(|e| e.additions).sum();
-    let deletions = enriched.iter().map(|e| e.deletions).sum();
-
     // The counts come from GitHub's own `total_count` rather than the rows it
     // served: one person's PRs cannot realistically pass the 1000-result cap,
-    // but if they ever did, counting rows would quietly report the cap as the
-    // answer. The line totals can only ever cover the rows we hold.
-    Ok(Snapshot::ok(
-        vec![aggregate::mine_stats(
-            &login,
-            opened.total,
-            merged.total,
-            additions,
-            deletions,
-        )],
-        Some(REFRESH_SECS),
-    ))
+    // but if they ever did, counting rows would quietly report the cap.
+    let opened = client
+        .search_issues(&format!("author:{login} type:pr created:{bounds}"), &cancel)
+        .await?
+        .total;
+    let merged = client
+        .search_issues(&format!("author:{login} type:pr merged:{bounds}"), &cancel)
+        .await?
+        .total;
+    Ok((login, MyPrCounts { opened, merged }))
 }
 
 /// One dashboard fetch. `cancel` is polled between requests, so a fetch the user

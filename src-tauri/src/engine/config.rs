@@ -42,6 +42,8 @@ pub struct AppConfig {
     /// (dependabot and similar).
     #[serde(alias = "filter_bots")]
     pub filter_bots: bool,
+    /// The Windows taskbar readout: whether it shows, and what on which line.
+    pub taskbar: crate::taskbar::TaskbarConfig,
 }
 
 impl Default for AppConfig {
@@ -53,6 +55,7 @@ impl Default for AppConfig {
             claude: ClaudeConfig::default(),
             sentry: SentryConfig::default(),
             filter_bots: true,
+            taskbar: Default::default(),
         }
     }
 }

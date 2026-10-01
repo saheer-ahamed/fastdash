@@ -20,6 +20,17 @@
     "githubBlurb": "Pull requests opened, merged and closed by each person, across the orgs you follow.",
     "sentryBlurb": "Unresolved issues that fired today, which projects they came from, and how many people they hit."
   },
+  "taskbar": {
+    "session": "Session {pct}%",
+    "weekly": "Week {pct}%",
+    "prs": "PRs",
+    "opened": "{n} opened",
+    "merged": "{n} merged"
+  },
+  "tray": {
+    "open": "Open fastdash",
+    "quit": "Quit"
+  },
   "range": {
     "today": "Today",
     "yesterday": "Yesterday",
@@ -119,6 +130,16 @@
     "removeAccount": "Remove",
     "accountN": "Account {n}",
     "noGithubAccounts": "No accounts yet. Add one to start tracking PRs.",
+    "taskbar": "Taskbar",
+    "taskbarShow": "Show a readout in the Windows taskbar, next to the clock",
+    "taskbarLede": "Choose which line each number goes on. Changes show on the taskbar straight away.",
+    "taskbarTop": "Top",
+    "taskbarBottom": "Bottom",
+    "taskbarOff": "Off",
+    "metricClaudeSession": "Claude session (5-hour limit)",
+    "metricClaudeWeekly": "Claude weekly limit",
+    "metricGithubOpened": "PRs you opened today",
+    "metricGithubMerged": "PRs you merged today",
     "about": "About",
     "version": "Version",
     "devModeCountdown": "{n} more taps to toggle developer mode",

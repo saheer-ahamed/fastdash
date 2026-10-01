@@ -92,6 +92,9 @@ Updates ride the signed NSIS installer; Scoop and `install.ps1` keep using the p
   Nothing fetches on a timer in Rust: the frontend drives every fetch, and only for the dashboard on screen while the app window has focus.
 - `src-tauri/src/connectors/` - self-contained connectors behind the trait; adding one needs zero UI changes.
 - `src-tauri/src/ipc.rs` - the Tauri command surface exposed to the frontend.
+- `src-tauri/src/taskbar/` - the Windows taskbar readout: `mod.rs` picks and formats the numbers, `win.rs` draws them in a native layered child window of `Shell_TrayWnd`.
+  It is the one reading refreshed on a timer, and the timer lives in the frontend (`src/taskbar.ts`), not in Rust.
+  Closing the main window hides it; the tray icon's Quit is the way out.
 - `src/` - React frontend; the UI only ever renders generic `Panel`s.
 
 ## Build & check commands

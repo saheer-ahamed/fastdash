@@ -57,10 +57,28 @@ Two readings deliberately ignore it, because they are "right now" values rather 
 
 ## Refreshing
 
-Nothing polls on a timer in the background.
+The dashboards never poll on a timer in the background.
 The frontend drives every fetch, and only for the dashboard currently on screen while the app window has focus - switching tabs or clicking away costs nothing, and a cached result younger than the connector's TTL is reused instead of refetched.
 
 Fetches are also serialized per connector: starting a new one cancels the previous, so flipping between sub-tabs cannot burn through the GitHub Search budget or repaint stale numbers out of order.
+
+The one exception is the taskbar readout below, which exists to be current while the dashboard is closed.
+
+## The taskbar readout
+
+On Windows, fastdash puts a small two-line readout in the taskbar, just left of the notification area, laid out like the clock:
+
+```
+Session 4% · Week 15%
+PRs 44 opened · 2 merged
+```
+
+The top line is Claude's 5-hour session and weekly plan limits; the bottom line is the pull requests you opened and merged today, summed across every GitHub account you have connected (each login counted once).
+A connector that is not set up simply leaves its numbers out.
+Click the readout to open the dashboard.
+
+Closing the dashboard window hides it rather than quitting, so the readout keeps going; the fastdash icon in the notification area opens it again, and its **Quit** item exits.
+The readout refreshes every two minutes, driven by the frontend like every other fetch, which costs one cached Claude `/usage` read and two GitHub Search queries per account.
 
 ## Settings
 

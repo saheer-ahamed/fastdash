@@ -36,6 +36,7 @@ import {
 import { getLocale, setLocale, t } from "./i18n";
 import { useDevMode } from "./devmode";
 import { checkForUpdate, installUpdate, type Update } from "./updater";
+import { useTaskbarReadout } from "./taskbar";
 
 // Which of the two pinned bottom pages is showing, if either.
 type Page = "connectors" | "settings";
@@ -87,6 +88,18 @@ export default function App() {
   // and the connector's own tab is the thing on screen. `active` alone is not
   // enough - a pinned page (Connectors / Settings) covers the dashboard.
   const focused = useWindowFocus();
+  // The taskbar readout follows which connectors are set up, so connecting or
+  // disconnecting one redraws it straight away.
+  // Held back until the list has answered, so startup costs one refresh, not a
+  // refresh for "nothing connected" followed by the real one.
+  useTaskbarReadout(
+    listed
+      ? connectors
+          .filter((c) => c.configured)
+          .map((c) => c.id)
+          .join(",")
+      : null,
+  );
   const live = page === null ? active : null;
   // GitHub view state lives here, not in <GithubView>, so it survives tab
   // switches. Otherwise leaving and re-entering the GitHub tab unmounts the
