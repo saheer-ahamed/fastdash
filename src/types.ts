@@ -135,4 +135,15 @@ export interface AppConfig {
   claude: ClaudeConfig;
   sentry: { accounts: SentryAccount[] };
   filterBots: boolean;
+  taskbar: TaskbarConfig;
+}
+
+/// One number the Windows taskbar readout can show - mirrors `taskbar::Metric`.
+export type TaskbarMetric = "claudeSession" | "claudeWeekly" | "githubOpened" | "githubMerged";
+
+/// The taskbar readout's settings - mirrors `taskbar::TaskbarConfig`.
+export interface TaskbarConfig {
+  enabled: boolean;
+  /** What each line shows, top to bottom. */
+  lines: TaskbarMetric[][];
 }
