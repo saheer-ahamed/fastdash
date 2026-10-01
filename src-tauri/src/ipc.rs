@@ -226,16 +226,13 @@ pub fn open_external(url: String) -> Result<(), String> {
 }
 
 /// Re-read the numbers on the taskbar readout and redraw it, as the saved
-/// settings describe it - or hide it, when it is turned off. The frontend calls
-/// this on its own schedule; nothing in Rust refreshes it on a timer.
+/// settings describe it - or hide it, when it is turned off. Called at startup
+/// and when the settings change; after that the readout's own refresh icon is
+/// the only thing that refreshes it.
 #[tauri::command]
 pub async fn taskbar_refresh(state: State<'_, Arc<RwLock<AppConfig>>>) -> Result<(), String> {
     let settings = state.read().map_err(|e| e.to_string())?.taskbar.clone();
-    if settings.enabled {
-        taskbar::refresh(&settings.lines).await;
-    } else {
-        taskbar::clear();
-    }
+    taskbar::apply(&settings).await;
     Ok(())
 }
 

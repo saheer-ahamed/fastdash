@@ -106,8 +106,24 @@ pub fn run() {
             #[cfg(desktop)]
             {
                 tray::build(app.handle())?;
-                let handle = app.handle().clone();
-                taskbar::start(move || show_main(&handle));
+                let open = app.handle().clone();
+                let refresh = app.handle().clone();
+                taskbar::start(
+                    move || show_main(&open),
+                    // The readout's refresh icon: fetch on the async runtime,
+                    // never on the readout's own thread, which must not block.
+                    move || {
+                        let app = refresh.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let state = app.state::<Arc<RwLock<AppConfig>>>();
+                            let settings = match state.read() {
+                                Ok(config) => config.taskbar.clone(),
+                                Err(_) => return,
+                            };
+                            taskbar::apply(&settings).await;
+                        });
+                    },
+                );
             }
 
             Ok(())

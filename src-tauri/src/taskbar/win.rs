@@ -17,6 +17,11 @@
 // Explorer's, so nothing on it may ever block: it only draws and forwards
 // clicks.
 //
+// The readout is two buttons in one window. Hovering it shows a refresh icon on
+// its left, which asks for fresh numbers; the numbers themselves open the
+// dashboard. Each part has its own hover highlight. The icon's space is kept
+// while it is hidden, so showing it never shifts the numbers.
+//
 // Nothing polls. The readout is redrawn when its text changes and when Windows
 // says something moved: a location change on the taskbar or the tray (window
 // event hook), a theme, scaling or display change (broadcasts to the hidden
@@ -61,6 +66,8 @@ const WM_REDRAW: u32 = WM_APP + 1;
 /// the rest of the app; everything else lives on the readout's own thread.
 struct Shared {
     lines: Vec<String>,
+    /// Whether a refresh is under way; the icon dims and ignores clicks.
+    busy: bool,
     /// The host window, once created. Stored as an integer because `HWND` is a
     /// raw pointer and not `Send`; it is only ever used to post a message.
     host: Option<isize>,
@@ -68,18 +75,38 @@ struct Shared {
 
 static SHARED: Mutex<Shared> = Mutex::new(Shared {
     lines: Vec::new(),
+    busy: false,
     host: None,
 });
 
-static ON_CLICK: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
+/// What a click does, by where it lands.
+struct Actions {
+    open: Box<dyn Fn() + Send + Sync>,
+    refresh: Box<dyn Fn() + Send + Sync>,
+}
+
+static ACTIONS: OnceLock<Actions> = OnceLock::new();
+
+/// The part of the readout under the pointer.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum Zone {
+    #[default]
+    None,
+    /// The refresh icon.
+    Refresh,
+    /// The numbers, which open the dashboard.
+    Numbers,
+}
 
 /// State owned by the readout thread.
 #[derive(Default)]
 struct Ui {
     /// The window inside the taskbar, while one exists.
     readout: Option<HWND>,
-    /// Whether the pointer is over the readout, for the hover highlight.
-    hover: bool,
+    /// Which part the pointer is over, for the icon and the hover highlight.
+    hover: Zone,
+    /// Where the refresh icon's zone ends, from the last paint.
+    refresh_w: i32,
     /// The location-change hook on Explorer, re-made with the taskbar.
     hook: Option<HWINEVENTHOOK>,
     /// The taskbar and tray the readout is laid out against.
@@ -91,9 +118,10 @@ thread_local! {
     static UI: RefCell<Ui> = RefCell::new(Ui::default());
 }
 
-/// Start the readout thread. Called once, at startup.
-pub fn start(on_click: Box<dyn Fn() + Send + Sync>) {
-    if ON_CLICK.set(on_click).is_err() {
+/// Start the readout thread. Called once, at startup. `open` runs when the
+/// numbers are clicked, `refresh` when the refresh icon is.
+pub fn start(open: Box<dyn Fn() + Send + Sync>, refresh: Box<dyn Fn() + Send + Sync>) {
+    if ACTIONS.set(Actions { open, refresh }).is_err() {
         return;
     }
     let spawned = std::thread::Builder::new()
@@ -106,11 +134,20 @@ pub fn start(on_click: Box<dyn Fn() + Send + Sync>) {
 
 /// Replace the readout's text; an empty list hides it.
 pub fn set_lines(lines: Vec<String>) {
+    update(|shared| std::mem::replace(&mut shared.lines, lines.clone()) != lines);
+}
+
+/// Mark a refresh as started or finished.
+pub fn set_busy(busy: bool) {
+    update(|shared| std::mem::replace(&mut shared.busy, busy) != busy);
+}
+
+/// Apply `change` and, if it reports a difference, ask the readout to redraw.
+fn update(change: impl FnOnce(&mut Shared) -> bool) {
     let mut shared = SHARED.lock().unwrap_or_else(|e| e.into_inner());
-    if shared.lines == lines {
+    if !change(&mut shared) {
         return;
     }
-    shared.lines = lines;
     if let Some(host) = shared.host {
         // SAFETY: posting to a window handle is sound even if it has since
         // been destroyed; the call just fails.
@@ -247,7 +284,7 @@ unsafe fn embed() {
         ui.taskbar = Some(taskbar);
         ui.tray = tray;
         ui.hook = (!hook.is_invalid()).then_some(hook);
-        ui.hover = false;
+        ui.hover = Zone::None;
     });
     layout();
 }
@@ -306,17 +343,38 @@ unsafe extern "system" fn host_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
     }
 }
 
+/// Which part of the readout a client-area x coordinate falls in.
+fn zone_at(lp: LPARAM) -> Zone {
+    // The low word of `lp` is the signed x coordinate.
+    let x = (lp.0 & 0xFFFF) as u16 as i16 as i32;
+    let refresh_w = UI.with_borrow(|ui| ui.refresh_w);
+    if x < refresh_w {
+        Zone::Refresh
+    } else {
+        Zone::Numbers
+    }
+}
+
 unsafe extern "system" fn readout_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
         WM_LBUTTONUP => {
-            if let Some(on_click) = ON_CLICK.get() {
-                on_click();
+            if let Some(actions) = ACTIONS.get() {
+                match zone_at(lp) {
+                    Zone::Refresh => {
+                        let busy = SHARED.lock().unwrap_or_else(|e| e.into_inner()).busy;
+                        if !busy {
+                            (actions.refresh)();
+                        }
+                    }
+                    _ => (actions.open)(),
+                }
             }
             LRESULT(0)
         }
         WM_MOUSEMOVE => {
-            let entered = UI.with_borrow_mut(|ui| !std::mem::replace(&mut ui.hover, true));
-            if entered {
+            let zone = zone_at(lp);
+            let before = UI.with_borrow_mut(|ui| std::mem::replace(&mut ui.hover, zone));
+            if before == Zone::None {
                 let mut track = TRACKMOUSEEVENT {
                     cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
                     dwFlags: TME_LEAVE,
@@ -324,12 +382,14 @@ unsafe extern "system" fn readout_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
                     dwHoverTime: 0,
                 };
                 let _ = TrackMouseEvent(&mut track);
+            }
+            if before != zone {
                 layout();
             }
             LRESULT(0)
         }
         WM_MOUSELEAVE => {
-            UI.with_borrow_mut(|ui| ui.hover = false);
+            UI.with_borrow_mut(|ui| ui.hover = Zone::None);
             layout();
             LRESULT(0)
         }
@@ -373,11 +433,10 @@ unsafe fn layout() {
     else {
         return;
     };
-    let lines = SHARED
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .lines
-        .clone();
+    let (lines, busy) = {
+        let shared = SHARED.lock().unwrap_or_else(|e| e.into_inner());
+        (shared.lines.clone(), shared.busy)
+    };
     if lines.is_empty() {
         let _ = ShowWindow(readout, SW_HIDE);
         return;
@@ -410,9 +469,10 @@ unsafe fn layout() {
     let px = |v: i32| (v * dpi as i32 + 48) / 96;
 
     let light = light_taskbar();
-    let Some(bitmap) = render(&lines, dpi, bar_h, hover, light) else {
+    let Some(bitmap) = render(&lines, dpi, bar_h, hover, busy, light) else {
         return;
     };
+    UI.with_borrow_mut(|ui| ui.refresh_w = bitmap.refresh_w);
     let width = bitmap.width;
     let x = (anchor.x - px(2) - width).max(0).min(bar_w - width);
 
@@ -435,6 +495,8 @@ struct Bitmap {
     old: windows::Win32::Graphics::Gdi::HGDIOBJ,
     width: i32,
     height: i32,
+    /// Where the refresh icon's zone ends, for hit-testing clicks.
+    refresh_w: i32,
 }
 
 impl Bitmap {
@@ -477,11 +539,11 @@ impl Drop for Bitmap {
     }
 }
 
-/// The clock's typeface where Windows 11 has it, Segoe UI elsewhere.
-unsafe fn font(dc: HDC, dpi: u32) -> HFONT {
-    // The clock is 12px at 100% scaling.
-    let height = -((12 * dpi as i32 + 48) / 96);
-    for face in ["Segoe UI Variable Text", "Segoe UI"] {
+/// The first of `faces` this machine has, `px` pixels tall at 100% scaling.
+/// The last face is taken unconditionally.
+unsafe fn font(dc: HDC, faces: &[&str], px: i32, dpi: u32) -> HFONT {
+    let height = -((px * dpi as i32 + 48) / 96);
+    for (i, face) in faces.iter().enumerate() {
         let mut lf = LOGFONTW {
             lfHeight: height,
             lfWeight: 400,
@@ -499,7 +561,7 @@ unsafe fn font(dc: HDC, dpi: u32) -> HFONT {
         let n = GetTextFaceW(dc, Some(&mut got)) as usize;
         SelectObject(dc, old);
         let picked = String::from_utf16_lossy(&got[..n.saturating_sub(1).min(got.len())]);
-        if picked.eq_ignore_ascii_case(face) || face == "Segoe UI" {
+        if picked.eq_ignore_ascii_case(face) || i == faces.len() - 1 {
             return f;
         }
         let _ = DeleteObject(f.into());
@@ -507,21 +569,40 @@ unsafe fn font(dc: HDC, dpi: u32) -> HFONT {
     unreachable!("the loop returns on its last face")
 }
 
-/// Paint `lines` right-aligned and vertically centred, as white-on-black
-/// coverage first, then convert that coverage into premultiplied colour and
-/// alpha. GDI cannot draw text with alpha itself, so the grayscale
+/// The clock's typeface where Windows 11 has it, Segoe UI elsewhere. The clock
+/// is 12px at 100% scaling.
+const TEXT_FACES: &[&str] = &["Segoe UI Variable Text", "Segoe UI"];
+const TEXT_PX: i32 = 12;
+/// The system icon font: Fluent on Windows 11, MDL2 on Windows 10. Both have
+/// the Refresh glyph at the same code point.
+const ICON_FACES: &[&str] = &["Segoe Fluent Icons", "Segoe MDL2 Assets"];
+const ICON_PX: i32 = 13;
+const REFRESH_GLYPH: u16 = 0xE72C;
+
+/// Paint `lines` (right-aligned, vertically centred) and, while the readout is
+/// hovered or refreshing, the refresh icon left of them. Everything is drawn
+/// as white-on-black coverage first, then converted into premultiplied colour
+/// and alpha: GDI cannot draw text with alpha itself, so the grayscale
 /// anti-aliasing it produces is used as the alpha channel.
 unsafe fn render(
     lines: &[String],
     dpi: u32,
     height: i32,
-    hover: bool,
+    hover: Zone,
+    busy: bool,
     light: bool,
 ) -> Option<Bitmap> {
     let px = |v: i32| (v * dpi as i32 + 48) / 96;
     let dc = CreateCompatibleDC(None);
-    let f = font(dc, dpi);
-    let old_font = SelectObject(dc, f.into());
+
+    let icon_font = font(dc, ICON_FACES, ICON_PX, dpi);
+    let old_font = SelectObject(dc, icon_font.into());
+    let glyph = [REFRESH_GLYPH];
+    let mut icon = SIZE::default();
+    let _ = GetTextExtentPoint32W(dc, &glyph, &mut icon);
+
+    let f = font(dc, TEXT_FACES, TEXT_PX, dpi);
+    SelectObject(dc, f.into());
 
     let wide: Vec<Vec<u16>> = lines.iter().map(|l| l.encode_utf16().collect()).collect();
     let mut text_w = 0;
@@ -535,7 +616,10 @@ unsafe fn render(
     let line_h = tm.tmHeight;
 
     let pad = px(8);
-    let width = text_w + 2 * pad;
+    // The icon's zone is the glyph with padding either side; the numbers' zone
+    // is the rest.
+    let refresh_w = icon.cx + 2 * pad;
+    let width = refresh_w + text_w + pad;
 
     let header = BITMAPINFOHEADER {
         biSize: size_of::<BITMAPINFOHEADER>() as u32,
@@ -557,6 +641,7 @@ unsafe fn render(
         _ => {
             SelectObject(dc, old_font);
             let _ = DeleteObject(f.into());
+            let _ = DeleteObject(icon_font.into());
             let _ = DeleteDC(dc);
             return None;
         }
@@ -572,8 +657,15 @@ unsafe fn render(
         let _ = GetTextExtentPoint32W(dc, l, &mut s);
         let _ = TextOutW(dc, width - pad - s.cx, top + i as i32 * line_h, l);
     }
+    // The icon only while it can be used or is working: hidden at rest, so
+    // the readout reads like the clock.
+    if hover != Zone::None || busy {
+        SelectObject(dc, icon_font.into());
+        let _ = TextOutW(dc, pad, (height - icon.cy) / 2, &glyph);
+    }
     SelectObject(dc, old_font);
     let _ = DeleteObject(f.into());
+    let _ = DeleteObject(icon_font.into());
 
     let pixels = std::slice::from_raw_parts_mut(bits as *mut u32, (width * height) as usize);
     let (text_rgb, glow_rgb, glow_alpha) = if light {
@@ -582,18 +674,29 @@ unsafe fn render(
         (0xFFu32, 0xFFu32, 0.08f32)
     };
     // The hover highlight: a rounded rectangle inset from the taskbar's edges,
-    // as the clock and the task buttons draw theirs.
+    // as the clock and the task buttons draw theirs, over whichever part is
+    // under the pointer.
     let inset = px(4);
     let radius = px(4) as f32;
+    let gap = px(1);
+    let glow_span = match hover {
+        Zone::None => None,
+        Zone::Refresh => Some((0, refresh_w - gap)),
+        Zone::Numbers => Some((refresh_w + gap, width)),
+    };
+    // A refresh in flight dims the icon, which is also why clicks on it are
+    // ignored until it finishes.
+    let icon_alpha = if busy { 0.35 } else { 1.0 };
     for y in 0..height {
         for x in 0..width {
             let i = (y * width + x) as usize;
-            let coverage = (pixels[i] & 0xFF) as f32 / 255.0;
-            let glow = if hover {
-                glow_alpha * rounded_rect_coverage(x, y, width, height, inset, radius)
-            } else {
-                0.0
-            };
+            let mut coverage = (pixels[i] & 0xFF) as f32 / 255.0;
+            if x < refresh_w {
+                coverage *= icon_alpha;
+            }
+            let glow = glow_span.map_or(0.0, |(left, right)| {
+                glow_alpha * rounded_rect_coverage(x, y, left, right, height, inset, radius)
+            });
             // Never fully transparent: a zero-alpha pixel lets clicks fall
             // through to the taskbar, and the whole readout should be a button.
             let bg_a = glow.max(1.0 / 255.0);
@@ -614,14 +717,16 @@ unsafe fn render(
         old: old_bitmap,
         width,
         height,
+        refresh_w,
     })
 }
 
-/// How much of pixel (x, y) a rounded rectangle inset by `inset` from the top
-/// and bottom covers, anti-aliased across one pixel at the corners.
-fn rounded_rect_coverage(x: i32, y: i32, w: i32, h: i32, inset: i32, r: f32) -> f32 {
+/// How much of pixel (x, y) a rounded rectangle spanning `left..right`, inset
+/// by `inset` from the top and bottom of `h`, covers, anti-aliased across one
+/// pixel at the corners.
+fn rounded_rect_coverage(x: i32, y: i32, left: i32, right: i32, h: i32, inset: i32, r: f32) -> f32 {
     let (cx, cy) = (x as f32 + 0.5, y as f32 + 0.5);
-    let (left, right) = (0.0, w as f32);
+    let (left, right) = (left as f32, right as f32);
     let (top, bottom) = (inset as f32, (h - inset) as f32);
     if cx < left || cx > right || cy < top || cy > bottom {
         return 0.0;
