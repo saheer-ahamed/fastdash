@@ -5,13 +5,14 @@
 // This half is platform-neutral: which numbers, and how they read. The drawing
 // lives in `win.rs`; on other platforms the readout is simply absent.
 //
-// Nothing here runs on a timer. The frontend calls `refresh` (through the
-// `taskbar_refresh` command) on its own schedule, the same way it drives every
-// other fetch.
+// Nothing here runs on a timer. The numbers are fetched when the app starts or
+// the readout's settings change (the frontend calls `taskbar_refresh`), and
+// after that only when the user clicks the readout's refresh icon.
 
 #[cfg(windows)]
 mod win;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use chrono::NaiveDate;
@@ -103,16 +104,38 @@ static LAST_PRS: Mutex<Option<(NaiveDate, github::MyPrCounts)>> = Mutex::new(Non
 
 /// Start drawing the readout. It stays empty, and so invisible, until the first
 /// `refresh`. `on_click` runs when the user clicks it.
-pub fn start(on_click: impl Fn() + Send + Sync + 'static) {
+pub fn start(
+    on_open: impl Fn() + Send + Sync + 'static,
+    on_refresh: impl Fn() + Send + Sync + 'static,
+) {
     #[cfg(windows)]
-    win::start(Box::new(on_click));
+    win::start(Box::new(on_open), Box::new(on_refresh));
     #[cfg(not(windows))]
-    let _ = on_click;
+    let _ = (on_open, on_refresh);
 }
+
+/// Bring the readout in line with `settings`: fetch and redraw it, or hide it
+/// when it is turned off.
+pub async fn apply(settings: &TaskbarConfig) {
+    if settings.enabled {
+        refresh(&settings.lines).await;
+    } else {
+        clear();
+    }
+}
+
+/// Whether a refresh is under way. A second one asked for meanwhile (a click
+/// racing the startup fetch) is dropped: it would spend the same queries to
+/// paint the same numbers.
+static REFRESHING: AtomicBool = AtomicBool::new(false);
 
 /// Fetch what `lines` asks for and redraw. Only the connectors a line names
 /// are asked, so a readout without GitHub metrics spends no Search budget.
-pub async fn refresh(lines: &[Vec<Metric>]) {
+async fn refresh(lines: &[Vec<Metric>]) {
+    if REFRESHING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    set_busy(true);
     let wants = |pick: fn(Metric) -> bool| lines.iter().flatten().any(|m| pick(*m));
     let wants_github = wants(Metric::is_github);
     let wants_claude = wants(|m| !m.is_github());
@@ -148,6 +171,15 @@ pub async fn refresh(lines: &[Vec<Metric>]) {
     );
 
     show(compose(lines, &Readings { plan, prs }));
+    set_busy(false);
+    REFRESHING.store(false, Ordering::Release);
+}
+
+fn set_busy(busy: bool) {
+    #[cfg(windows)]
+    win::set_busy(busy);
+    #[cfg(not(windows))]
+    let _ = busy;
 }
 
 /// Hide the readout, for when the user turns it off.

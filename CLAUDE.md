@@ -93,7 +93,7 @@ Updates ride the signed NSIS installer; Scoop and `install.ps1` keep using the p
 - `src-tauri/src/connectors/` - self-contained connectors behind the trait; adding one needs zero UI changes.
 - `src-tauri/src/ipc.rs` - the Tauri command surface exposed to the frontend.
 - `src-tauri/src/taskbar/` - the Windows taskbar readout: `mod.rs` picks and formats the numbers, `win.rs` draws them in a native layered child window of `Shell_TrayWnd`.
-  It is the one reading refreshed on a timer, and the timer lives in the frontend (`src/taskbar.ts`), not in Rust.
+  Like everything else it never refreshes on a timer: it is filled at startup and on settings changes (`src/taskbar.ts`), then only by its hover-revealed refresh icon.
   Closing the main window hides it; the tray icon's Quit is the way out.
 - `src/` - React frontend; the UI only ever renders generic `Panel`s.
 
