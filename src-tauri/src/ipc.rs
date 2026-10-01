@@ -208,47 +208,6 @@ pub async fn github_fetch(
     .await
 }
 
-/// The widget's GitHub reading for one account: that login's own PRs and line
-/// counts over `range` (defaults to today), with `label` naming the account
-/// (`None` = the first configured one). A separate, much cheaper fetch than the
-/// dashboard's - see `connectors::github::fetch_mine`.
-#[tauri::command]
-pub async fn pip_github(label: Option<String>, range: Option<DateRange>) -> Snapshot {
-    crate::connectors::github::fetch_mine(label, range.unwrap_or_default()).await
-}
-
-/// The widget's Claude reading: the live 5-hour session and weekly plan meters,
-/// off the same throttled `/usage` cache the dashboard uses.
-#[tauri::command]
-pub async fn pip_claude() -> Snapshot {
-    crate::connectors::claude::plan_meters().await
-}
-
-/// Give the main window one of its three shapes: the dashboard, the always-on-
-/// top widget, or the square the widget minimizes into.
-///
-/// Window shape is decided here rather than in the frontend so the geometry to
-/// restore has one owner, and so the frontend needs no window-mutating
-/// permissions beyond dragging.
-#[tauri::command]
-pub fn set_pip_mode(app: AppHandle, mode: crate::pip::Mode) -> Result<(), String> {
-    crate::pip::set_mode(&main_window(&app)?, mode).map_err(|e| e.to_string())
-}
-
-/// Slide the minimized square up or down its edge by `dy` physical pixels.
-/// Ignored in any other mode, so a drag that races the widget unfolding cannot
-/// move the widget itself.
-#[tauri::command]
-pub fn nudge_tiny(app: AppHandle, dy: i32) -> Result<(), String> {
-    crate::pip::nudge_tiny(&main_window(&app)?, dy).map_err(|e| e.to_string())
-}
-
-/// Close the app from a window that has no title bar to close it with.
-#[tauri::command]
-pub fn close_app(app: AppHandle) -> Result<(), String> {
-    main_window(&app)?.close().map_err(|e| e.to_string())
-}
-
 fn main_window(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
     use tauri::Manager;
     app.get_webview_window("main")
