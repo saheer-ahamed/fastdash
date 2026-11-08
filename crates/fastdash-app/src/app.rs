@@ -13,6 +13,7 @@ use gpui::{
 };
 
 use crate::dashboard::Dashboard;
+use crate::github_view::GithubView;
 use crate::i18n::t;
 use crate::range_filter::{RangeChanged, RangeFilter};
 use crate::theme::{self, Theme};
@@ -45,7 +46,10 @@ pub struct Root {
     active: Option<String>,
     page: Option<Page>,
     dashboard: Entity<Dashboard>,
+    github: Entity<GithubView>,
     range_filter: Entity<RangeFilter>,
+    /// Whether the window is active. Every fetch in the app is gated on it.
+    focused: bool,
     /// The IST day the app believes it is on, re-read as the calendar rolls.
     today: NaiveDate,
     _subscriptions: Vec<Subscription>,
@@ -77,12 +81,19 @@ impl Root {
                 cx,
             )
         });
+        // GitHub renders per-account views that fetch themselves, so the
+        // generic dashboard never spends a second round of the same
+        // rate-limited API on a snapshot nothing renders.
+        let github = cx.new(|cx| GithubView::new(range_filter.clone(), cx));
         // The sidebar dots follow what each dashboard last loaded.
         let dashboard_changed = cx.observe(&dashboard, |_, _, cx| cx.notify());
+        let github_changed = cx.observe(&github, |_, _, cx| cx.notify());
         // The range is shared, so switching tabs keeps showing the same days.
         let range_changed = cx.subscribe(&range_filter, |this, _, event: &RangeChanged, cx| {
             let range = event.range.clone();
-            this.dashboard.update(cx, |d, cx| d.set_range(range, cx));
+            this.dashboard
+                .update(cx, |d, cx| d.set_range(range.clone(), cx));
+            this.github.update(cx, |g, cx| g.set_range(range, cx));
         });
         let focused = window.is_window_active();
         let mut root = Root {
@@ -93,13 +104,20 @@ impl Root {
             active: None,
             page: None,
             dashboard,
+            github,
             range_filter,
+            focused,
             today: today_ist(),
-            _subscriptions: vec![appearance, activation, dashboard_changed, range_changed],
+            _subscriptions: vec![
+                appearance,
+                activation,
+                dashboard_changed,
+                github_changed,
+                range_changed,
+            ],
             _midnight: Task::ready(()),
         };
-        root.dashboard
-            .update(cx, |d, cx| d.set_watched(focused, cx));
+        root.sync_dashboard(cx);
         root.schedule_midnight(cx);
         root.reload_connectors(cx);
         root
@@ -152,7 +170,8 @@ impl Root {
         if active {
             self.check_today(cx);
         }
-        self.dashboard.update(cx, |d, cx| d.set_watched(active, cx));
+        self.focused = active;
+        self.sync_dashboard(cx);
     }
 
     /// Follow the calendar. The app is long-lived: left running past midnight
@@ -193,16 +212,28 @@ impl Root {
         cx.notify();
     }
 
-    /// Point the dashboard at the connector on screen - none while a pinned
-    /// page covers it.
+    /// The connector whose dashboard is on screen: none while a pinned page
+    /// covers it.
+    fn live(&self) -> Option<&str> {
+        self.active.as_deref().filter(|_| self.page.is_none())
+    }
+
+    /// Point the dashboards at what is on screen and tell them whether they
+    /// are being watched - the tab is showing and the window has focus.
     fn sync_dashboard(&mut self, cx: &mut Context<Self>) {
-        let meta = self
-            .active
-            .as_ref()
-            .filter(|_| self.page.is_none())
-            .and_then(|id| self.connectors.iter().find(|c| &c.meta.id == id))
+        let live = self.live().map(str::to_string);
+        let on_github = live.as_deref() == Some("github");
+        let meta = live
+            .filter(|_| !on_github)
+            .and_then(|id| self.connectors.iter().find(|c| c.meta.id == id))
             .map(|c| c.meta.clone());
-        self.dashboard.update(cx, |d, cx| d.show(meta, cx));
+        let focused = self.focused;
+        self.dashboard.update(cx, |d, cx| {
+            d.show(meta, cx);
+            d.set_watched(focused, cx);
+        });
+        self.github
+            .update(cx, |g, cx| g.set_watched(focused && on_github, cx));
     }
 
     fn sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -216,7 +247,12 @@ impl Root {
             .map(|c| {
                 let id = c.meta.id.clone();
                 let active = self.page.is_none() && self.active.as_deref() == Some(id.as_str());
-                let dot = status_color(self.dashboard.read(cx).status(&id), &th);
+                let status = if id == "github" {
+                    self.github.read(cx).status()
+                } else {
+                    self.dashboard.read(cx).status(&id)
+                };
+                let dot = status_color(status, &th);
                 sidebar_tab(
                     SharedString::from(format!("tab-{id}")),
                     c.meta.name.clone(),
@@ -296,6 +332,7 @@ impl Root {
                 // answered, so it never flashes on the way to a dashboard.
                 None if self.listed => ui::topbar(t("welcome.title"), None, cx).into_any_element(),
                 None => div().into_any_element(),
+                Some(id) if id == "github" => self.github.clone().into_any_element(),
                 Some(_) => self.dashboard.clone().into_any_element(),
             },
         }
