@@ -12,8 +12,10 @@
 #![allow(dead_code)]
 
 mod app;
+mod assets;
 mod dashboard;
 mod fonts;
+mod github_view;
 mod i18n;
 mod panels;
 mod prefs;
@@ -35,28 +37,30 @@ fn main() {
     let registry = Arc::new(Registry::with_default_connectors());
     let ui_prefs = prefs::load();
 
-    Application::new().run(move |cx: &mut App| {
-        let choice = ui_prefs.theme;
-        cx.set_global(ui_prefs);
-        theme::apply(choice, cx.window_appearance(), cx);
-        fonts::install(cx);
-        ui::text_input::bind_keys(cx);
-        ui::text_input::install_focus_actions(cx);
+    Application::new()
+        .with_assets(assets::Assets)
+        .run(move |cx: &mut App| {
+            let choice = ui_prefs.theme;
+            cx.set_global(ui_prefs);
+            theme::apply(choice, cx.window_appearance(), cx);
+            fonts::install(cx);
+            ui::text_input::bind_keys(cx);
+            ui::text_input::install_focus_actions(cx);
 
-        let options = WindowOptions {
-            window_bounds: Some(WindowBounds::centered(size(px(1120.), px(740.)), cx)),
-            window_min_size: Some(size(px(880.), px(560.))),
-            titlebar: Some(TitlebarOptions {
-                title: Some("fastdash".into()),
+            let options = WindowOptions {
+                window_bounds: Some(WindowBounds::centered(size(px(1120.), px(740.)), cx)),
+                window_min_size: Some(size(px(880.), px(560.))),
+                titlebar: Some(TitlebarOptions {
+                    title: Some("fastdash".into()),
+                    ..Default::default()
+                }),
+                app_id: Some("co.zro.fastdash".into()),
                 ..Default::default()
-            }),
-            app_id: Some("co.zro.fastdash".into()),
-            ..Default::default()
-        };
-        cx.open_window(options, |window, cx| {
-            cx.new(|cx| Root::new(registry, config, window, cx))
-        })
-        .expect("failed to open the main window");
-        cx.activate(true);
-    });
+            };
+            cx.open_window(options, |window, cx| {
+                cx.new(|cx| Root::new(registry, config, window, cx))
+            })
+            .expect("failed to open the main window");
+            cx.activate(true);
+        });
 }
