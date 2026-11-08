@@ -5,6 +5,8 @@
 //! Views compose these and never set a colour of their own, so a theme change
 //! restyles everything by construction.
 
+pub mod tooltip;
+
 use gpui::{
     div, prelude::*, px, relative, App, Div, ElementId, FontWeight, Hsla, SharedString, Stateful,
 };

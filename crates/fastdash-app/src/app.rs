@@ -3,12 +3,14 @@
 use std::sync::Arc;
 
 use fastdash_core::engine::config::AppConfig;
-use fastdash_core::engine::connector::ConnectorMeta;
+use fastdash_core::engine::connector::{ConnectorMeta, Health};
 use fastdash_core::engine::registry::Registry;
 use gpui::{
-    div, prelude::*, px, AnyElement, Context, FontWeight, SharedString, Subscription, Window,
+    div, prelude::*, px, AnyElement, Context, Entity, FontWeight, SharedString, Subscription,
+    Window,
 };
 
+use crate::dashboard::Dashboard;
 use crate::i18n::t;
 use crate::theme::{self, Theme};
 use crate::ui;
@@ -39,7 +41,8 @@ pub struct Root {
     listed: bool,
     active: Option<String>,
     page: Option<Page>,
-    _appearance: Subscription,
+    dashboard: Entity<Dashboard>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl Root {
@@ -53,6 +56,9 @@ impl Root {
         let appearance = cx.observe_window_appearance(window, |_, window, cx| {
             theme::apply(prefs::get(cx).theme, window.appearance(), cx);
         });
+        let dashboard = cx.new(|_| Dashboard::new(Arc::clone(&registry), config.timezone.clone()));
+        // The sidebar dots follow what each dashboard last loaded.
+        let dashboard_changed = cx.observe(&dashboard, |_, _, cx| cx.notify());
         let mut root = Root {
             registry,
             config,
@@ -60,7 +66,8 @@ impl Root {
             listed: false,
             active: None,
             page: None,
-            _appearance: appearance,
+            dashboard,
+            _subscriptions: vec![appearance, dashboard_changed],
         };
         root.reload_connectors(cx);
         root
@@ -100,6 +107,7 @@ impl Root {
                 }
                 this.connectors = list;
                 this.listed = true;
+                this.sync_dashboard(cx);
                 cx.notify();
             });
         })
@@ -109,12 +117,26 @@ impl Root {
     fn select_connector(&mut self, id: String, cx: &mut Context<Self>) {
         self.page = None;
         self.active = Some(id);
+        self.sync_dashboard(cx);
         cx.notify();
     }
 
     fn select_page(&mut self, page: Page, cx: &mut Context<Self>) {
         self.page = Some(page);
+        self.sync_dashboard(cx);
         cx.notify();
+    }
+
+    /// Point the dashboard at the connector on screen - none while a pinned
+    /// page covers it.
+    fn sync_dashboard(&mut self, cx: &mut Context<Self>) {
+        let meta = self
+            .active
+            .as_ref()
+            .filter(|_| self.page.is_none())
+            .and_then(|id| self.connectors.iter().find(|c| &c.meta.id == id))
+            .map(|c| c.meta.clone());
+        self.dashboard.update(cx, |d, cx| d.show(meta, cx));
     }
 
     fn sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -128,10 +150,11 @@ impl Root {
             .map(|c| {
                 let id = c.meta.id.clone();
                 let active = self.page.is_none() && self.active.as_deref() == Some(id.as_str());
+                let dot = status_color(self.dashboard.read(cx).status(&id), &th);
                 sidebar_tab(
                     SharedString::from(format!("tab-{id}")),
                     c.meta.name.clone(),
-                    th.idle,
+                    dot,
                     active,
                     &th,
                 )
@@ -207,21 +230,7 @@ impl Root {
                 // answered, so it never flashes on the way to a dashboard.
                 None if self.listed => ui::topbar(t("welcome.title"), None, cx).into_any_element(),
                 None => div().into_any_element(),
-                Some(id) => {
-                    let name = self
-                        .connectors
-                        .iter()
-                        .find(|c| &c.meta.id == id)
-                        .map(|c| c.meta.name.clone())
-                        .unwrap_or_default();
-                    div()
-                        .flex()
-                        .flex_col()
-                        .size_full()
-                        .child(ui::topbar(name, None, cx))
-                        .child(ui::empty(t("app.loading"), cx))
-                        .into_any_element()
-                }
+                Some(_) => self.dashboard.clone().into_any_element(),
             },
         }
     }
@@ -284,5 +293,18 @@ fn sidebar_tab(
     } else {
         base.text_color(th.muted)
             .hover(move |s| s.bg(th.panel_2).text_color(th.text))
+    }
+}
+
+/// The colour of a sidebar dot for what a tab last loaded. A tab not opened
+/// yet stays idle rather than claiming a status nothing measured.
+pub fn status_color(status: Option<&Health>, th: &Theme) -> gpui::Hsla {
+    match status {
+        Some(Health::Ok) => th.ok,
+        Some(
+            Health::NeedsAuth { .. } | Health::RateLimited { .. } | Health::Misconfigured { .. },
+        ) => th.warn,
+        Some(Health::Error { .. }) => th.err,
+        None => th.idle,
     }
 }
