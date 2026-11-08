@@ -18,12 +18,18 @@ use super::{
     token_guide, token_help, FormEvent,
 };
 use crate::i18n::{t, tf};
+use crate::prefs;
 use crate::runtime;
 use crate::ui::text_input::{InputEvent, TextInput};
+use crate::ui::tour::{self, Anchors, Step, TourAction};
 use crate::ui::{self, overlay};
 
 /// The README section spelling out the scopes each panel needs.
 pub const TOKEN_DOCS_URL: &str = "https://github.com/saheer-ahamed/fastdash#connecting-github";
+
+/// Walkthrough id for the "seen" flag. Bump it if the steps change enough
+/// that returning users should be shown them again.
+const TOUR_ID: &str = "github";
 
 /// A scope and its qualifier are one entry even when typed as `user: octocat`,
 /// so collapse around the colon before splitting on commas and whitespace.
@@ -67,6 +73,15 @@ pub struct GithubForm {
     connect: Option<Connect>,
     guide_open: bool,
     guide_focus: gpui::FocusHandle,
+    /// The walkthrough's current step, while it is open.
+    tour: Option<usize>,
+    /// The step whose target has been scrolled into view. A step's target is
+    /// only measurable once it has been laid out, so the scroll happens on the
+    /// first render that knows where it is.
+    scrolled_for: Option<usize>,
+    tour_focus: gpui::FocusHandle,
+    anchors: Anchors,
+    scroll: gpui::ScrollHandle,
     _copied: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -74,7 +89,7 @@ pub struct GithubForm {
 impl EventEmitter<FormEvent> for GithubForm {}
 
 impl GithubForm {
-    pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(scroll: gpui::ScrollHandle, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut form = GithubForm {
             rows: Vec::new(),
             next_key: 0,
@@ -82,6 +97,11 @@ impl GithubForm {
             connect: None,
             guide_open: false,
             guide_focus: cx.focus_handle(),
+            tour: None,
+            scrolled_for: None,
+            tour_focus: cx.focus_handle(),
+            anchors: Anchors::new(cx.entity_id()),
+            scroll,
             _copied: None,
             _subscriptions: Vec::new(),
         };
@@ -89,7 +109,59 @@ impl GithubForm {
             form.push_row(&account.label, &account.orgs.join(", "), cx);
         }
         form.refresh_stored(cx);
+        // Offer the walkthrough the first time this connector is opened.
+        if !prefs::get(cx).tours_seen.contains(TOUR_ID) {
+            form.start_tour(window, cx);
+        }
         form
+    }
+
+    /// The four things a newcomer has to understand, in the order they meet
+    /// them. The token and orgs steps point inside an account, so the
+    /// walkthrough opens a blank one when there is none yet - which is also
+    /// where the user has to start.
+    fn start_tour(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.rows.is_empty() {
+            self.push_row("", "", cx);
+        }
+        self.tour = Some(0);
+        self.scrolled_for = None;
+        window.focus(&self.tour_focus);
+        cx.notify();
+    }
+
+    fn tour_steps() -> Vec<Step> {
+        [
+            ("add-account", "tour.addAccountTitle", "tour.addAccountBody"),
+            ("pat", "tour.patTitle", "tour.patBody"),
+            ("orgs", "tour.orgsTitle", "tour.orgsBody"),
+            ("save", "tour.saveTitle", "tour.saveBody"),
+        ]
+        .into_iter()
+        .map(|(target, title, body)| Step {
+            target,
+            title: t(title),
+            body: t(body),
+        })
+        .collect()
+    }
+
+    fn tour_action(&mut self, action: TourAction, window: &mut Window, cx: &mut Context<Self>) {
+        let count = Self::tour_steps().len();
+        self.tour = match (action, self.tour) {
+            (TourAction::Next, Some(i)) => Some((i + 1).min(count - 1)),
+            (TourAction::Back, Some(i)) => Some(i.saturating_sub(1)),
+            _ => None,
+        };
+        self.scrolled_for = None;
+        match self.tour {
+            Some(_) => window.focus(&self.tour_focus),
+            // Ran to completion or skipped: never auto-open again.
+            None => prefs::update(cx, |p| {
+                p.tours_seen.insert(TOUR_ID.to_string());
+            }),
+        }
+        cx.notify();
     }
 
     fn push_row(&mut self, label: &str, orgs: &str, cx: &mut Context<Self>) {
@@ -491,25 +563,39 @@ impl GithubForm {
                             .on_click(|_, _, _| ui::open_url(TOKEN_DOCS_URL)),
                     )
                 });
-                div().child(div().flex().mb(px(14.)).child(connect)).child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .mb(px(12.))
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(8.))
-                                .mb(px(5.))
-                                .child(div().text_color(th.muted).child(label_text))
-                                .child(info),
-                        )
-                        .child(field)
-                        .children(token_stored.then(|| ui::hint(t("settings.tokenStored"), cx)))
-                        .children(help),
-                )
+                let pat_field = div()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .mb(px(5.))
+                            .child(div().text_color(th.muted).child(label_text))
+                            .child(info),
+                    )
+                    .child(field)
+                    .children(token_stored.then(|| ui::hint(t("settings.tokenStored"), cx)))
+                    .children(help);
+                // The first account's fields are what the walkthrough points at.
+                let pat_field = if i == 0 {
+                    tour::anchor(&self.anchors, "pat", pat_field)
+                } else {
+                    pat_field
+                };
+                div()
+                    .child(div().flex().mb(px(14.)).child(connect))
+                    .child(div().mb(px(12.)).child(pat_field))
             }
+        };
+        let orgs = ui::field(t("settings.orgs"), cx)
+            .mb_0()
+            .child(row.orgs.clone());
+        let orgs = if i == 0 {
+            tour::anchor(&self.anchors, "orgs", orgs)
+        } else {
+            orgs
         };
 
         account_card(cx)
@@ -520,11 +606,7 @@ impl GithubForm {
             ))
             .child(ui::field(t("settings.accountLabel"), cx).child(row.label.clone()))
             .child(token_area)
-            .child(
-                ui::field(t("settings.orgs"), cx)
-                    .mb_0()
-                    .child(row.orgs.clone()),
-            )
+            .child(orgs)
     }
 }
 
@@ -553,22 +635,60 @@ impl Render for GithubForm {
             let body = token_guide::render(TOKEN_DOCS_URL, close.clone(), cx);
             overlay::modal(window, &self.guide_focus, body, close)
         });
+        if let Some(index) = self.tour.filter(|i| self.scrolled_for != Some(*i)) {
+            let target = Self::tour_steps()[index].target;
+            if let Some(bounds) = self.anchors.get(target) {
+                tour::scroll_into_view(&self.scroll, bounds);
+                self.scrolled_for = Some(index);
+            }
+        }
+        let walkthrough = self.tour.map(|index| {
+            let this = cx.entity().downgrade();
+            tour::render(
+                &Self::tour_steps(),
+                index,
+                &self.anchors,
+                &self.tour_focus,
+                move |action, window, cx| {
+                    let _ = this.update(cx, |this, cx| this.tour_action(action, window, cx));
+                },
+                window,
+                cx,
+            )
+        });
+        let tools = div()
+            .flex()
+            .justify_end()
+            .mb(px(10.))
+            .text_size(px(ui::SMALL))
+            .child(
+                ui::link_button("gh-tour", t("tour.replay"), cx)
+                    .on_click(cx.listener(|this, _, window, cx| this.start_tour(window, cx))),
+            );
         ui::card(cx)
+            .child(tools)
             .children(empty)
             .children(rows)
             .child(
                 div()
                     .flex()
                     .gap(px(12.))
-                    .child(
+                    .child(tour::anchor(
+                        &self.anchors,
+                        "add-account",
                         ui::button("gh-add", t("settings.addAccount"), cx)
                             .on_click(cx.listener(|this, _, _, cx| this.push_row("", "", cx))),
-                    )
-                    .child(
+                    ))
+                    .child(tour::anchor(
+                        &self.anchors,
+                        "save",
                         ui::button("gh-save", t("settings.save"), cx)
                             .on_click(cx.listener(|this, _, _, cx| this.save_all(cx))),
-                    ),
+                    )),
             )
+            // The (i) inside the token step's hole stays clickable, so the
+            // guide can open mid-walkthrough and layers above it.
+            .children(walkthrough)
             .children(guide)
     }
 }

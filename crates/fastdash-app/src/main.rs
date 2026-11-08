@@ -25,6 +25,7 @@ mod runtime;
 mod settings;
 mod theme;
 mod ui;
+mod welcome;
 
 use std::sync::Arc;
 
