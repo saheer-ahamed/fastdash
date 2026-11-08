@@ -65,9 +65,3 @@ pub fn spawn_blocking<R: Send + 'static>(
     let handle = runtime().spawn_blocking(f);
     async move { handle.await.ok() }
 }
-
-/// Enter the runtime on the current thread, for code that calls a tokio API
-/// synchronously (e.g. a callback from a native thread).
-pub fn handle() -> tokio::runtime::Handle {
-    runtime().handle().clone()
-}

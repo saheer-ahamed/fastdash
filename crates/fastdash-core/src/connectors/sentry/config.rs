@@ -69,7 +69,7 @@ fn resolve(account: &SentryAccount) -> Option<SentryConnection> {
     })
 }
 
-/// The env-var connection, for `cargo test` and `npm run tauri dev` without
+/// The env-var connection, for `cargo test` and `cargo run -p fastdash-app` without
 /// touching the keychain.
 fn from_env() -> Option<SentryConnection> {
     let token = token_from_env()?;

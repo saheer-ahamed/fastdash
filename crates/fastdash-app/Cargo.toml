@@ -7,10 +7,8 @@ license.workspace = true
 publish = false
 build = "build.rs"
 
-# Named apart from the Tauri app's `fastdash.exe` while both are in the
-# workspace, so the two never overwrite each other in `target/`.
 [[bin]]
-name = "fastdash-gpui"
+name = "fastdash"
 path = "src/main.rs"
 
 [dependencies]

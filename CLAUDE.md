@@ -1,7 +1,7 @@
 # fastdash - project instructions
 
 A super-fast Claude usage + connectors dashboard.
-Tauri v2 (Rust backend, `src-tauri/`) + React/TypeScript frontend (`src/`), built and released through GitHub Actions.
+A Rust Cargo workspace: a UI-agnostic core (`crates/fastdash-core/`) and a native GPUI desktop UI (`crates/fastdash-app/`), built and released through GitHub Actions.
 
 These project rules add to my global `~/.claude/CLAUDE.md`; where they overlap, the stricter of the two wins.
 
@@ -20,7 +20,7 @@ Allowed types (defined once in `commitlint.config.js`, mirror any change here):
 | `fix` | Bug fix | patch bump |
 | `perf` | Performance improvement | patch bump |
 | `refactor` | Behavior-preserving code change | none |
-| `style` | Formatting only (fmt / prettier / eslint) | none |
+| `style` | Formatting only (`cargo fmt`) | none |
 | `docs` | Documentation only | none |
 | `test` | Tests only | none |
 | `build` | Build system, deps, bundling | none |
@@ -53,7 +53,7 @@ Fill in the PR template, including the release-impact box.
 
 ### Where enforcement lives (defense in depth)
 
-- Local, pre-commit: `.husky/pre-commit` runs eslint + `tsc` (frontend) and `cargo fmt --check` + `clippy -D warnings` (Rust) on staged files.
+- Local, pre-commit: `.husky/pre-commit` runs `cargo fmt --check` + `clippy -D warnings` over the workspace when Rust files are staged.
 - Local, commit-msg: `.husky/commit-msg` runs commitlint against the message.
 - CI, on every PR: `.github/workflows/pr-checks.yml` validates the PR title, the branch name, and every commit in the PR.
 
@@ -66,10 +66,10 @@ Wire the `pr-checks` jobs in as **required status checks** (Settings -> Branches
 
 1. Analyzes the Conventional Commits since the last tag and computes the next version (no releasable commits -> no release).
    The version comes from the highest `v*` tag, not the committed manifests.
-2. Bumps `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, and `src-tauri/tauri.conf.json` via `scripts/bump-version.sh` - the single source of truth for a bump.
+2. Bumps `package.json`, `package-lock.json`, the root `Cargo.toml` (`[workspace.package] version`) and `Cargo.lock` via `scripts/bump-version.sh` - the single source of truth for a bump.
 3. Makes the `chore(release): vX.Y.Z` bump commit locally and pushes **only the tag** - never a commit to `main`.
    The `Protect main` ruleset forbids direct pushes to the branch, but tag refs are unrestricted, and the tag carries the bumped manifests so each release is internally consistent.
-4. Builds the signed installers + portable zip and publishes the GitHub release (not a draft).
+4. Builds `fastdash.exe`, its NSIS installer (`installer/fastdash.nsi`) signed by `xtask`, and the portable zip, and publishes the GitHub release (not a draft).
 5. Uploads `latest.json` so installed apps self-update via the in-app updater.
 
 Because nothing is pushed to `main`, the manifests on the branch are **not** bumped between releases - that drift is cosmetic, since the version is always derived from the tags.
@@ -78,11 +78,13 @@ Never bump the version or push a `v*` tag manually; let the merge do it.
 
 ### In-app auto-update
 
-The app checks GitHub on launch (`src/updater.ts`, surfaced by the `UpdateBanner` in `src/App.tsx`) and, if a newer signed release exists, shows a non-blocking toast to install and restart - the download never happens without the user clicking.
+A release build checks GitHub on launch (`crates/fastdash-app/src/updater.rs`, surfaced as a toast) and, if a newer signed release exists, shows a non-blocking toast to install and restart - the download never happens without the user clicking.
 The check runs once at startup, so an already-running app only notices a new release on its next launch.
-Update artifacts are signed with a keypair: the **public** key lives in `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`); the **private** key and its password are the GitHub repo secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
+Update artifacts are signed with a keypair: the **public** key is `PUBLIC_KEY` in `crates/fastdash-app/src/updater.rs`; the **private** key and its password are the GitHub repo secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
 The private key (`fastdash.key`) must never be committed - it is gitignored.
-Updates ride the signed NSIS installer; Scoop and `install.ps1` keep using the portable zip from the same release.
+Updates ride the signed NSIS installer, which installs to the same folder and uninstall key as the old Tauri-built one, so those installs upgrade in place through their own updater.
+Scoop and `install.ps1` keep using the portable zip from the same release.
+Only CI release builds check for updates (`FASTDASH_RELEASE`); any other build carries the never-bumped workspace version.
 
 ## Layout
 
@@ -90,18 +92,16 @@ Updates ride the signed NSIS installer; Scoop and `install.ps1` keep using the p
 - `crates/fastdash-core/src/engine/` - connector-agnostic core: `Connector` trait, registry, config, secrets (OS keychain), snapshot cache, the shared fetch path (`refresh.rs`), i18n, and the shared date filter (`range.rs`).
   The UI's date filter resolves its presets to a `DateRange` and every fetch carries one (default: today);
   live "right now" readings - Claude's plan-limit meters, the GitHub contribution heatmap - deliberately ignore it.
-  Nothing fetches on a timer in Rust: the frontend drives every fetch, and only for the dashboard on screen while the app window has focus.
+  Nothing fetches on a timer in the core: the UI drives every fetch, and only for the dashboard on screen while the app window has focus.
 - `crates/fastdash-core/src/connectors/` - self-contained connectors behind the trait; adding one needs zero UI changes.
-- `crates/fastdash-app/` - the native desktop UI on GPUI, replacing `src/` + `src-tauri/` (being ported; not shipped yet).
-  `cargo run -p fastdash-app` starts it; its binary is `fastdash-gpui` until it replaces the Tauri app.
-- `src-tauri/src/ipc.rs` - the Tauri command surface exposed to the frontend.
+- `crates/fastdash-app/` - the native desktop UI on GPUI; it only ever renders generic `Panel`s. `cargo run -p fastdash-app` starts it.
+  UI-only preferences (theme, developer mode, tours seen) live in `ui.toml` beside the core's `config.toml`.
 - `crates/fastdash-core/src/taskbar/` - the Windows taskbar readout: `mod.rs` picks and formats the numbers, `win.rs` draws them in a native layered child window of `Shell_TrayWnd`.
-  Like everything else it never refreshes on a timer: it is filled at startup and on settings changes (`src/taskbar.ts`), then only by its hover-revealed refresh icon.
+  Like everything else it never refreshes on a timer: it is filled at startup, when connectors change and on settings changes, then only by its hover-revealed refresh icon.
   Closing the main window hides it; the tray icon's Quit is the way out.
-- `src/` - React frontend; the UI only ever renders generic `Panel`s.
+- `xtask/` - release tooling: signs artifacts and writes `latest.json`. `installer/` - the NSIS installer script.
 
 ## Build & check commands
 
-- `npm run dev` - Vite dev server; `npm run tauri dev` - full desktop app.
-- `npm run lint` / `npm run typecheck` - frontend gates.
+- `cargo run -p fastdash-app` - the desktop app. `npm install` only installs the git hooks.
 - At the repo root (the Cargo workspace): `cargo fmt --all`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace`.

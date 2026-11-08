@@ -31,7 +31,6 @@
         }
     },
     "notes": [
-        "fastdash reads your local ~/.claude transcripts. Nothing is uploaded.",
-        "Requires the WebView2 runtime, preinstalled on Windows 10 21H2+ and Windows 11."
+        "fastdash reads your local ~/.claude transcripts. Nothing is uploaded."
     ]
 }

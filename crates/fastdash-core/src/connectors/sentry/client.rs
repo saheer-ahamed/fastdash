@@ -528,7 +528,7 @@ mod tests {
     }
 
     /// A relative permalink (some self-hosted installs) is dropped rather than
-    /// rendered as a link the webview cannot open.
+    /// rendered as a link the app cannot open.
     #[test]
     fn non_http_permalinks_are_dropped() {
         let raw: RawIssue =

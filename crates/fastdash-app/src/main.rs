@@ -7,9 +7,6 @@
 
 // A release build is a GUI app: no console window behind it.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-// The port lands as a stack of PRs, and shared helpers arrive before the views
-// that use them. Removed once the GPUI app replaces the Tauri one.
-#![allow(dead_code)]
 
 mod app;
 mod assets;
