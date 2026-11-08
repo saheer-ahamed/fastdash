@@ -12,8 +12,10 @@
 #![allow(dead_code)]
 
 mod app;
+mod dashboard;
 mod fonts;
 mod i18n;
+mod panels;
 mod prefs;
 mod runtime;
 mod theme;
