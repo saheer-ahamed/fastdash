@@ -2091,6 +2091,7 @@ name = "fastdash-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "chrono",
  "directories",
  "embed-resource",
@@ -2098,8 +2099,10 @@ dependencies = [
  "futures",
  "gpui",
  "image",
+ "minisign-verify",
  "open",
  "raw-window-handle",
+ "reqwest 0.12.28",
  "serde",
  "tokio",
  "toml 0.8.23",

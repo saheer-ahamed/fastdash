@@ -29,6 +29,7 @@ mod theme;
 #[cfg(any(windows, target_os = "macos"))]
 mod tray;
 mod ui;
+mod updater;
 mod welcome;
 
 use std::sync::Arc;
