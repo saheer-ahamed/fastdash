@@ -76,6 +76,9 @@ pub fn patch_config(f: impl FnOnce(&mut AppConfig)) -> Result<AppConfig, String>
 
 pub struct ConnectorsPage {
     active: usize,
+    /// The form column's scroll position, so a walkthrough can bring its
+    /// target into view.
+    scroll: gpui::ScrollHandle,
     form: AnyView,
     flash: Entity<Flash>,
     _form_events: Subscription,
@@ -92,9 +95,11 @@ impl ConnectorsPage {
             .and_then(|id| TABS.iter().position(|t| t.id == id))
             .unwrap_or(0);
         let flash = cx.new(|_| Flash::default());
-        let (form, sub) = Self::mount(active, window, cx);
+        let scroll = gpui::ScrollHandle::new();
+        let (form, sub) = Self::mount(active, &scroll, window, cx);
         ConnectorsPage {
             active,
+            scroll,
             form,
             flash,
             _form_events: sub,
@@ -102,7 +107,12 @@ impl ConnectorsPage {
     }
 
     /// A fresh form for tab `ix`, so each one starts from saved state.
-    fn mount(ix: usize, window: &mut Window, cx: &mut Context<Self>) -> (AnyView, Subscription) {
+    fn mount(
+        ix: usize,
+        scroll: &gpui::ScrollHandle,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> (AnyView, Subscription) {
         let id = TABS[ix].id;
         let handler = move |this: &mut Self, event: &FormEvent, cx: &mut Context<Self>| match event
         {
@@ -123,7 +133,8 @@ impl ConnectorsPage {
                 (form.into(), sub)
             }
             "github" => {
-                let form = cx.new(|cx| github::GithubForm::new(window, cx));
+                let scroll = scroll.clone();
+                let form = cx.new(|cx| github::GithubForm::new(scroll, window, cx));
                 let sub = cx.subscribe(&form, move |this, _, e, cx| handler(this, e, cx));
                 (form.into(), sub)
             }
@@ -140,7 +151,7 @@ impl ConnectorsPage {
             return;
         }
         self.active = ix;
-        let (form, sub) = Self::mount(ix, window, cx);
+        let (form, sub) = Self::mount(ix, &self.scroll, window, cx);
         self.form = form;
         self._form_events = sub;
         cx.notify();
@@ -162,6 +173,7 @@ impl Render for ConnectorsPage {
             .child(
                 div()
                     .id("connector-form")
+                    .track_scroll(&self.scroll)
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()

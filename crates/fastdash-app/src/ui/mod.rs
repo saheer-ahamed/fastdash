@@ -8,6 +8,7 @@
 pub mod overlay;
 pub mod text_input;
 pub mod tooltip;
+pub mod tour;
 
 use gpui::{
     div, prelude::*, px, relative, App, Div, ElementId, FontWeight, Hsla, SharedString, Stateful,

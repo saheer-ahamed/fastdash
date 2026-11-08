@@ -398,7 +398,17 @@ impl Root {
             None => match self.active.as_ref() {
                 // Nothing connected yet. Held back until the list has actually
                 // answered, so it never flashes on the way to a dashboard.
-                None if self.listed => ui::topbar(t("welcome.title"), None, cx).into_any_element(),
+                None if self.listed => {
+                    let root = cx.entity().downgrade();
+                    crate::welcome::render(
+                        move |id, window, cx| {
+                            let _ = root.update(cx, |root, cx| {
+                                root.open_page(Page::Connectors, Some(id), window, cx)
+                            });
+                        },
+                        cx,
+                    )
+                }
                 None => div().into_any_element(),
                 Some(id) if id == "github" => self.github.clone().into_any_element(),
                 Some(_) => self.dashboard.clone().into_any_element(),
