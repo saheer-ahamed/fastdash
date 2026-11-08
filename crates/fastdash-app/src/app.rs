@@ -55,6 +55,7 @@ pub struct Root {
     /// The Settings page while it is showing, mounted fresh on each visit.
     settings_page: Option<(Entity<Settings>, Subscription)>,
     range_filter: Entity<RangeFilter>,
+    update_banner: Entity<crate::updater::UpdateBanner>,
     /// Whether the window is active. Every fetch in the app is gated on it.
     focused: bool,
     /// The IST day the app believes it is on, re-read as the calendar rolls.
@@ -118,6 +119,7 @@ impl Root {
             connectors_page: None,
             settings_page: None,
             range_filter,
+            update_banner: cx.new(crate::updater::UpdateBanner::new),
             focused,
             today: today_ist(),
             _subscriptions: vec![
@@ -448,6 +450,7 @@ impl Render for Root {
             .font_family(crate::fonts::family(cx))
             .text_size(px(ui::TEXT))
             .line_height(gpui::relative(1.5))
+            .child(self.update_banner.clone())
             .child(self.sidebar(cx))
             .child(
                 div()
