@@ -5,6 +5,7 @@
 //! Views compose these and never set a colour of their own, so a theme change
 //! restyles everything by construction.
 
+pub mod text_input;
 pub mod tooltip;
 
 use gpui::{

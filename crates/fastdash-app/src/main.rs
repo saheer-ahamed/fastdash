@@ -39,6 +39,8 @@ fn main() {
         cx.set_global(ui_prefs);
         theme::apply(choice, cx.window_appearance(), cx);
         fonts::install(cx);
+        ui::text_input::bind_keys(cx);
+        ui::text_input::install_focus_actions(cx);
 
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(size(px(1120.), px(740.)), cx)),
