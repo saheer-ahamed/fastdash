@@ -92,6 +92,8 @@ Updates ride the signed NSIS installer; Scoop and `install.ps1` keep using the p
   live "right now" readings - Claude's plan-limit meters, the GitHub contribution heatmap - deliberately ignore it.
   Nothing fetches on a timer in Rust: the frontend drives every fetch, and only for the dashboard on screen while the app window has focus.
 - `crates/fastdash-core/src/connectors/` - self-contained connectors behind the trait; adding one needs zero UI changes.
+- `crates/fastdash-app/` - the native desktop UI on GPUI, replacing `src/` + `src-tauri/` (being ported; not shipped yet).
+  `cargo run -p fastdash-app` starts it; its binary is `fastdash-gpui` until it replaces the Tauri app.
 - `src-tauri/src/ipc.rs` - the Tauri command surface exposed to the frontend.
 - `crates/fastdash-core/src/taskbar/` - the Windows taskbar readout: `mod.rs` picks and formats the numbers, `win.rs` draws them in a native layered child window of `Shell_TrayWnd`.
   Like everything else it never refreshes on a timer: it is filled at startup and on settings changes (`src/taskbar.ts`), then only by its hover-revealed refresh icon.

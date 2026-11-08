@@ -1,0 +1,48 @@
+//! The bridge between GPUI's executor and fastdash-core's tokio code.
+//!
+//! Connectors use reqwest, which needs a tokio runtime; GPUI drives its own
+//! executor on the platform event loop. One small multi-threaded tokio runtime
+//! runs every fetch and keychain call off the UI thread, and GPUI tasks simply
+//! await the returned future - a tokio `JoinHandle` is executor-agnostic.
+
+use std::future::Future;
+use std::sync::OnceLock;
+
+use tokio::runtime::Runtime;
+
+fn runtime() -> &'static Runtime {
+    static RT: OnceLock<Runtime> = OnceLock::new();
+    RT.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("fastdash-io")
+            .enable_all()
+            .build()
+            .expect("failed to start the tokio runtime")
+    })
+}
+
+/// Run `fut` on the tokio runtime. The returned future resolves to its output,
+/// or `None` if the task panicked or was cancelled.
+pub fn spawn<F>(fut: F) -> impl Future<Output = Option<F::Output>>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    let handle = runtime().spawn(fut);
+    async move { handle.await.ok() }
+}
+
+/// Run blocking work (keychain, filesystem) on tokio's blocking pool.
+pub fn spawn_blocking<R: Send + 'static>(
+    f: impl FnOnce() -> R + Send + 'static,
+) -> impl Future<Output = Option<R>> {
+    let handle = runtime().spawn_blocking(f);
+    async move { handle.await.ok() }
+}
+
+/// Enter the runtime on the current thread, for code that calls a tokio API
+/// synchronously (e.g. a callback from a native thread).
+pub fn handle() -> tokio::runtime::Handle {
+    runtime().handle().clone()
+}

@@ -1,0 +1,45 @@
+[package]
+name = "fastdash-app"
+description = "fastdash's native desktop UI, built on GPUI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+build = "build.rs"
+
+# Named apart from the Tauri app's `fastdash.exe` while both are in the
+# workspace, so the two never overwrite each other in `target/`.
+[[bin]]
+name = "fastdash-gpui"
+path = "src/main.rs"
+
+[dependencies]
+fastdash-core = { path = "../fastdash-core" }
+# Pinned exactly: GPUI is pre-1.0 and breaks between versions. Default
+# features are off because the default `windows-manifest` embeds GPUI's own
+# manifest, which lacks the Windows 8+ compatibility section the taskbar
+# readout needs - `build.rs` embeds ours instead (see resources/).
+gpui = { version = "=0.2.2", default-features = false }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+directories = "5"
+chrono = "0.4"
+open = "5"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+# Off Windows, GPUI needs a real text system and a windowing backend.
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui = { version = "=0.2.2", default-features = false, features = ["font-kit"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gpui = { version = "=0.2.2", default-features = false, features = ["wayland", "x11"] }
+
+[target.'cfg(target_os = "windows")'.build-dependencies]
+embed-resource = "3"
