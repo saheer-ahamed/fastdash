@@ -2,16 +2,19 @@
 
 use std::sync::Arc;
 
+use chrono::{DateTime, NaiveDate, Utc};
 use fastdash_core::engine::config::AppConfig;
 use fastdash_core::engine::connector::{ConnectorMeta, Health};
+use fastdash_core::engine::range::{ist, today_ist};
 use fastdash_core::engine::registry::Registry;
 use gpui::{
-    div, prelude::*, px, AnyElement, Context, Entity, FontWeight, SharedString, Subscription,
+    div, prelude::*, px, AnyElement, Context, Entity, FontWeight, SharedString, Subscription, Task,
     Window,
 };
 
 use crate::dashboard::Dashboard;
 use crate::i18n::t;
+use crate::range_filter::{RangeChanged, RangeFilter};
 use crate::theme::{self, Theme};
 use crate::ui;
 use crate::{prefs, runtime};
@@ -42,7 +45,11 @@ pub struct Root {
     active: Option<String>,
     page: Option<Page>,
     dashboard: Entity<Dashboard>,
+    range_filter: Entity<RangeFilter>,
+    /// The IST day the app believes it is on, re-read as the calendar rolls.
+    today: NaiveDate,
     _subscriptions: Vec<Subscription>,
+    _midnight: Task<()>,
 }
 
 impl Root {
@@ -56,9 +63,28 @@ impl Root {
         let appearance = cx.observe_window_appearance(window, |_, window, cx| {
             theme::apply(prefs::get(cx).theme, window.appearance(), cx);
         });
-        let dashboard = cx.new(|_| Dashboard::new(Arc::clone(&registry), config.timezone.clone()));
+        // Fetching is gated on the app being watched: the window is active. A
+        // background app makes no network calls at all.
+        let activation = cx.observe_window_activation(window, |this, window, cx| {
+            this.on_activation(window.is_window_active(), cx);
+        });
+        let range_filter = cx.new(RangeFilter::new);
+        let dashboard = cx.new(|cx| {
+            Dashboard::new(
+                Arc::clone(&registry),
+                config.timezone.clone(),
+                range_filter.clone(),
+                cx,
+            )
+        });
         // The sidebar dots follow what each dashboard last loaded.
         let dashboard_changed = cx.observe(&dashboard, |_, _, cx| cx.notify());
+        // The range is shared, so switching tabs keeps showing the same days.
+        let range_changed = cx.subscribe(&range_filter, |this, _, event: &RangeChanged, cx| {
+            let range = event.range.clone();
+            this.dashboard.update(cx, |d, cx| d.set_range(range, cx));
+        });
+        let focused = window.is_window_active();
         let mut root = Root {
             registry,
             config,
@@ -67,8 +93,14 @@ impl Root {
             active: None,
             page: None,
             dashboard,
-            _subscriptions: vec![appearance, dashboard_changed],
+            range_filter,
+            today: today_ist(),
+            _subscriptions: vec![appearance, activation, dashboard_changed, range_changed],
+            _midnight: Task::ready(()),
         };
+        root.dashboard
+            .update(cx, |d, cx| d.set_watched(focused, cx));
+        root.schedule_midnight(cx);
         root.reload_connectors(cx);
         root
     }
@@ -112,6 +144,40 @@ impl Root {
             });
         })
         .detach();
+    }
+
+    fn on_activation(&mut self, active: bool, cx: &mut Context<Self>) {
+        // A machine that slept across midnight fires the timer late; coming
+        // back to the window is the other moment to notice the new day.
+        if active {
+            self.check_today(cx);
+        }
+        self.dashboard.update(cx, |d, cx| d.set_watched(active, cx));
+    }
+
+    /// Follow the calendar. The app is long-lived: left running past midnight
+    /// it would otherwise keep fetching - and polling - the day it opened on,
+    /// with the "Today" chip still lit.
+    fn check_today(&mut self, cx: &mut Context<Self>) {
+        let now = today_ist();
+        if now != self.today {
+            self.today = now;
+            self.range_filter.update(cx, |f, cx| f.roll_to(now, cx));
+        }
+    }
+
+    /// Wake at the next IST midnight to roll the date filter over. Re-aimed
+    /// after every firing rather than run on a fixed 24h interval, which would
+    /// drift off midnight.
+    fn schedule_midnight(&mut self, cx: &mut Context<Self>) {
+        let wait = until_next_ist_midnight(Utc::now());
+        self._midnight = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(wait).await;
+            let _ = this.update(cx, |this, cx| {
+                this.check_today(cx);
+                this.schedule_midnight(cx);
+            });
+        });
     }
 
     fn select_connector(&mut self, id: String, cx: &mut Context<Self>) {
@@ -306,5 +372,38 @@ pub fn status_color(status: Option<&Health>, th: &Theme) -> gpui::Hsla {
         ) => th.warn,
         Some(Health::Error { .. }) => th.err,
         None => th.idle,
+    }
+}
+
+/// Time from `now` to the next IST midnight, never zero, so a timer built on
+/// it always moves forward.
+fn until_next_ist_midnight(now: DateTime<Utc>) -> std::time::Duration {
+    let local = now.with_timezone(&ist());
+    let next = local
+        .date_naive()
+        .succ_opt()
+        .and_then(|d| d.and_hms_opt(0, 0, 0))
+        .and_then(|t| t.and_local_timezone(ist()).single());
+    next.and_then(|next| (next - local).to_std().ok())
+        .unwrap_or_default()
+        .max(std::time::Duration::from_secs(1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_midnight_timer_aims_at_the_next_ist_day() {
+        // 23:59:30 IST on 2026-11-08 is 18:29:30 UTC.
+        let now = DateTime::parse_from_rfc3339("2026-11-08T18:29:30Z").unwrap();
+        let wait = until_next_ist_midnight(now.with_timezone(&Utc));
+        assert_eq!(wait.as_secs(), 30);
+        // Exactly midnight still waits a full day, never zero.
+        let now = DateTime::parse_from_rfc3339("2026-11-08T18:30:00Z").unwrap();
+        assert_eq!(
+            until_next_ist_midnight(now.with_timezone(&Utc)).as_secs(),
+            86_400
+        );
     }
 }
