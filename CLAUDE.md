@@ -55,7 +55,7 @@ Fill in the PR template, including the release-impact box.
 
 - Local, pre-commit: `.husky/pre-commit` runs `cargo fmt --check` + `clippy -D warnings` over the workspace when Rust files are staged.
 - Local, commit-msg: `.husky/commit-msg` runs commitlint against the message.
-- CI, on every PR: `.github/workflows/pr-checks.yml` validates the PR title, the branch name, and every commit in the PR.
+- CI, on every PR: `.github/workflows/pr-checks.yml` validates the PR title, the branch name, and every commit in the PR, and runs `cargo fmt --check`, clippy and the tests.
 
 Wire the `pr-checks` jobs in as **required status checks** (Settings -> Branches -> `main`) so a failing check actually blocks the merge.
 `git commit --no-verify` bypasses the local hooks in a genuine emergency only; CI still enforces on the PR.

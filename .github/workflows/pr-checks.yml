@@ -68,3 +68,22 @@ jobs:
       - run: npm ci
       - name: Lint PR commits
         run: npx commitlint --from "origin/${{ github.base_ref }}" --to "${{ github.event.pull_request.head.sha }}" --verbose
+
+  # The same gates the pre-commit hook runs, so a commit made with
+  # --no-verify, or from a machine without the hooks, cannot slip through.
+  # Windows, because that is what ships and what the taskbar readout and the
+  # tray compile for.
+  rust:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Lint
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Test
+        run: cargo test --workspace --locked
