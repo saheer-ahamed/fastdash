@@ -1,14 +1,11 @@
-# dependencies
+# repo tooling (git hooks, commitlint)
 /node_modules
-
-# frontend build output
-/dist
 
 # rust build output (the workspace target dir)
 /target
 
-# tauri generated schemas
-/src-tauri/gen/schemas
+# release staging (installer, zip, manifest) built by the release workflow
+/dist
 
 # secrets / local env (never commit)
 .env

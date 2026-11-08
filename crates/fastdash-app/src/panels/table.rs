@@ -355,7 +355,7 @@ fn header_cell(
     let label = div()
         .child(SharedString::from(col.label.to_uppercase()))
         .when(col.hint.is_some(), |d| {
-            // The dotted rule of the web UI: "hover me for what this counts".
+            // An underline that says "hover me for what this counts".
             d.underline().text_decoration_color(th.border_bright)
         });
     let numeric = col.numeric;

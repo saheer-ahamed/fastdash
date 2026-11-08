@@ -11,15 +11,15 @@ One glance shows Claude usage; connectors add GitHub, Sentry and Slack views.
 
 ## Stack
 
-- Tauri v2 desktop shell (small binary, native speed, cross-platform).
+- A native GPUI desktop UI (`crates/fastdash-app/`): GPU-rendered, one process, no webview.
 - Rust core (`crates/fastdash-core/`) for all fetching, parsing, and aggregation.
-- React + TypeScript frontend (`src/`) as a thin, generic renderer.
+- The UI is a thin, generic renderer of the core's `Panel`s.
 - Secrets in the OS keychain via the `keyring` crate (Windows Credential Manager).
 - Non-secret config in `%APPDATA%/fastdash/config.toml`.
 
 ## The isolation contract
 
-Every connector (Claude included) plugs into the core through one trait, so a new connector touches zero core and zero frontend code.
+Every connector (Claude included) plugs into the core through one trait, so a new connector touches zero core and zero UI code.
 
 ```rust
 #[async_trait]
@@ -32,7 +32,7 @@ pub trait Connector: Send + Sync {
 A `fetch` returns a `Snapshot { status, panels, fetched_at, next_refresh_secs }`.
 `status` is a `Health` enum (`Ok` / `NeedsAuth` / `RateLimited` / `Error`) that drives the sidebar status dot and any banner.
 
-Data crosses the Rust to JS boundary only as generic render primitives, so the frontend never learns what "GitHub" is:
+Data reaches the UI only as generic render primitives, so the UI never learns what "GitHub" is:
 
 - `StatCards` - KPI tiles (tokens, cost, mentions today).
 - `Meter` - a progress bar with an optional limit (5h window, weekly usage).
@@ -40,7 +40,7 @@ Data crosses the Rust to JS boundary only as generic render primitives, so the f
 - `BarList` - horizontal bars (effort split, top contributors).
 - `List` - a vertical list of links (Slack mentions, PR list).
 
-The core stays agnostic: `Registry` holds the connectors and a single shared path fetches one into the cache, emits the result, and returns it.
+The core stays agnostic: `Registry` holds the connectors and a single shared path fetches one into the cache and returns it.
 The UI decides when that runs - on opening a connector's tab, then on the connector's own interval for as long as that tab is on screen and the app window has focus.
 A dashboard nobody is looking at fetches nothing, so a backgrounded app makes no network calls at all.
 The engine types live in `crates/fastdash-core/src/engine/`; connectors live in `crates/fastdash-core/src/connectors/<name>/`.

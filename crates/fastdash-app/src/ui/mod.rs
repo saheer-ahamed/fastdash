@@ -1,6 +1,5 @@
-//! The design system: every reusable piece of chrome, translated one-to-one
-//! from the web UI's stylesheet (flat terminal look: monospace, monochrome, no
-//! radius, no shadows except floating layers).
+//! The design system: every reusable piece of chrome, in one flat terminal
+//! look (monospace, monochrome, no radius, no shadows except floating layers).
 //!
 //! Views compose these and never set a colour of their own, so a theme change
 //! restyles everything by construction.
@@ -16,7 +15,7 @@ use gpui::{
 
 use crate::theme::{self, Theme};
 
-/// Base text size; the web UI's `font: 13px/1.5`.
+/// Base text size, set at a 1.5 line height.
 pub const TEXT: f32 = 13.;
 /// The smaller size used for labels, chips and captions.
 pub const SMALL: f32 = 12.;
@@ -136,8 +135,6 @@ pub fn dot(color: Hsla) -> Div {
 /// What a status banner is about.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
-    Neutral,
-    Ok,
     Warn,
     Err,
 }
@@ -145,8 +142,6 @@ pub enum Tone {
 impl Tone {
     pub fn color(self, t: &Theme) -> Hsla {
         match self {
-            Tone::Neutral => t.muted,
-            Tone::Ok => t.ok,
             Tone::Warn => t.warn,
             Tone::Err => t.err,
         }
@@ -184,9 +179,8 @@ pub fn banner(
         }))
 }
 
-/// A 2px coloured rule over a bordered box's left edge - the web UI's
-/// `border-left: 2px solid <colour>`, which GPUI cannot express because a
-/// border has one colour for all four sides. The parent must be `relative()`.
+/// A 2px coloured rule over a bordered box's left edge, which GPUI cannot
+/// express as a border because a border has one colour for all four sides. The parent must be `relative()`.
 pub fn left_rule(color: Hsla) -> Div {
     div()
         .absolute()

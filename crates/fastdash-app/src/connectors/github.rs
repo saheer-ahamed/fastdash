@@ -444,7 +444,7 @@ impl GithubForm {
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(th.bright)
                             .flex()
-                            // The web UI's 4px letter-spacing, glyph by glyph.
+                            // 4px letter-spacing, glyph by glyph.
                             .gap(px(4.))
                             .children(device.user_code.chars().map(|c| div().child(c.to_string()))),
                     )

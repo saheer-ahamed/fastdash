@@ -3,8 +3,7 @@
 //! It knows nothing about which connector produced a panel - that is what keeps
 //! adding a connector a zero-UI-change job. Stateful panels (sortable tables,
 //! the heatmap's year rail) keep their state per panel through GPUI's keyed
-//! element state, so it survives re-renders but not leaving the view, exactly
-//! like the web UI's component state did.
+//! element state, so it survives re-renders but not leaving the view.
 
 mod heatmap;
 mod table;

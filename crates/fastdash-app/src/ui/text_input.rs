@@ -147,11 +147,6 @@ impl TextInput {
         cx.notify();
     }
 
-    pub fn set_placeholder(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
-        self.placeholder = text.into();
-        cx.notify();
-    }
-
     pub fn set_read_only(&mut self, read_only: bool, cx: &mut Context<Self>) {
         self.read_only = read_only;
         cx.notify();

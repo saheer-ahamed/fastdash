@@ -1,4 +1,4 @@
-//! Hover tooltips: a small floating note, the `title=` of the web UI.
+//! Hover tooltips: a small floating note beside what the pointer rests on.
 
 use gpui::{div, prelude::*, px, AnyView, App, Context, SharedString, Window};
 

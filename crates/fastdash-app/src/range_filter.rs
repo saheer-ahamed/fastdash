@@ -74,7 +74,6 @@ fn parse_custom(start: &str, end: &str, today: NaiveDate) -> Option<DateRange> {
 /// Emitted when the user picks a new range.
 pub struct RangeChanged {
     pub range: DateRange,
-    pub preset: Preset,
 }
 
 pub struct RangeFilter {
@@ -127,10 +126,7 @@ impl RangeFilter {
             return false;
         }
         self.range = next.clone();
-        cx.emit(RangeChanged {
-            range: next,
-            preset: self.preset,
-        });
+        cx.emit(RangeChanged { range: next });
         cx.notify();
         true
     }
@@ -159,7 +155,7 @@ impl RangeFilter {
     fn set(&mut self, range: DateRange, preset: Preset, cx: &mut Context<Self>) {
         self.preset = preset;
         self.range = range.clone();
-        cx.emit(RangeChanged { range, preset });
+        cx.emit(RangeChanged { range });
         cx.notify();
     }
 }

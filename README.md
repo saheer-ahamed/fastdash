@@ -2,7 +2,8 @@
 
 A super-fast desktop dashboard for Claude usage, with pluggable connectors (Claude, GitHub and Sentry today; Slack planned).
 
-Built with Tauri v2 (Rust core) and a React + TypeScript frontend.
+A native Rust app: a UI-agnostic core and a GPU-rendered desktop UI built on [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui), Zed's UI framework.
+No webview, no browser engine: one small process.
 
 ## What it shows
 
@@ -58,7 +59,7 @@ Two readings deliberately ignore it, because they are "right now" values rather 
 ## Refreshing
 
 The dashboards never poll on a timer in the background.
-The frontend drives every fetch, and only for the dashboard currently on screen while the app window has focus - switching tabs or clicking away costs nothing, and a cached result younger than the connector's TTL is reused instead of refetched.
+The UI drives every fetch, and only for the dashboard currently on screen while the app window has focus - switching tabs or clicking away costs nothing, and a cached result younger than the connector's TTL is reused instead of refetched.
 
 Fetches are also serialized per connector: starting a new one cancels the previous, so flipping between sub-tabs cannot burn through the GitHub Search budget or repaint stale numbers out of order.
 
@@ -85,7 +86,7 @@ Each refresh costs one cached Claude `/usage` read and two GitHub Search queries
 Under **Settings -> General**:
 
 - **Theme**: System, Dark, Light, Midnight, Amber, Green, or Paper.
-- **Language**: English today; the string catalog under `locales/<lang>/` is shared by the Rust backend and the frontend, so a new language is a set of JSON files plus one registration.
+- **Language**: English today; the string catalog under `locales/<lang>/` is shared by the core and the UI, so a new language is a set of JSON files plus one registration.
 - **Timezone** (IANA, e.g. `Asia/Kolkata`): the day boundary the date filter and the daily rollups use.
 - **Filter bot authors**: drops dependabot and similar from the GitHub contributor tables.
 
@@ -202,25 +203,22 @@ Config holds labels, orgs and preferences only.
 
 These are for building from source; installing a release needs none of them.
 
-- Rust (stable, MSVC toolchain on Windows)
-- Node.js 18+ and npm
-- On Windows: WebView2 (preinstalled on Windows 11) and the C++ build tools
+- Rust (stable, MSVC toolchain on Windows) and the C++ build tools
+- Node.js 18+ and npm, only for the git hooks and the commit-message linter
 
 ## Development
 
 ```bash
-npm install
-npm run tauri dev
+npm install          # installs the git hooks
+cargo run -p fastdash-app
 ```
-
-`npm run dev` alone runs the frontend in a browser, which is enough for UI work but has no Tauri backend.
 
 Gates that CI and the git hooks enforce:
 
 ```bash
-npm run lint
-npm run typecheck
-cargo fmt --all && cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo fmt --all
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace
 ```
 
 Commits, branches and PR titles follow Conventional Commits; see [CLAUDE.md](./CLAUDE.md) for the exact rules and where each one is enforced.
@@ -228,9 +226,10 @@ Commits, branches and PR titles follow Conventional Commits; see [CLAUDE.md](./C
 ## Build
 
 ```bash
-npm run tauri build
+cargo build --release -p fastdash-app   # target/release/fastdash.exe
 ```
 
+The installer is `installer/fastdash.nsi` (NSIS); the release workflow builds and signs it.
 Releases are automatic: merging to `main` computes the next version from the Conventional Commits since the last tag, builds the signed installers, and publishes the GitHub release.
 Never bump a version or push a `v*` tag by hand.
 
@@ -240,8 +239,8 @@ See [DESIGN.md](./DESIGN.md).
 
 - `crates/fastdash-core/src/engine/` - connector-agnostic core: the `Connector` trait, registry, config, keychain secrets, snapshot cache, the shared fetch path, i18n, and the shared date filter.
 - `crates/fastdash-core/src/connectors/` - self-contained connectors behind that trait.
-- `src-tauri/src/ipc.rs` - the Tauri command surface exposed to the frontend.
-- `src/` - the React frontend, which only ever renders generic `Panel`s.
+- `crates/fastdash-app/` - the desktop UI on GPUI, which only ever renders generic `Panel`s.
+- `xtask/` and `installer/` - release tooling: signing, the update manifest, the installer.
 
 ## Status
 
