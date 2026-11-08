@@ -1,0 +1,5 @@
+// Windows resources: the app icon (ID 1, which GPUI loads as the window icon)
+// and the application manifest.
+#define RT_MANIFEST 24
+1 ICON "icons/icon.ico"
+1 RT_MANIFEST "fastdash.manifest.xml"
