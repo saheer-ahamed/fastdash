@@ -9,7 +9,7 @@
 use std::ops::Range;
 
 use gpui::{
-    actions, div, fill, point, prelude::*, px, relative, size, App, Bounds, ClipboardItem, Context,
+    actions, div, fill, point, prelude::*, px, size, App, Bounds, ClipboardItem, Context,
     CursorStyle, ElementId, ElementInputHandler, Entity, EntityInputHandler, EventEmitter,
     FocusHandle, Focusable, GlobalElementId, KeyBinding, LayoutId, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine, SharedString, Style,
@@ -569,8 +569,15 @@ impl Element for TextElement {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let mut style = Style::default();
-        style.size.width = relative(1.).into();
+        // Fill whatever width the field has. A percentage width would only
+        // resolve under an ancestor of definite width, and form fields sit in
+        // auto-width columns; growing from a zero basis works in both.
+        let mut style = Style {
+            flex_grow: 1.,
+            flex_basis: px(0.).into(),
+            ..Default::default()
+        };
+        style.min_size.width = px(0.).into();
         style.size.height = window.line_height().into();
         (window.request_layout(style, [], cx), ())
     }
@@ -748,7 +755,6 @@ impl Render for TextInput {
         };
         div()
             .flex()
-            .w_full()
             .key_context(CONTEXT)
             .track_focus(&self.focus_handle(cx))
             .cursor(if self.read_only {
