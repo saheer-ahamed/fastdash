@@ -10,7 +10,7 @@ members = ["crates/fastdash-core", "crates/fastdash-app", "xtask"]
 # The app version, shared by every crate. `scripts/bump-version.sh` edits this
 # line on release; nothing else carries a version of its own.
 [workspace.package]
-version = "0.1.0"
+version = "0.18.1"
 edition = "2021"
 license = "MIT"
 
