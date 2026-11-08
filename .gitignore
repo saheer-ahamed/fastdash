@@ -4,8 +4,8 @@
 # frontend build output
 /dist
 
-# rust build output
-/src-tauri/target
+# rust build output (the workspace target dir)
+/target
 
 # tauri generated schemas
 /src-tauri/gen/schemas

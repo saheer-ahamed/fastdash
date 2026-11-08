@@ -70,6 +70,7 @@ pub const SUPERSEDED: &str = "superseded";
 /// clamped to the years the account has actually existed.
 const HEATMAP_YEARS: i32 = 5;
 
+#[derive(Default)]
 pub struct GithubConnector;
 
 impl GithubConnector {

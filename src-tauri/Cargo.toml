@@ -1,8 +1,9 @@
 [package]
 name = "fastdash"
-version = "0.1.0"
+version.workspace = true
 description = "A super-fast Claude usage + connectors dashboard"
-edition = "2021"
+edition.workspace = true
+license.workspace = true
 rust-version = "1.77"
 
 # The Tauri app is split into a lib (the actual app) and a thin main binary
@@ -15,6 +16,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# Everything that is not the Tauri shell: engine, connectors, taskbar readout.
+fastdash-core = { path = "../crates/fastdash-core" }
 tauri = { version = "2", features = ["tray-icon"] }
 # In-app auto-update: the updater plugin checks the signed GitHub release and
 # downloads the new installer; the process plugin restarts into it.
@@ -22,41 +25,7 @@ tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-async-trait = "0.1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs"] }
-chrono = { version = "0.4", features = ["serde"] }
-thiserror = "2"
-
-# --- Shared connector deps, pre-declared so per-connector worktrees never
-# --- collide on Cargo.toml. Each connector uses the subset it needs.
-reqwest = { version = "0.12", features = ["json"] }
-notify = "6"
-toml = "0.8"
-directories = "5"
-futures = "0.3"
 open = "5"
-
-# `keyring` needs a per-platform backend feature, so it is declared per target
-# rather than in `[dependencies]`: Credential Manager on Windows, Keychain
-# Services on macOS. Enabling the wrong one compiles to a no-op store that
-# silently loses secrets, hence the split.
-[target.'cfg(target_os = "windows")'.dependencies]
-keyring = { version = "3", features = ["windows-native"] }
-# The taskbar readout (`taskbar/win.rs`) is plain Win32. Pinned to the version
-# tauri itself pulls in, so it adds no second copy of the crate to the build.
-windows = { version = "0.61", features = [
-  "Win32_Foundation",
-  "Win32_Graphics_Gdi",
-  "Win32_System_LibraryLoader",
-  "Win32_System_Registry",
-  "Win32_UI_Accessibility",
-  "Win32_UI_HiDpi",
-  "Win32_UI_Input_KeyboardAndMouse",
-  "Win32_UI_WindowsAndMessaging",
-] }
-
-[target.'cfg(target_os = "macos")'.dependencies]
-keyring = { version = "3", features = ["apple-native"] }
 
 # Single-instance guard. Launching fastdash again (Start menu, shortcut, the
 # installer's "run now") must focus the window that is already open rather than
@@ -64,11 +33,3 @@ keyring = { version = "3", features = ["apple-native"] }
 # keychain entries. Desktop-only: mobile has no second-launch notion.
 [target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "2"
-
-# Smaller, faster release binaries.
-[profile.release]
-opt-level = "s"
-lto = true
-codegen-units = 1
-strip = true
-panic = "abort"

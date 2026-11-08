@@ -3,7 +3,7 @@
 use std::sync::{Arc, RwLock};
 
 use serde::Serialize;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 
 use crate::engine::cache::SnapshotCache;
 use crate::engine::config::AppConfig;
@@ -12,6 +12,21 @@ use crate::engine::range::DateRange;
 use crate::engine::registry::Registry;
 use crate::engine::{refresh, secrets};
 use crate::taskbar;
+
+/// Event name the UI subscribes to for live panel updates.
+pub const UPDATE_EVENT: &str = "connector:update";
+
+/// Payload of `connector:update`: which connector, which day range it covers,
+/// and its fresh snapshot. The range travels with the event so the UI files the
+/// result under the right cache slot instead of overwriting a different range
+/// the user is currently looking at.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectorUpdate {
+    id: String,
+    range: DateRange,
+    snapshot: Snapshot,
+}
 
 /// One connector as the sidebar sees it: its fixed identity plus whether it is
 /// connected right now.
@@ -86,8 +101,19 @@ pub async fn fetch_connector(
         .ok_or_else(|| format!("unknown connector: {id}"))?;
     let timezone = config.read().unwrap().timezone.clone();
     let cache = Arc::clone(cache.inner());
-    let range = range.unwrap_or_default();
-    Ok(refresh::refresh_one(&app, &connector, &cache, timezone, range).await)
+    let range = range.unwrap_or_default().normalized();
+    let snapshot = refresh::refresh_one(&connector, &cache, timezone, range.clone()).await;
+    // Broadcast the very snapshot being returned, so cached, emitted and
+    // returned data can never disagree.
+    let _ = app.emit(
+        UPDATE_EVENT,
+        ConnectorUpdate {
+            id: connector.meta().id,
+            range,
+            snapshot: snapshot.clone(),
+        },
+    );
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -207,12 +233,6 @@ pub async fn github_fetch(
         force.unwrap_or(false),
     )
     .await
-}
-
-fn main_window(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
-    use tauri::Manager;
-    app.get_webview_window("main")
-        .ok_or_else(|| "main window is gone".to_string())
 }
 
 /// Open a URL in the user's default external browser. Restricted to http(s) so a

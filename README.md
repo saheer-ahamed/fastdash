@@ -220,7 +220,7 @@ Gates that CI and the git hooks enforce:
 ```bash
 npm run lint
 npm run typecheck
-cd src-tauri && cargo fmt --all && cargo clippy --all-targets --all-features -- -D warnings
+cargo fmt --all && cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
 Commits, branches and PR titles follow Conventional Commits; see [CLAUDE.md](./CLAUDE.md) for the exact rules and where each one is enforced.
@@ -238,8 +238,8 @@ Never bump a version or push a `v*` tag by hand.
 
 See [DESIGN.md](./DESIGN.md).
 
-- `src-tauri/src/engine/` - connector-agnostic core: the `Connector` trait, registry, config, keychain secrets, snapshot cache, the shared fetch path, i18n, and the shared date filter.
-- `src-tauri/src/connectors/` - self-contained connectors behind that trait.
+- `crates/fastdash-core/src/engine/` - connector-agnostic core: the `Connector` trait, registry, config, keychain secrets, snapshot cache, the shared fetch path, i18n, and the shared date filter.
+- `crates/fastdash-core/src/connectors/` - self-contained connectors behind that trait.
 - `src-tauri/src/ipc.rs` - the Tauri command surface exposed to the frontend.
 - `src/` - the React frontend, which only ever renders generic `Panel`s.
 

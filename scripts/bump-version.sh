@@ -13,8 +13,8 @@
 #   package.json           - "version"
 #   package-lock.json      - root + packages[""] "version"  (via npm)
 #   src-tauri/tauri.conf.json - top-level "version"
-#   src-tauri/Cargo.toml   - [package] version
-#   src-tauri/Cargo.lock   - the fastdash package entry
+#   Cargo.toml             - [workspace.package] version (every crate inherits it)
+#   Cargo.lock             - the workspace crates' own entries
 set -euo pipefail
 
 VERSION="${1:?usage: bump-version.sh X.Y.Z}"
@@ -38,14 +38,14 @@ npm version "$VERSION" --no-git-tag-version --allow-same-version >/dev/null
 perl -0pi -e 's/("version"\s*:\s*")[0-9]+\.[0-9]+\.[0-9]+(")/${1}'"$VERSION"'${2}/' \
   src-tauri/tauri.conf.json
 
-# Cargo.toml: the [package] version. Anchored to the [package] table so a
-# version pin in [dependencies] can never be hit by accident.
-perl -0pi -e 's/(\[package\][^\[]*?\nversion\s*=\s*")[0-9]+\.[0-9]+\.[0-9]+(")/${1}'"$VERSION"'${2}/s' \
-  src-tauri/Cargo.toml
+# Cargo.toml: the [workspace.package] version, which every crate inherits.
+# Anchored to that table so a version pin in a dependency can never be hit.
+perl -0pi -e 's/(\[workspace\.package\][^\[]*?\nversion\s*=\s*")[0-9]+\.[0-9]+\.[0-9]+(")/${1}'"$VERSION"'${2}/s' \
+  Cargo.toml
 
-# Cargo.lock: only the fastdash package's own entry (matched by its name line),
-# never a dependency that happens to be on the same version.
-perl -0pi -e 's/(name = "fastdash"\nversion = ")[0-9]+\.[0-9]+\.[0-9]+(")/${1}'"$VERSION"'${2}/' \
-  src-tauri/Cargo.lock
+# Cargo.lock: only the workspace crates' own entries (matched by their name
+# lines), never a dependency that happens to be on the same version.
+perl -0pi -e 's/(name = "fastdash(?:-[a-z]+)?"\nversion = ")[0-9]+\.[0-9]+\.[0-9]+(")/${1}'"$VERSION"'${2}/g' \
+  Cargo.lock
 
 echo "bumped version to $VERSION"

@@ -1,0 +1,47 @@
+[package]
+name = "fastdash-core"
+description = "The UI-agnostic core of fastdash: connector engine, connectors, config, secrets, i18n, taskbar readout"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+# Kept from the original crate: clippy gates some lints on it.
+rust-version = "1.77"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-trait = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2"
+
+# --- Shared connector deps, pre-declared so per-connector worktrees never
+# --- collide on Cargo.toml. Each connector uses the subset it needs.
+reqwest = { version = "0.12", features = ["json"] }
+notify = "6"
+toml = "0.8"
+directories = "5"
+futures = "0.3"
+open = "5"
+
+# `keyring` needs a per-platform backend feature, so it is declared per target
+# rather than in `[dependencies]`: Credential Manager on Windows, Keychain
+# Services on macOS. Enabling the wrong one compiles to a no-op store that
+# silently loses secrets, hence the split.
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+# The taskbar readout (`taskbar/win.rs`) is plain Win32.
+windows = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Registry",
+  "Win32_UI_Accessibility",
+  "Win32_UI_HiDpi",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }

@@ -49,6 +49,7 @@ const QUERY: &str = "is:unresolved";
 /// token kind has no such scope to grant.
 const ORG_TOKEN_PREFIX: &str = "sntrys_";
 
+#[derive(Default)]
 pub struct SentryConnector;
 
 impl SentryConnector {
