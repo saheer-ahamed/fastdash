@@ -21,4 +21,4 @@ CI (PR checks) will block the merge otherwise. See CLAUDE.md > Conventions.
 
 - [ ] Title follows Conventional Commits
 - [ ] Branch is named `type/short-description`
-- [ ] `npm run lint` and `npm run typecheck` pass; Rust is `fmt` + `clippy` clean
+- [ ] `cargo fmt --all` and `cargo clippy --workspace --all-targets -- -D warnings` are clean; `cargo test --workspace` passes

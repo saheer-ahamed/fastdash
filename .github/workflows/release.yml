@@ -9,8 +9,8 @@ name: Release
 #      tag - never a commit to main. main's ruleset forbids direct pushes to the
 #      branch, but tag refs are unrestricted, and the tag carries the bumped
 #      manifests so each release is internally consistent.
-#   4. Build the signed installers + portable zip and publish the GitHub release
-#      (not a draft, so it is immediately marked "latest").
+#   4. Build the app, its signed NSIS installer and the portable zip, and
+#      publish the GitHub release (not a draft, so it is immediately "latest").
 #   5. Upload latest.json so installed apps self-update via the in-app updater.
 #
 # Never tag or bump by hand - let the merge do it. workflow_dispatch is the only
@@ -133,11 +133,11 @@ jobs:
           echo "tag=v${next}" >> "$GITHUB_OUTPUT"
           echo "Next version: v${next} (${bump} bump from ${base})"
 
+      # Only for `npm version` in the bump script; nothing else here needs npm.
       - uses: actions/setup-node@v5
         if: steps.version.outputs.release == 'true'
         with:
           node-version: 20
-          cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
         if: steps.version.outputs.release == 'true'
@@ -147,9 +147,6 @@ jobs:
         if: steps.version.outputs.release == 'true'
         with:
           workspaces: . -> target
-
-      - run: npm ci
-        if: steps.version.outputs.release == 'true'
 
       # Bump every manifest, commit locally, and push ONLY the tag. Done before
       # the build so the artifacts carry the new version. The bump commit is not
@@ -168,30 +165,51 @@ jobs:
           git tag "${{ steps.version.outputs.tag }}"
           git push origin "${{ steps.version.outputs.tag }}"
 
-      - name: Build and publish release
+      - name: Build the app
         if: steps.version.outputs.release == 'true'
-        uses: tauri-apps/tauri-action@action-v1.0.0
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Baked into the binary by crates/fastdash-core/build.rs. Public identifier, not a
-          # secret - it is a repo VARIABLE, not a repo secret. If unset the app
-          # still builds and reports GitHub login as "not configured".
+          # Baked into the binary by crates/fastdash-core/build.rs. Public
+          # identifier, not a secret - it is a repo VARIABLE, not a repo secret.
+          # If unset the app still builds and reports GitHub login as "not
+          # configured".
           FASTDASH_GITHUB_CLIENT_ID: ${{ vars.FASTDASH_GITHUB_CLIENT_ID }}
-          # Sign the updater artifacts. The public half lives in tauri.conf.json
-          # (plugins.updater.pubkey); these two are repo secrets. The password
-          # secret may be empty if the key was generated without one.
+          # Turns on the in-app update check. Only these builds carry a real
+          # version; any other build would offer to "update" itself.
+          FASTDASH_RELEASE: "1"
+        run: cargo build --release --locked -p fastdash-app
+
+      # The signed installer: what new users download and what installed apps
+      # update through, the Tauri-built ones included.
+      - name: Build the installer
+        if: steps.version.outputs.release == 'true'
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          if (-not (Test-Path $makensis)) {
+            choco install nsis -y --no-progress
+          }
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $exe = (Resolve-Path "target/release/fastdash.exe").Path
+          $out = Join-Path (Resolve-Path dist).Path "fastdash_${version}_x64-setup.exe"
+          & $makensis /V2 "/DVERSION=$version" "/DSOURCE=$exe" "/DOUTFILE=$out" installer/fastdash.nsi
+          if ($LASTEXITCODE -ne 0) { throw "makensis failed" }
+          "INSTALLER=$out" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # Signed with the key every installed copy already trusts, then listed in
+      # latest.json, which the in-app updater (and the Tauri updater of older
+      # installs) reads from /releases/latest/download/.
+      - name: Sign the installer and write the update manifest
+        if: steps.version.outputs.release == 'true'
+        shell: bash
+        env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          tagName: ${{ steps.version.outputs.tag }}
-          releaseName: "fastdash ${{ steps.version.outputs.tag }}"
-          # Publish immediately (not a draft) so the release is marked "latest"
-          # and its latest.json is reachable at the /releases/latest/download/
-          # URL the installed app polls - otherwise auto-update never fires.
-          releaseDraft: false
-          prerelease: false
-          # Emit and upload latest.json so installed apps self-update.
-          uploadUpdaterJson: true
+        run: |
+          set -euo pipefail
+          cargo run --release --locked -p xtask -- sign "$INSTALLER"
+          cargo run --release --locked -p xtask -- manifest "${{ steps.version.outputs.version }}" "$INSTALLER"
 
       # The portable zip is what install.ps1 and Scoop consume. It avoids the
       # installer entirely: no UAC, no elevation, no SmartScreen.
@@ -204,32 +222,30 @@ jobs:
           New-Item -ItemType Directory -Force -Path $staging | Out-Null
           Copy-Item "target/release/fastdash.exe" $staging
           Copy-Item "LICENSE","README.md" $staging
-          $zip = "fastdash_${version}_x64_portable.zip"
+          $zip = "dist/fastdash_${version}_x64_portable.zip"
           Compress-Archive -Path "$staging/*" -DestinationPath $zip -Force
-          "ZIP_NAME=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      # SHA256 for every asset, so install.ps1 and the Scoop manifest can verify
-      # what they downloaded instead of trusting the transport alone.
+      # SHA256 for every download, so install.ps1 and the Scoop manifest can
+      # verify what they fetched instead of trusting the transport alone.
       - name: Generate checksums
         if: steps.version.outputs.release == 'true'
         shell: pwsh
         run: |
-          $files = @($env:ZIP_NAME) + (
-            Get-ChildItem -Recurse -File `
-              -Path "target/release/bundle/nsis","target/release/bundle/msi" `
-              -Include *.exe,*.msi -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
-          )
-          $lines = foreach ($f in $files) {
-            $h = (Get-FileHash -Algorithm SHA256 -Path $f).Hash.ToLower()
-            "$h  $(Split-Path $f -Leaf)"
+          $lines = foreach ($f in Get-ChildItem dist -File -Include *.exe,*.zip -Recurse) {
+            $h = (Get-FileHash -Algorithm SHA256 -Path $f.FullName).Hash.ToLower()
+            "$h  $($f.Name)"
           }
-          $lines | Out-File -FilePath "SHA256SUMS.txt" -Encoding ascii
-          Get-Content SHA256SUMS.txt
+          $lines | Out-File -FilePath "dist/SHA256SUMS.txt" -Encoding ascii
+          Get-Content dist/SHA256SUMS.txt
 
-      - name: Attach portable zip and checksums
+      # Published immediately (not a draft) so it is marked "latest" and its
+      # latest.json is reachable at the URL installed apps poll.
+      - name: Publish the release
         if: steps.version.outputs.release == 'true'
-        shell: pwsh
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${{ steps.version.outputs.tag }}" $env:ZIP_NAME SHA256SUMS.txt --clobber
+          set -euo pipefail
+          tag="${{ steps.version.outputs.tag }}"
+          gh release create "$tag" dist/* --title "fastdash $tag" --notes "" --latest

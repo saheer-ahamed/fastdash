@@ -5,7 +5,7 @@
 # A UI crate depends on it and renders the `Panel`s it produces.
 [workspace]
 resolver = "2"
-members = ["crates/fastdash-core", "src-tauri"]
+members = ["crates/fastdash-core", "crates/fastdash-app", "xtask"]
 
 # The app version, shared by every crate. `scripts/bump-version.sh` edits this
 # line on release; nothing else carries a version of its own.
