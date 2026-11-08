@@ -75,7 +75,9 @@
     "retry": "[ try again ]",
     "reload": "reload app",
     "copy": "copy details",
-    "devBadge": "dev mode"
+    "devBadge": "dev mode",
+    "crashLede": "fastdash ran into an unexpected problem and has to close. Your settings and data are safe - nothing was lost.",
+    "crashHint": "Open it again from the Start menu or the tray. If it keeps happening, the crash.log file in fastdash's settings folder helps us fix it."
   },
   "settings": {
     "general": "General",

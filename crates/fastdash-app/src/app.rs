@@ -61,6 +61,9 @@ pub struct Root {
     today: NaiveDate,
     _subscriptions: Vec<Subscription>,
     _midnight: Task<()>,
+    /// Which connectors are connected, as of the last list. The taskbar
+    /// readout follows it, so connecting or disconnecting one redraws it.
+    connected: Option<Vec<String>>,
 }
 
 impl Root {
@@ -125,6 +128,7 @@ impl Root {
                 range_changed,
             ],
             _midnight: Task::ready(()),
+            connected: None,
         };
         root.sync_dashboard(cx);
         root.schedule_midnight(cx);
@@ -164,6 +168,22 @@ impl Root {
                         .find(|c| c.configured)
                         .map(|c| c.meta.id.clone());
                 }
+                let connected: Vec<String> = list
+                    .iter()
+                    .filter(|c| c.configured)
+                    .map(|c| c.meta.id.clone())
+                    .collect();
+                // Startup fills the readout already; after that it redraws
+                // only when what is connected actually changed.
+                if this
+                    .connected
+                    .as_ref()
+                    .is_some_and(|prev| *prev != connected)
+                {
+                    let settings = this.config.taskbar.clone();
+                    runtime::detach(async move { fastdash_core::taskbar::apply(&settings).await });
+                }
+                this.connected = Some(connected);
                 this.connectors = list;
                 this.listed = true;
                 this.sync_dashboard(cx);
