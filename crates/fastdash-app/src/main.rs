@@ -17,6 +17,7 @@ mod fonts;
 mod i18n;
 mod panels;
 mod prefs;
+mod range_filter;
 mod runtime;
 mod theme;
 mod ui;
