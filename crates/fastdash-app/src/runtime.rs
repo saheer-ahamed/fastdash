@@ -33,6 +33,14 @@ where
     async move { handle.await.ok() }
 }
 
+/// Run `fut` on the tokio runtime and forget it: nothing waits on the result.
+pub fn detach<F>(fut: F)
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    runtime().spawn(fut);
+}
+
 /// Like [`spawn`], but the tokio task is aborted when the returned future is
 /// dropped - for work the user can cancel, such as a sign-in that polls.
 pub fn spawn_abortable<F>(fut: F) -> impl Future<Output = Option<F::Output>>

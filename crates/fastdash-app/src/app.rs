@@ -17,6 +17,7 @@ use crate::dashboard::Dashboard;
 use crate::github_view::GithubView;
 use crate::i18n::t;
 use crate::range_filter::{RangeChanged, RangeFilter};
+use crate::settings::{Settings, SettingsEvent};
 use crate::theme::{self, Theme};
 use crate::ui;
 use crate::{prefs, runtime};
@@ -51,6 +52,8 @@ pub struct Root {
     /// The Connectors page while it is showing. Mounted fresh on each visit,
     /// so every form starts from saved state.
     connectors_page: Option<(Entity<ConnectorsPage>, Subscription)>,
+    /// The Settings page while it is showing, mounted fresh on each visit.
+    settings_page: Option<(Entity<Settings>, Subscription)>,
     range_filter: Entity<RangeFilter>,
     /// Whether the window is active. Every fetch in the app is gated on it.
     focused: bool,
@@ -110,6 +113,7 @@ impl Root {
             dashboard,
             github,
             connectors_page: None,
+            settings_page: None,
             range_filter,
             focused,
             today: today_ist(),
@@ -232,8 +236,26 @@ impl Root {
             });
             (view, sub)
         });
+        self.settings_page = (page == Page::Settings).then(|| {
+            let view = cx.new(|cx| Settings::new(window, cx));
+            let sub = cx.subscribe(&view, |this, _, event: &SettingsEvent, cx| match event {
+                SettingsEvent::LocaleChanged => this.on_locale_changed(cx),
+            });
+            (view, sub)
+        });
         self.sync_dashboard(cx);
         cx.notify();
+    }
+
+    /// The language changed. Panel strings are baked into snapshots, so every
+    /// cached one is in the old language - dropping them all makes the next
+    /// tab opened fetch a fresh copy. Nothing refetches now: Settings is what
+    /// is on screen.
+    fn on_locale_changed(&mut self, cx: &mut Context<Self>) {
+        self.config = fastdash_core::engine::config::load();
+        self.dashboard.update(cx, |d, cx| d.forget(None, cx));
+        self.github.update(cx, |g, cx| g.clear(cx));
+        cx.refresh_windows();
     }
 
     /// A connector's settings were saved: its cached snapshots describe the old
@@ -369,7 +391,10 @@ impl Root {
                 Some((page, _)) => page.clone().into_any_element(),
                 None => div().into_any_element(),
             },
-            Some(Page::Settings) => ui::topbar(t("app.settings"), None, cx).into_any_element(),
+            Some(Page::Settings) => match &self.settings_page {
+                Some((page, _)) => page.clone().into_any_element(),
+                None => div().into_any_element(),
+            },
             None => match self.active.as_ref() {
                 // Nothing connected yet. Held back until the list has actually
                 // answered, so it never flashes on the way to a dashboard.

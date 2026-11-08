@@ -22,6 +22,7 @@ mod panels;
 mod prefs;
 mod range_filter;
 mod runtime;
+mod settings;
 mod theme;
 mod ui;
 
