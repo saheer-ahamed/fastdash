@@ -28,19 +28,19 @@ fn english() -> &'static Value {
         const FILES: &[&str] = &[
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/../locales/en/app.json"
+                "/../../locales/en/app.json"
             )),
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/../locales/en/claude.json"
+                "/../../locales/en/claude.json"
             )),
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/../locales/en/github.json"
+                "/../../locales/en/github.json"
             )),
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/../locales/en/sentry.json"
+                "/../../locales/en/sentry.json"
             )),
         ];
         let mut root = Map::new();

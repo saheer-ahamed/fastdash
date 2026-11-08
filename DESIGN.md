@@ -12,7 +12,7 @@ One glance shows Claude usage; connectors add GitHub, Sentry and Slack views.
 ## Stack
 
 - Tauri v2 desktop shell (small binary, native speed, cross-platform).
-- Rust core (`src-tauri/`) for all fetching, parsing, and aggregation.
+- Rust core (`crates/fastdash-core/`) for all fetching, parsing, and aggregation.
 - React + TypeScript frontend (`src/`) as a thin, generic renderer.
 - Secrets in the OS keychain via the `keyring` crate (Windows Credential Manager).
 - Non-secret config in `%APPDATA%/fastdash/config.toml`.
@@ -43,7 +43,7 @@ Data crosses the Rust to JS boundary only as generic render primitives, so the f
 The core stays agnostic: `Registry` holds the connectors and a single shared path fetches one into the cache, emits the result, and returns it.
 The UI decides when that runs - on opening a connector's tab, then on the connector's own interval for as long as that tab is on screen and the app window has focus.
 A dashboard nobody is looking at fetches nothing, so a backgrounded app makes no network calls at all.
-The engine types live in `src-tauri/src/engine/`; connectors live in `src-tauri/src/connectors/<name>/`.
+The engine types live in `crates/fastdash-core/src/engine/`; connectors live in `crates/fastdash-core/src/connectors/<name>/`.
 
 ## Connector: Claude
 

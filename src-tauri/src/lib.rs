@@ -2,8 +2,8 @@
 //
 // Architecture: a connector-agnostic `engine` (the Connector trait + generic
 // render `Panel`s + a registry) with self-contained `connectors` plugged in
-// behind that trait. The frontend only ever sees `Panel`s, so adding a
-// connector requires zero UI changes.
+// behind that trait, both in the `fastdash-core` crate. The frontend only ever
+// sees `Panel`s, so adding a connector requires zero UI changes.
 //
 // The engine also owns the cross-cutting infra: non-secret config
 // (`engine::config`), the OS keychain wrapper (`engine::secrets`), the in-memory
@@ -14,13 +14,11 @@
 // the dashboard on screen, only while the window has focus, so a backgrounded
 // app makes no network calls at all.
 
-// TODO: remove once every connector is fleshed out; keeps the scaffold quiet.
-#![allow(dead_code)]
-
-mod connectors;
-mod engine;
 mod ipc;
-mod taskbar;
+
+// The UI-agnostic core, re-rooted here so `crate::engine` and friends keep
+// resolving the way they did when these modules lived in this crate.
+use fastdash_core::{connectors, engine, taskbar};
 
 use std::sync::{Arc, RwLock};
 

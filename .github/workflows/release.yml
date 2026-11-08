@@ -146,7 +146,7 @@ jobs:
       - uses: swatinem/rust-cache@v2
         if: steps.version.outputs.release == 'true'
         with:
-          workspaces: src-tauri -> target
+          workspaces: . -> target
 
       - run: npm ci
         if: steps.version.outputs.release == 'true'
@@ -173,7 +173,7 @@ jobs:
         uses: tauri-apps/tauri-action@action-v1.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Baked into the binary by src-tauri/build.rs. Public identifier, not a
+          # Baked into the binary by crates/fastdash-core/build.rs. Public identifier, not a
           # secret - it is a repo VARIABLE, not a repo secret. If unset the app
           # still builds and reports GitHub login as "not configured".
           FASTDASH_GITHUB_CLIENT_ID: ${{ vars.FASTDASH_GITHUB_CLIENT_ID }}
@@ -202,7 +202,7 @@ jobs:
           $version = "${{ steps.version.outputs.version }}"
           $staging = "portable/fastdash"
           New-Item -ItemType Directory -Force -Path $staging | Out-Null
-          Copy-Item "src-tauri/target/release/fastdash.exe" $staging
+          Copy-Item "target/release/fastdash.exe" $staging
           Copy-Item "LICENSE","README.md" $staging
           $zip = "fastdash_${version}_x64_portable.zip"
           Compress-Archive -Path "$staging/*" -DestinationPath $zip -Force
@@ -216,7 +216,7 @@ jobs:
         run: |
           $files = @($env:ZIP_NAME) + (
             Get-ChildItem -Recurse -File `
-              -Path "src-tauri/target/release/bundle/nsis","src-tauri/target/release/bundle/msi" `
+              -Path "target/release/bundle/nsis","target/release/bundle/msi" `
               -Include *.exe,*.msi -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
           )
           $lines = foreach ($f in $files) {

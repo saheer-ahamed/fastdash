@@ -1,0 +1,24 @@
+# fastdash workspace.
+#
+# `crates/fastdash-core` is everything that is not UI: the connector engine, the
+# connectors themselves, config, secrets, i18n and the Windows taskbar readout.
+# A UI crate depends on it and renders the `Panel`s it produces.
+[workspace]
+resolver = "2"
+members = ["crates/fastdash-core", "src-tauri"]
+
+# The app version, shared by every crate. `scripts/bump-version.sh` edits this
+# line on release; nothing else carries a version of its own.
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+# Smaller, faster release binaries. Profiles only take effect at the workspace
+# root, which is why they live here rather than in a member crate.
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

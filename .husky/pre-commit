@@ -22,12 +22,13 @@ if [ -n "$fe_files" ]; then
   npm run --silent typecheck
 fi
 
-# Rust: formatting check + clippy with warnings as errors, over the whole crate.
+# Rust: formatting check + clippy with warnings as errors, over the whole
+# workspace (run from the repo root, where the workspace manifest lives).
 if [ -n "$rs_files" ]; then
   echo "pre-commit: cargo fmt --check + clippy"
-  ( cd src-tauri && cargo fmt --all -- --check ) || {
-    echo "  Rust is not formatted. Run 'cargo fmt --all' in src-tauri/ and re-stage."
+  cargo fmt --all -- --check || {
+    echo "  Rust is not formatted. Run 'cargo fmt --all' and re-stage."
     exit 1
   }
-  ( cd src-tauri && cargo clippy --all-targets --all-features -- -D warnings )
+  cargo clippy --workspace --all-targets --all-features -- -D warnings
 fi

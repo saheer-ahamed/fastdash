@@ -4,7 +4,7 @@ import { getConfig, patchConfig } from "./config";
 import { t } from "./i18n";
 import type { TaskbarConfig, TaskbarMetric } from "./types";
 
-// Settings for the Windows taskbar readout (`src-tauri/src/taskbar/`): whether
+// Settings for the Windows taskbar readout (`crates/fastdash-core/src/taskbar/`): whether
 // it shows, and which line each number sits on. Every change is saved and
 // redrawn at once, like the theme and language switches above it - the readout
 // is on screen the whole time, so the taskbar itself is the preview.

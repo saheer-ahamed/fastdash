@@ -154,6 +154,7 @@ pub async fn plan_percents() -> Option<PlanPercents> {
     })
 }
 
+#[derive(Default)]
 pub struct ClaudeConnector;
 
 impl ClaudeConnector {
