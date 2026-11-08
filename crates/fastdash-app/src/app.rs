@@ -12,6 +12,7 @@ use gpui::{
     Window,
 };
 
+use crate::connectors::{ConnectorSaved, ConnectorsPage};
 use crate::dashboard::Dashboard;
 use crate::github_view::GithubView;
 use crate::i18n::t;
@@ -47,6 +48,9 @@ pub struct Root {
     page: Option<Page>,
     dashboard: Entity<Dashboard>,
     github: Entity<GithubView>,
+    /// The Connectors page while it is showing. Mounted fresh on each visit,
+    /// so every form starts from saved state.
+    connectors_page: Option<(Entity<ConnectorsPage>, Subscription)>,
     range_filter: Entity<RangeFilter>,
     /// Whether the window is active. Every fetch in the app is gated on it.
     focused: bool,
@@ -105,6 +109,7 @@ impl Root {
             page: None,
             dashboard,
             github,
+            connectors_page: None,
             range_filter,
             focused,
             today: today_ist(),
@@ -206,10 +211,45 @@ impl Root {
         cx.notify();
     }
 
-    fn select_page(&mut self, page: Page, cx: &mut Context<Self>) {
+    fn select_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_page(page, None, window, cx);
+    }
+
+    /// Show a pinned page. `connector` lands the Connectors page on one
+    /// connector's form - the first-run cards use it.
+    pub fn open_page(
+        &mut self,
+        page: Page,
+        connector: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.page = Some(page);
+        self.connectors_page = (page == Page::Connectors).then(|| {
+            let view = cx.new(|cx| ConnectorsPage::new(connector, window, cx));
+            let sub = cx.subscribe(&view, |this, _, event: &ConnectorSaved, cx| {
+                this.on_connector_saved(event.0, cx);
+            });
+            (view, sub)
+        });
         self.sync_dashboard(cx);
         cx.notify();
+    }
+
+    /// A connector's settings were saved: its cached snapshots describe the old
+    /// settings, so drop them - the tab refetches when next opened, not now.
+    /// The connector list is re-read too, since connecting or disconnecting is
+    /// exactly what makes a sidebar tab appear or vanish.
+    fn on_connector_saved(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.config = fastdash_core::engine::config::load();
+        self.dashboard.update(cx, |d, cx| d.forget(Some(id), cx));
+        if id == "github" {
+            self.github.update(cx, |g, cx| {
+                g.clear(cx);
+                g.reload_accounts(cx);
+            });
+        }
+        self.reload_connectors(cx);
     }
 
     /// The connector whose dashboard is on screen: none while a pinned page
@@ -304,9 +344,9 @@ impl Root {
                             self.page == Some(Page::Connectors),
                             &th,
                         )
-                        .on_click(
-                            cx.listener(|this, _, _, cx| this.select_page(Page::Connectors, cx)),
-                        ),
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.select_page(Page::Connectors, window, cx)
+                        })),
                     )
                     .child(
                         sidebar_tab(
@@ -316,16 +356,19 @@ impl Root {
                             self.page == Some(Page::Settings),
                             &th,
                         )
-                        .on_click(
-                            cx.listener(|this, _, _, cx| this.select_page(Page::Settings, cx)),
-                        ),
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.select_page(Page::Settings, window, cx)
+                        })),
                     ),
             )
     }
 
     fn content(&self, cx: &mut Context<Self>) -> AnyElement {
         match self.page {
-            Some(Page::Connectors) => ui::topbar(t("app.connectors"), None, cx).into_any_element(),
+            Some(Page::Connectors) => match &self.connectors_page {
+                Some((page, _)) => page.clone().into_any_element(),
+                None => div().into_any_element(),
+            },
             Some(Page::Settings) => ui::topbar(t("app.settings"), None, cx).into_any_element(),
             None => match self.active.as_ref() {
                 // Nothing connected yet. Held back until the list has actually

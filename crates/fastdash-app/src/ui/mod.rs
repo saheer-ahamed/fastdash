@@ -5,6 +5,7 @@
 //! Views compose these and never set a colour of their own, so a theme change
 //! restyles everything by construction.
 
+pub mod overlay;
 pub mod text_input;
 pub mod tooltip;
 
@@ -346,7 +347,7 @@ pub fn subtabs(cx: &App) -> Div {
 
 /// A labelled form field (`.field`).
 pub fn field(label: impl Into<SharedString>, cx: &App) -> Div {
-    div().flex().flex_col().mb(px(12.)).child(
+    div().flex().flex_col().w_full().mb(px(12.)).child(
         div()
             .mb(px(5.))
             .text_color(theme(cx).muted)

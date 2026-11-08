@@ -13,6 +13,7 @@
 
 mod app;
 mod assets;
+mod connectors;
 mod dashboard;
 mod fonts;
 mod github_view;
