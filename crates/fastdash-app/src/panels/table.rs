@@ -17,7 +17,7 @@ use gpui::{
 };
 
 use crate::i18n::{t, tf};
-use crate::ui::{self, tooltip};
+use crate::ui::{self, tooltip, AxisScroll};
 
 pub const PAGE_SIZE: usize = 15;
 const FONT_SIZE: f32 = 12.5;
@@ -272,18 +272,14 @@ pub fn render(spec: &TableSpec, id: ElementId, window: &mut Window, cx: &mut App
     ui::card(cx)
         .children(spec.title.clone().map(|title| ui::card_title(title, cx)))
         .child(
-            div()
-                .id(id)
-                .overflow_x_scroll()
-                .text_size(px(FONT_SIZE))
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .min_w(total)
-                        .child(header)
-                        .children(body),
-                ),
+            div().id(id).scroll_x().text_size(px(FONT_SIZE)).child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .min_w(total)
+                    .child(header)
+                    .children(body),
+            ),
         )
         .when(paginated, |card| {
             let end = (start + PAGE_SIZE).min(rows_total);

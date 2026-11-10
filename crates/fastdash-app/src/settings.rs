@@ -12,6 +12,7 @@ use crate::i18n::{t, tf, LOCALES};
 use crate::theme::{self, ThemeChoice};
 use crate::ui::overlay::Flash;
 use crate::ui::text_input::TextInput;
+use crate::ui::AxisScroll;
 use crate::{prefs, runtime, ui};
 
 /// Taps on the version line that toggle developer mode - the classic "tap the
@@ -350,18 +351,13 @@ impl Render for Settings {
             .size_full()
             .child(ui::topbar(t("app.settings"), None, cx))
             .child(
-                div()
-                    .id("settings")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .child(
-                        ui::panels()
-                            .child(self.flash.clone())
-                            .child(self.general_card(cx))
-                            .children(self.taskbar_card(cx))
-                            .child(self.about_card(cx)),
-                    ),
+                div().id("settings").flex_1().min_h_0().scroll_y().child(
+                    ui::panels()
+                        .child(self.flash.clone())
+                        .child(self.general_card(cx))
+                        .children(self.taskbar_card(cx))
+                        .child(self.about_card(cx)),
+                ),
             )
     }
 }
