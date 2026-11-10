@@ -1,7 +1,7 @@
 {
   "name": "fastdash",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.18.2",
   "type": "module",
   "description": "Repo tooling only: the git hooks and the commit-message linter. The app itself is the Rust workspace.",
   "scripts": {
