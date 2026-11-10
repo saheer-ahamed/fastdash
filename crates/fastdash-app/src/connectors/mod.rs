@@ -20,6 +20,7 @@ use gpui::{
 use crate::i18n::{t, tf};
 use crate::ui::overlay::Flash;
 use crate::ui::text_input::TextInput;
+use crate::ui::AxisScroll;
 use crate::ui::{self, SMALL};
 
 /// One connector's entry on the Connectors page and the first-run page.
@@ -176,7 +177,7 @@ impl Render for ConnectorsPage {
                     .track_scroll(&self.scroll)
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
+                    .scroll_y()
                     .child(
                         ui::panels()
                             .child(self.flash.clone())

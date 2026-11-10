@@ -10,7 +10,7 @@ use gpui::{div, prelude::*, px, AnyElement, App, ClickEvent, SharedString, Windo
 
 use crate::connectors::TABS;
 use crate::i18n::{t, tf};
-use crate::ui;
+use crate::ui::{self, AxisScroll};
 
 /// The page. `on_connect` receives the connector id whose card was clicked.
 pub fn render(
@@ -75,22 +75,17 @@ pub fn render(
         .size_full()
         .child(ui::topbar(t("welcome.title"), None, cx))
         .child(
-            div()
-                .id("welcome")
-                .flex_1()
-                .min_h_0()
-                .overflow_y_scroll()
-                .child(
-                    ui::panels()
-                        .child(
-                            div()
-                                .max_w(px(620.))
-                                .line_height(gpui::relative(1.6))
-                                .text_color(th.bright)
-                                .child(t("welcome.lede")),
-                        )
-                        .child(body),
-                ),
+            div().id("welcome").flex_1().min_h_0().scroll_y().child(
+                ui::panels()
+                    .child(
+                        div()
+                            .max_w(px(620.))
+                            .line_height(gpui::relative(1.6))
+                            .text_color(th.bright)
+                            .child(t("welcome.lede")),
+                    )
+                    .child(body),
+            ),
         )
         .into_any_element()
 }

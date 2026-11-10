@@ -6,7 +6,7 @@
 use gpui::{div, prelude::*, px, AnyElement, App, FontWeight, SharedString};
 
 use crate::i18n::t;
-use crate::ui::{self, SMALL};
+use crate::ui::{self, AxisScroll, SMALL};
 
 /// The dialog's body. `on_close` dismisses it.
 pub fn render(
@@ -130,7 +130,7 @@ pub fn render(
                 .id("guide-body")
                 .flex_1()
                 .min_h_0()
-                .overflow_y_scroll()
+                .scroll_y()
                 .px(px(16.))
                 .pt(px(14.))
                 .pb(px(16.))

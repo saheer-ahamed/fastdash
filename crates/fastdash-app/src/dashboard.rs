@@ -18,6 +18,7 @@ use gpui::{div, prelude::*, px, AnyElement, App, Context, Entity, SharedString, 
 
 use crate::i18n::{t, tf};
 use crate::range_filter::RangeFilter;
+use crate::ui::AxisScroll;
 use crate::{panels, prefs, runtime, ui};
 
 /// Cache slot for a snapshot: one per (connector, range).
@@ -288,7 +289,7 @@ pub fn snapshot_view(
                 .id(scope)
                 .flex_1()
                 .min_h_0()
-                .overflow_y_scroll()
+                .scroll_y()
                 .child(ui::panels().children(panels)),
         )
         .into_any_element()

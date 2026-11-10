@@ -60,6 +60,32 @@ pub fn topbar(title: impl Into<SharedString>, actions: Option<gpui::AnyElement>,
         .children(actions.map(|a| div().flex().items_center().gap(px(12.)).child(a)))
 }
 
+/// Wheel-axis-locked scrolling for a scroll container.
+///
+/// GPUI's default maps the wheel's other axis onto a single-axis scroller:
+/// a plain wheel slid a wide table sideways, and a horizontal wheel over that
+/// table also scrolled the page, since the event bubbles to both. Locking
+/// each container to its own axis makes the vertical wheel scroll only pages
+/// and the horizontal wheel (or Shift + wheel) scroll only wide content.
+pub trait AxisScroll: Sized {
+    /// Scrolls horizontally, from horizontal wheel input only.
+    fn scroll_x(self) -> Self;
+    /// Scrolls vertically, from vertical wheel input only.
+    fn scroll_y(self) -> Self;
+}
+
+impl AxisScroll for gpui::Stateful<Div> {
+    fn scroll_x(mut self) -> Self {
+        self.style().restrict_scroll_to_axis = Some(true);
+        self.overflow_x_scroll()
+    }
+
+    fn scroll_y(mut self) -> Self {
+        self.style().restrict_scroll_to_axis = Some(true);
+        self.overflow_y_scroll()
+    }
+}
+
 /// A bordered panel card.
 pub fn card(cx: &App) -> Div {
     let t = theme(cx);

@@ -8,7 +8,7 @@ use gpui::{div, prelude::*, px, AnyElement, App, ElementId, Hsla, SharedString, 
 
 use crate::i18n::t;
 use crate::theme::Theme;
-use crate::ui::{self, tooltip};
+use crate::ui::{self, tooltip, AxisScroll};
 
 const CELL: f32 = 11.;
 const GAP: f32 = 3.;
@@ -224,13 +224,7 @@ pub fn render(
                 .text_color(th.bright)
                 .child(active.summary.clone()),
         )
-        .child(
-            div()
-                .id(id.clone())
-                .overflow_x_scroll()
-                .pb(px(2.))
-                .child(chart),
-        )
+        .child(div().id(id.clone()).scroll_x().pb(px(2.)).child(chart))
         .child(legend);
 
     let rail = (years.len() > 1).then(|| {
