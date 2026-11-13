@@ -60,6 +60,7 @@ Two readings deliberately ignore it, because they are "right now" values rather 
 
 The dashboards never poll on a timer.
 On launch, only the tab that is open is fetched. After that a tab fetches when you open it for the first time (or pick a date range it has not loaded) and when you press Refresh. Switching away does not refresh the tab you left, and focusing or unfocusing the window does not start a fetch.
+GitHub paints the last saved view immediately and refreshes it behind that, so opening the tab does not wait on the Search API.
 
 Fetches are still serialized: the tab you are looking at cancels whatever request was in flight, so flipping between GitHub accounts cannot burn through the Search budget or repaint stale numbers out of order.
 

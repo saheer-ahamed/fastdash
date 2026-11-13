@@ -2,13 +2,13 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::engine::config::AppConfig;
 use crate::engine::panel::Panel;
 use crate::engine::range::DateRange;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectorMeta {
     pub id: String,
@@ -19,7 +19,7 @@ pub struct ConnectorMeta {
 }
 
 /// Connector health, surfaced as a status badge in the UI.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "camelCase")]
 pub enum Health {
     Ok,
@@ -43,7 +43,7 @@ pub enum Health {
 }
 
 /// One fetch result: what to render plus status and refresh hints.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     pub status: Health,

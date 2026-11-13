@@ -33,6 +33,12 @@
 //! wider than that says so in a note above the tables rather than presenting
 //! its newest slice as the whole picture.
 //!
+//! Search sends no `ETag`, so a refresh cannot be a conditional GET. The org
+//! event feed is not a substitute either: it keeps only the newest few hundred
+//! events, which is not a date-filtered PR report. The last successful view is
+//! therefore saved and painted immediately, and the probe-and-delta fetch
+//! reconciles it in the background.
+//!
 //! Supports multiple accounts (work `saheer-zro`, personal `saheer-ahamed`),
 //! each with its own PAT in the OS keychain. The UI drives per-account and
 //! per-org sub-tabs through `fetch_account` (see `ipc::github_fetch`); the
@@ -224,14 +230,155 @@ pub async fn fetch_account(
         return Err(SUPERSEDED.to_string());
     }
     gate::gate().finish(&lease, &snapshot);
+    remember_view(&label, org.as_deref(), &range, &snapshot);
     Ok(snapshot)
+}
+
+/// The last successful render of this view, if a previous fetch saved one.
+/// Reading it does not touch the network. The UI paints it before the
+/// reconcile fetch returns.
+pub fn cached_view(label: &str, org: Option<&str>, range: &DateRange) -> Option<Snapshot> {
+    let key = view_key(label, org, range);
+    let mut saved = saved_views().lock().ok()?;
+    load_saved(&mut saved);
+    saved.views.get(&key).cloned()
 }
 
 /// Drop rendered GitHub snapshots (a language change, edited accounts). The
 /// search cache stays: the next fetch revalidates it with one probe per scope
-/// instead of paginating results that have not moved.
+/// instead of paginating results that have not moved. The painted copies are
+/// dropped too, because their strings are in the old language.
 pub fn forget_cached_views() {
     gate::gate().forget_cached();
+    if let Ok(mut saved) = saved_views().lock() {
+        saved.views.clear();
+        saved.loaded = true;
+    }
+    if let Some(path) = saved_path() {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// How many view snapshots to keep. Each one is a whole dashboard, so this is
+/// a handful of account / org / range combinations, not a history of every
+/// range the user has ever opened.
+const SAVED_VIEW_CAP: usize = 24;
+
+struct SavedViews {
+    views: HashMap<String, Snapshot>,
+    loaded: bool,
+}
+
+fn saved_views() -> &'static std::sync::Mutex<SavedViews> {
+    static VIEWS: std::sync::OnceLock<std::sync::Mutex<SavedViews>> = std::sync::OnceLock::new();
+    VIEWS.get_or_init(|| {
+        std::sync::Mutex::new(SavedViews {
+            views: HashMap::new(),
+            loaded: false,
+        })
+    })
+}
+
+fn remember_view(label: &str, org: Option<&str>, range: &DateRange, snapshot: &Snapshot) {
+    // A failed fetch must not overwrite the copy the UI is showing.
+    if !matches!(snapshot.status, Health::Ok) {
+        return;
+    }
+    let key = view_key(label, org, range);
+    let exported = {
+        let Ok(mut saved) = saved_views().lock() else {
+            return;
+        };
+        load_saved(&mut saved);
+        saved.views.insert(key, snapshot.clone());
+        while saved.views.len() > SAVED_VIEW_CAP {
+            let Some(oldest) = saved
+                .views
+                .iter()
+                .min_by_key(|(_, snapshot)| snapshot.fetched_at)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            saved.views.remove(&oldest);
+        }
+        export_saved(&saved)
+    };
+    write_saved(&exported);
+}
+
+fn load_saved(saved: &mut SavedViews) {
+    if saved.loaded {
+        return;
+    }
+    saved.loaded = true;
+    if !saved_disk() {
+        return;
+    }
+    let Some(path) = saved_path() else {
+        return;
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return;
+    };
+    let Ok(file) = serde_json::from_str::<SavedFile>(&text) else {
+        return;
+    };
+    for view in file.views {
+        saved.views.insert(view.key, view.snapshot);
+    }
+}
+
+fn export_saved(saved: &SavedViews) -> SavedFile {
+    SavedFile {
+        views: saved
+            .views
+            .iter()
+            .map(|(key, snapshot)| SavedView {
+                key: key.clone(),
+                snapshot: snapshot.clone(),
+            })
+            .collect(),
+    }
+}
+
+fn write_saved(file: &SavedFile) {
+    if !saved_disk() {
+        return;
+    }
+    let Some(path) = saved_path() else {
+        return;
+    };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let Ok(text) = serde_json::to_string(file) else {
+        return;
+    };
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, text).is_ok() {
+        let _ = std::fs::rename(tmp, path);
+    }
+}
+
+fn saved_disk() -> bool {
+    !cfg!(test)
+}
+
+fn saved_path() -> Option<std::path::PathBuf> {
+    directories::ProjectDirs::from("co", "zro", "fastdash")
+        .map(|dirs| dirs.cache_dir().join("github-views.json"))
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SavedFile {
+    views: Vec<SavedView>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SavedView {
+    key: String,
+    snapshot: Snapshot,
 }
 
 /// The PRs the user opened and merged over a range, for the taskbar readout.
@@ -1118,6 +1265,7 @@ fn rate_limited_snapshot(retry_after_secs: Option<u64>) -> Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::panel::{Cell, Column, Panel, TableSpec};
 
     fn ts(s: &str) -> Option<DateTime<Utc>> {
         Some(
@@ -1202,6 +1350,77 @@ mod tests {
         assert_eq!(r.closed["dev"], 1, "so does a close in the range");
         assert_eq!(r.opened["dev"], 1, "only the one opened in the range");
         assert_eq!(r.open["dev"], 1);
+    }
+
+    /// Opening a view that was fetched before paints the saved snapshot. The
+    /// decode is the whole cost: nothing is asked of GitHub until the
+    /// background reconcile, which is the same 1 or 4 requests as before.
+    #[test]
+    fn a_saved_view_paints_without_asking_github() {
+        forget_cached_views();
+        let range = DateRange {
+            start: NaiveDate::from_ymd_opt(2026, 8, 2).unwrap(),
+            end: NaiveDate::from_ymd_opt(2026, 8, 2).unwrap(),
+        };
+        let snapshot = Snapshot::ok(
+            vec![Panel::Table(TableSpec {
+                title: Some("PRs".into()),
+                columns: vec![Column::new("title", "Title", false)],
+                rows: (0..200)
+                    .map(|n| {
+                        vec![Cell {
+                            text: format!("fix: thing {n}"),
+                            href: None,
+                            sort: Some(n as f64),
+                        }]
+                    })
+                    .collect(),
+            })],
+            Some(REFRESH_SECS),
+        );
+
+        let encoded = serde_json::to_vec(&snapshot).unwrap();
+        let started = Instant::now();
+        let decoded: Snapshot = serde_json::from_slice(&encoded).unwrap();
+        let decode_us = started.elapsed().as_micros();
+        assert_eq!(decoded.panels.len(), 1);
+
+        remember_view("work", Some("acme"), &range, &snapshot);
+        let started = Instant::now();
+        let painted = cached_view("work", Some("acme"), &range).expect("saved view");
+        let paint_us = started.elapsed().as_micros();
+        assert!(matches!(painted.status, Health::Ok));
+        assert!(
+            cached_view("other", Some("acme"), &range).is_none(),
+            "a different account must not see this view"
+        );
+
+        remember_view(
+            "work",
+            Some("acme"),
+            &range,
+            &Snapshot {
+                status: Health::Error {
+                    message: "boom".into(),
+                },
+                panels: vec![],
+                fetched_at: Utc::now(),
+                next_refresh_secs: None,
+            },
+        );
+        assert!(
+            matches!(
+                cached_view("work", Some("acme"), &range).unwrap().status,
+                Health::Ok
+            ),
+            "a failed refresh must not replace the painted view"
+        );
+
+        eprintln!(
+            "github paint: persisted snapshot {} bytes decoded in {decode_us}us, memory read {paint_us}us (200 PR rows). background requests stay full 10 / unchanged 1 / small delta 4",
+            encoded.len()
+        );
+        forget_cached_views();
     }
 
     /// 250 cached matches is three Search pages. An unchanged refresh pays the

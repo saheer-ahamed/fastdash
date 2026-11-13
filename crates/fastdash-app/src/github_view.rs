@@ -3,17 +3,20 @@
 //!
 //! Each (account, org, range) view fetches through the connector's own
 //! `fetch_account`, which cancels whatever GitHub fetch was still in flight -
-//! flipping through sub-tabs costs one fetch, not one per click. The state
-//! lives for the life of the app, so leaving and re-entering the tab paints
-//! the cache at once and refreshes quietly behind it.
+//! flipping through sub-tabs costs one fetch, not one per click. A view saved
+//! by a previous session is painted immediately and reconciled in the
+//! background. Once it has been loaded this session, leaving and coming back
+//! just shows that copy until Refresh.
 
 use std::collections::{HashMap, HashSet};
+
+use std::time::Instant;
 
 use fastdash_core::connectors::github::{self, fetch_account, SUPERSEDED};
 use fastdash_core::engine::config::{self, GithubAccount};
 use fastdash_core::engine::connector::{Health, Snapshot};
+use fastdash_core::engine::perf::{self, CacheState};
 use fastdash_core::engine::range::DateRange;
-use fastdash_core::engine::refresh::should_fetch;
 use gpui::{div, prelude::*, px, AnyElement, Context, Entity, SharedString, Task, Window};
 
 use crate::dashboard::{fetched_label, snapshot_view};
@@ -137,8 +140,10 @@ impl GithubView {
         self.reconcile(cx);
     }
 
-    /// Fetch the selected view when it has never been loaded. Switching back to
-    /// a view that already has a snapshot does not refetch; Refresh does.
+    /// Fetch the selected view the first time it is opened this session.
+    /// Switching back to a view that was already loaded does not refetch;
+    /// Refresh does. A view saved by a previous session is painted first, and
+    /// the fetch reconciles it in the background.
     fn reconcile(&mut self, cx: &mut Context<Self>) {
         cx.notify();
         if !self.watched {
@@ -148,7 +153,11 @@ impl GithubView {
             return;
         }
         let Some(key) = self.key() else { return };
-        if !should_fetch(self.snaps.contains_key(&key), false) {
+        let opened_this_session = self.snaps.contains_key(&key);
+        if !opened_this_session {
+            self.paint_saved(&key);
+        }
+        if opened_this_session {
             // This view is ready. Drop a fetch for a view the user just left,
             // but keep a refresh of the view that is on screen.
             self.loading.retain(|k, _| k == &key);
@@ -158,6 +167,20 @@ impl GithubView {
             return;
         }
         self.load(false, cx);
+    }
+
+    /// Put the last saved render of `key` on screen. No network, so the
+    /// dashboard is up before the reconcile fetch has left the machine.
+    fn paint_saved(&mut self, key: &str) {
+        let Some(label) = self.label.clone() else {
+            return;
+        };
+        let started = Instant::now();
+        let Some(snapshot) = github::cached_view(&label, self.org.as_deref(), &self.range) else {
+            return;
+        };
+        perf::record("github.paint", started.elapsed(), 0, CacheState::Hit, true);
+        self.snaps.insert(key.to_string(), snapshot);
     }
 
     /// Fetch the selected view in the background: never clears its cached
@@ -185,8 +208,22 @@ impl GithubView {
                 this.loading.remove(&task_key);
                 match result {
                     Some(Ok(snapshot)) => {
-                        this.failed.remove(&task_key);
-                        this.snaps.insert(task_key, snapshot);
+                        let painted_ok = matches!(
+                            this.snaps.get(&task_key).map(|s| &s.status),
+                            Some(Health::Ok)
+                        );
+                        let soft_failure = matches!(
+                            snapshot.status,
+                            Health::Error { .. } | Health::RateLimited { .. }
+                        );
+                        if painted_ok && soft_failure {
+                            // The reconcile failed. Leave the saved dashboard
+                            // on screen and say the refresh did not land.
+                            this.failed.insert(task_key);
+                        } else {
+                            this.failed.remove(&task_key);
+                            this.snaps.insert(task_key, snapshot);
+                        }
                     }
                     // A newer request took over: not a failure, it will paint.
                     Some(Err(e)) if e.contains(SUPERSEDED) => {}

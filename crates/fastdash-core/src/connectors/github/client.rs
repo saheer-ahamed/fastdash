@@ -2,6 +2,7 @@
 //! enrichment call. Holds no aggregation logic.
 
 use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use chrono::{DateTime, Utc};
@@ -201,31 +202,14 @@ pub struct GithubClient {
 
 impl GithubClient {
     pub fn new(token: &str) -> Result<Self, GithubError> {
-        use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
-
-        let mut headers = HeaderMap::new();
-        let mut auth = HeaderValue::from_str(&format!("Bearer {token}"))
-            .map_err(|e| GithubError::Header(e.to_string()))?;
-        auth.set_sensitive(true);
-        headers.insert(AUTHORIZATION, auth);
-        headers.insert(
-            ACCEPT,
-            HeaderValue::from_static("application/vnd.github+json"),
-        );
-        headers.insert(USER_AGENT, HeaderValue::from_static("fastdash"));
-        headers.insert(
-            "X-GitHub-Api-Version",
-            HeaderValue::from_static("2022-11-28"),
-        );
-
-        let http = reqwest::Client::builder()
-            .default_headers(headers)
-            .build()
-            .map_err(|e| GithubError::Http(e.to_string()))?;
-
+        let token_fp = cache::token_fingerprint(token);
+        // One client per account for the life of the process. reqwest keeps a
+        // connection pool inside the client, so the next refresh reuses the
+        // HTTP/2 connection instead of paying a new TLS handshake.
+        let http = shared_http(token, token_fp)?;
         Ok(Self {
             http,
-            token: cache::token_fingerprint(token),
+            token: token_fp,
             scopes: std::sync::Mutex::new(None),
         })
     }
@@ -895,6 +879,38 @@ fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<u64> {
     let reset = header_u64(headers, "x-ratelimit-reset")?;
     let now = Utc::now().timestamp().max(0) as u64;
     Some(reset.saturating_sub(now).max(1))
+}
+
+fn shared_http(token: &str, fingerprint: u64) -> Result<reqwest::Client, GithubError> {
+    use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
+
+    static POOL: OnceLock<Mutex<HashMap<u64, reqwest::Client>>> = OnceLock::new();
+    let pool = POOL.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut pool = pool.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(client) = pool.get(&fingerprint) {
+        return Ok(client.clone());
+    }
+
+    let mut headers = HeaderMap::new();
+    let mut auth = HeaderValue::from_str(&format!("Bearer {token}"))
+        .map_err(|e| GithubError::Header(e.to_string()))?;
+    auth.set_sensitive(true);
+    headers.insert(AUTHORIZATION, auth);
+    headers.insert(
+        ACCEPT,
+        HeaderValue::from_static("application/vnd.github+json"),
+    );
+    headers.insert(USER_AGENT, HeaderValue::from_static("fastdash"));
+    headers.insert(
+        "X-GitHub-Api-Version",
+        HeaderValue::from_static("2022-11-28"),
+    );
+    let client = reqwest::Client::builder()
+        .default_headers(headers)
+        .build()
+        .map_err(|e| GithubError::Http(e.to_string()))?;
+    pool.insert(fingerprint, client.clone());
+    Ok(client)
 }
 
 fn parse_ts(s: &str) -> Option<DateTime<Utc>> {
