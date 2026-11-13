@@ -3,17 +3,19 @@
 //!
 //! Each (account, org, range) view fetches through the connector's own
 //! `fetch_account`, which cancels whatever GitHub fetch was still in flight -
-//! flipping through sub-tabs costs one fetch, not one per click. The state
-//! lives for the life of the app, so leaving and re-entering the tab paints
-//! the cache at once and refreshes quietly behind it.
+//! flipping through sub-tabs costs one fetch, not one per click. A view saved
+//! by a previous session is painted immediately and reconciled in the
+//! background. Once it has been loaded this session, leaving and coming back
+//! just shows that copy until Refresh.
 
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
 
-use chrono::Utc;
-use fastdash_core::connectors::github::{fetch_account, SUPERSEDED};
+use std::time::Instant;
+
+use fastdash_core::connectors::github::{self, fetch_account, SUPERSEDED};
 use fastdash_core::engine::config::{self, GithubAccount};
 use fastdash_core::engine::connector::{Health, Snapshot};
+use fastdash_core::engine::perf::{self, CacheState};
 use fastdash_core::engine::range::DateRange;
 use gpui::{div, prelude::*, px, AnyElement, Context, Entity, SharedString, Task, Window};
 
@@ -21,10 +23,6 @@ use crate::dashboard::{fetched_label, snapshot_view};
 use crate::i18n::{t, tf};
 use crate::range_filter::RangeFilter;
 use crate::{assets, panels, prefs, runtime, ui};
-
-/// How long a view's snapshot counts as fresh, and the polling cadence while
-/// the GitHub tab is watched.
-const REFRESH: Duration = Duration::from_secs(60);
 
 /// Stable cache key for an (account, org, range) view. A space cannot appear
 /// in a label or a stored org, so it is a safe separator.
@@ -60,12 +58,12 @@ pub struct GithubView {
     range: DateRange,
     watched: bool,
     snaps: HashMap<String, Snapshot>,
-    /// Views with a fetch in flight, each owning its own task. Only the newest
-    /// request for a view may paint: replacing the task drops the older one.
-    loading: HashMap<String, Task<()>>,
+    /// The fetch in flight for a view, tagged so a late result cannot paint
+    /// over the request that replaced it.
+    loading: HashMap<String, (u64, Task<()>)>,
+    load_gen: u64,
     /// Views whose last fetch failed. The cached snapshot stays on screen.
     failed: HashSet<String>,
-    poll: Option<Task<()>>,
 }
 
 impl GithubView {
@@ -80,8 +78,8 @@ impl GithubView {
             watched: false,
             snaps: HashMap::new(),
             loading: HashMap::new(),
+            load_gen: 0,
             failed: HashSet::new(),
-            poll: None,
         };
         view.reload_accounts(cx);
         view
@@ -103,8 +101,12 @@ impl GithubView {
     }
 
     /// Forget every cached view (a language change, or edited accounts).
+    /// Rendered panels are dropped; the search cache in the connector stays
+    /// and is revalidated with one probe per scope on the next fetch.
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.snaps.clear();
+        self.loading.clear();
+        github::forget_cached_views();
         cx.notify();
     }
 
@@ -138,34 +140,47 @@ impl GithubView {
         self.reconcile(cx);
     }
 
-    /// Keep the selected view fresh while the tab is watched: refetch if its
-    /// snapshot is missing or older than the cadence, and poll - today only. A
-    /// past day cannot change, and a multi-day range costs several paginated
-    /// Search queries per org, which would eat GitHub's search budget.
+    /// Fetch the selected view the first time it is opened this session.
+    /// Switching back to a view that was already loaded does not refetch;
+    /// Refresh does. A view saved by a previous session is painted first, and
+    /// the fetch reconciles it in the background.
     fn reconcile(&mut self, cx: &mut Context<Self>) {
-        self.poll = None;
         cx.notify();
         if !self.watched {
+            // Leaving the tab cancels whatever GitHub fetch is in flight so it
+            // stops spending the Search budget on a view nobody is looking at.
+            self.loading.clear();
             return;
         }
         let Some(key) = self.key() else { return };
-        let fresh = self.snaps.get(&key).is_some_and(|s| {
-            Utc::now()
-                .signed_duration_since(s.fetched_at)
-                .to_std()
-                .is_ok_and(|age| age < REFRESH)
-        });
-        if !fresh {
-            self.load(false, cx);
+        let opened_this_session = self.snaps.contains_key(&key);
+        if !opened_this_session {
+            self.paint_saved(&key);
         }
-        if self.range == DateRange::today() {
-            self.poll = Some(cx.spawn(async move |this, cx| loop {
-                cx.background_executor().timer(REFRESH).await;
-                if this.update(cx, |this, cx| this.load(false, cx)).is_err() {
-                    break;
-                }
-            }));
+        if opened_this_session {
+            // This view is ready. Drop a fetch for a view the user just left,
+            // but keep a refresh of the view that is on screen.
+            self.loading.retain(|k, _| k == &key);
+            return;
         }
+        if self.loading.contains_key(&key) {
+            return;
+        }
+        self.load(false, cx);
+    }
+
+    /// Put the last saved render of `key` on screen. No network, so the
+    /// dashboard is up before the reconcile fetch has left the machine.
+    fn paint_saved(&mut self, key: &str) {
+        let Some(label) = self.label.clone() else {
+            return;
+        };
+        let started = Instant::now();
+        let Some(snapshot) = github::cached_view(&label, self.org.as_deref(), &self.range) else {
+            return;
+        };
+        perf::record("github.paint", started.elapsed(), 0, CacheState::Hit, true);
+        self.snaps.insert(key.to_string(), snapshot);
     }
 
     /// Fetch the selected view in the background: never clears its cached
@@ -176,16 +191,39 @@ impl GithubView {
             return;
         };
         let (org, range) = (self.org.clone(), self.range.clone());
-        let job = runtime::spawn(fetch_account(label, org, range, force));
+        // One GitHub fetch at a time: the connector cancels the previous
+        // request, and dropping these tasks aborts it if the user has moved on.
+        self.loading.clear();
+        self.load_gen = self.load_gen.wrapping_add(1);
+        let gen = self.load_gen;
+        let job = runtime::spawn_abortable(fetch_account(label, org, range, force));
         let task_key = key.clone();
         let task = cx.spawn(async move |this, cx| {
             let result = job.await;
             let _ = this.update(cx, |this, cx| {
+                let current = this.loading.get(&task_key).map(|(id, _)| *id);
+                if current != Some(gen) {
+                    return;
+                }
                 this.loading.remove(&task_key);
                 match result {
                     Some(Ok(snapshot)) => {
-                        this.failed.remove(&task_key);
-                        this.snaps.insert(task_key, snapshot);
+                        let painted_ok = matches!(
+                            this.snaps.get(&task_key).map(|s| &s.status),
+                            Some(Health::Ok)
+                        );
+                        let soft_failure = matches!(
+                            snapshot.status,
+                            Health::Error { .. } | Health::RateLimited { .. }
+                        );
+                        if painted_ok && soft_failure {
+                            // The reconcile failed. Leave the saved dashboard
+                            // on screen and say the refresh did not land.
+                            this.failed.insert(task_key);
+                        } else {
+                            this.failed.remove(&task_key);
+                            this.snaps.insert(task_key, snapshot);
+                        }
                     }
                     // A newer request took over: not a failure, it will paint.
                     Some(Err(e)) if e.contains(SUPERSEDED) => {}
@@ -196,7 +234,7 @@ impl GithubView {
                 cx.notify();
             });
         });
-        self.loading.insert(key, task);
+        self.loading.insert(key, (gen, task));
         cx.notify();
     }
 
@@ -252,6 +290,7 @@ impl GithubView {
 
 impl Render for GithubView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _span = fastdash_core::engine::perf::span("ui.github");
         if self.accounts.is_empty() {
             return div()
                 .flex()

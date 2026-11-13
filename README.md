@@ -58,10 +58,15 @@ Two readings deliberately ignore it, because they are "right now" values rather 
 
 ## Refreshing
 
-The dashboards never poll on a timer in the background.
-The UI drives every fetch, and only for the dashboard currently on screen while the app window has focus - switching tabs or clicking away costs nothing, and a cached result younger than the connector's TTL is reused instead of refetched.
+The dashboards never poll on a timer.
+On launch, only the tab that is open is fetched. After that a tab fetches when you open it for the first time (or pick a date range it has not loaded) and when you press Refresh. Switching away does not refresh the tab you left, and focusing or unfocusing the window does not start a fetch.
+GitHub paints the last saved view immediately and refreshes it behind that, so opening the tab does not wait on the Search API.
 
-Fetches are also serialized per connector: starting a new one cancels the previous, so flipping between sub-tabs cannot burn through the GitHub Search budget or repaint stale numbers out of order.
+Fetches are still serialized: the tab you are looking at cancels whatever request was in flight, so flipping between GitHub accounts cannot burn through the Search budget or repaint stale numbers out of order.
+
+Repeated fetches reuse what has not changed. Claude transcripts are re-read only when the file grew. GitHub asks one cheap probe per org and skips the paginated searches when it matches; a small change is merged in from the newest page instead of re-downloading the whole set. Console usage for a day that has already ended is kept, and a repeat request sends `If-None-Match` when the server gave us an ETag.
+
+Set `FASTDASH_PERF=1` (or turn on developer mode, under Settings → About, by clicking the version five times) to log each request and show a small overlay: startup, per-panel render time, request latency, payload size, and cache hit / miss / 304 / delta. With the variable unset and developer mode off, that instrumentation is a single flag check.
 
 ## The taskbar readout
 

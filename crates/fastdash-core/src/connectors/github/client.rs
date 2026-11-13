@@ -2,12 +2,15 @@
 //! enrichment call. Holds no aggregation logic.
 
 use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
 
 use chrono::{DateTime, Utc};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::cache;
 use super::gate::Cancel;
+use crate::engine::perf::{self, CacheState};
 
 const SEARCH_URL: &str = "https://api.github.com/search/issues";
 const GRAPHQL_URL: &str = "https://api.github.com/graphql";
@@ -57,7 +60,7 @@ pub struct PrRef {
 }
 
 /// A single search result item, normalized from the REST Search API.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchItem {
     pub number: u64,
     pub title: String,
@@ -114,7 +117,7 @@ impl SearchResults {
 
 /// What a Search query matched at one moment, cheap enough to ask every poll.
 /// Equal probes mean an unchanged result set - see [`GithubClient::search_probe`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SearchProbe {
     pub total: u64,
     /// The newest `updated_at` among the matches, absent only when there are
@@ -122,8 +125,17 @@ pub struct SearchProbe {
     pub latest: Option<DateTime<Utc>>,
 }
 
+/// Items the Search API says changed after `watermark`, plus whether the walk
+/// reached that watermark. `reached_watermark` is false when the page cap ran
+/// out first: the caller must not treat `items` as the complete delta.
+pub struct UpdatedSearch {
+    pub items: Vec<SearchItem>,
+    pub total: u64,
+    pub reached_watermark: bool,
+}
+
 /// GraphQL-enriched view of a merged-today PR.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnrichedPr {
     pub name_with_owner: String,
     pub number: u64,
@@ -138,14 +150,14 @@ pub struct EnrichedPr {
 }
 
 /// A window of the viewer's contribution calendar, as GitHub itself buckets it.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContributionCalendar {
     pub total: u64,
     /// Ascending, contiguous, one entry per day in the requested window.
     pub days: Vec<ContributionDay>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContributionDay {
     /// ISO `YYYY-MM-DD` (GitHub's own calendar day for the viewer).
     pub date: String,
@@ -190,31 +202,14 @@ pub struct GithubClient {
 
 impl GithubClient {
     pub fn new(token: &str) -> Result<Self, GithubError> {
-        use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
-
-        let mut headers = HeaderMap::new();
-        let mut auth = HeaderValue::from_str(&format!("Bearer {token}"))
-            .map_err(|e| GithubError::Header(e.to_string()))?;
-        auth.set_sensitive(true);
-        headers.insert(AUTHORIZATION, auth);
-        headers.insert(
-            ACCEPT,
-            HeaderValue::from_static("application/vnd.github+json"),
-        );
-        headers.insert(USER_AGENT, HeaderValue::from_static("fastdash"));
-        headers.insert(
-            "X-GitHub-Api-Version",
-            HeaderValue::from_static("2022-11-28"),
-        );
-
-        let http = reqwest::Client::builder()
-            .default_headers(headers)
-            .build()
-            .map_err(|e| GithubError::Http(e.to_string()))?;
-
+        let token_fp = cache::token_fingerprint(token);
+        // One client per account for the life of the process. reqwest keeps a
+        // connection pool inside the client, so the next refresh reuses the
+        // HTTP/2 connection instead of paying a new TLS handshake.
+        let http = shared_http(token, token_fp)?;
         Ok(Self {
             http,
-            token: cache::token_fingerprint(token),
+            token: token_fp,
             scopes: std::sync::Mutex::new(None),
         })
     }
@@ -261,31 +256,13 @@ impl GithubClient {
             if cancel.cancelled() {
                 return Err(GithubError::Cancelled);
             }
-            let resp = self
-                .http
-                .get(SEARCH_URL)
-                .query(&[
-                    ("q", query),
-                    ("sort", "created"),
-                    ("order", "desc"),
-                    ("per_page", &PER_PAGE.to_string()),
-                    ("page", &page.to_string()),
-                ])
-                .send()
-                .await
-                .map_err(|e| GithubError::Http(e.to_string()))?;
+            let fetched = self
+                .fetch_search_page(query, "created", PER_PAGE, page, "github.search")
+                .await?;
 
-            let resp = search_ok(resp).await?;
-            let remaining = header_u64(resp.headers(), "x-ratelimit-remaining");
-
-            let body: SearchResponse = resp
-                .json()
-                .await
-                .map_err(|e| GithubError::Parse(e.to_string()))?;
-
-            total = total.max(body.total_count);
-            let count = body.items.len();
-            for raw in body.items {
+            total = total.max(fetched.body.total_count);
+            let count = fetched.body.items.len();
+            for raw in fetched.body.items {
                 if let Some(item) = raw.normalize() {
                     items.push(item);
                 }
@@ -298,7 +275,7 @@ impl GithubClient {
             page += 1;
 
             // Be polite when the Search budget (30/min) runs low.
-            if matches!(remaining, Some(r) if r <= 1) {
+            if matches!(fetched.remaining, Some(r) if r <= 1) {
                 return Err(GithubError::RateLimited {
                     retry_after_secs: Some(60),
                 });
@@ -306,6 +283,69 @@ impl GithubClient {
         }
 
         Ok(SearchResults { items, total })
+    }
+
+    /// The pull requests in `query` whose `updated_at` is at or after
+    /// `watermark`, walking newest-updated-first and stopping once a page
+    /// crosses the watermark. At most `max_pages` pages are fetched.
+    ///
+    /// This is the delta stand-in for conditional requests. The Search API
+    /// sends `Cache-Control: no-cache` and no `ETag`, so the only way to avoid
+    /// re-reading a result set is to stop when the pages are older than the
+    /// copy we already hold.
+    pub async fn search_updated_since(
+        &self,
+        query: &str,
+        watermark: DateTime<Utc>,
+        max_pages: u32,
+        cancel: &Cancel,
+    ) -> Result<UpdatedSearch, GithubError> {
+        let mut items = Vec::new();
+        let mut total = 0u64;
+        let mut reached = false;
+        let max_pages = max_pages.clamp(1, MAX_PAGES);
+        let mut page = 1u32;
+
+        loop {
+            if cancel.cancelled() {
+                return Err(GithubError::Cancelled);
+            }
+            let fetched = self
+                .fetch_search_page(query, "updated", PER_PAGE, page, "github.search.delta")
+                .await?;
+            total = total.max(fetched.body.total_count);
+            let count = fetched.body.items.len();
+            let mut crossed = false;
+            for raw in fetched.body.items {
+                let Some(item) = raw.normalize() else {
+                    continue;
+                };
+                match item.updated_at {
+                    Some(at) if at >= watermark => items.push(item),
+                    _ => crossed = true,
+                }
+            }
+            // A short page is the end of the result set, watermark or not.
+            if crossed || count < PER_PAGE as usize {
+                reached = true;
+                break;
+            }
+            if page >= max_pages {
+                break;
+            }
+            page += 1;
+            if matches!(fetched.remaining, Some(r) if r <= 1) {
+                return Err(GithubError::RateLimited {
+                    retry_after_secs: Some(60),
+                });
+            }
+        }
+
+        Ok(UpdatedSearch {
+            items,
+            total,
+            reached_watermark: reached,
+        })
     }
 
     /// A cheap fingerprint of what a Search query matches right now: how many
@@ -316,41 +356,77 @@ impl GithubClient {
     /// does not offer - it sends `Cache-Control: no-cache` and no `ETag`, so
     /// `If-None-Match` has nothing to validate against.
     ///
-    /// Over an `updated:` window the pair is a sound change detector. For the
-    /// live window - today, the only one the dashboard polls - membership only
-    /// ever grows, since an update cannot un-happen, and touching a PR already
-    /// in the set moves the maximum forward; two polls agreeing on both saw the
-    /// same set. Over a past window a PR touched since simply leaves, which
-    /// moves the total instead. The one thing neither number catches is a
-    /// same-second arrival and departure, and the next poll catches that.
+    /// Over an `updated:` window the pair is a sound change detector. Membership
+    /// of a date-bounded window only grows or is touched, and touching a PR
+    /// already in the set moves the maximum forward; two probes agreeing on
+    /// both saw the same set. A PR that leaves the window moves the total
+    /// instead. The one thing neither number catches is a same-second arrival
+    /// and departure, and the next refresh catches that.
     pub async fn search_probe(&self, query: &str) -> Result<SearchProbe, GithubError> {
-        let resp = self
-            .http
-            .get(SEARCH_URL)
-            .query(&[
-                ("q", query),
-                ("sort", "updated"),
-                ("order", "desc"),
-                ("per_page", "1"),
-            ])
-            .send()
-            .await
-            .map_err(|e| GithubError::Http(e.to_string()))?;
-
-        let body: SearchResponse = search_ok(resp)
-            .await?
-            .json()
-            .await
-            .map_err(|e| GithubError::Parse(e.to_string()))?;
-
+        let fetched = self
+            .fetch_search_page(query, "updated", 1, 1, "github.search.probe")
+            .await?;
         Ok(SearchProbe {
-            total: body.total_count,
-            latest: body
+            total: fetched.body.total_count,
+            latest: fetched
+                .body
                 .items
                 .first()
                 .and_then(|it| it.updated_at.as_deref())
                 .and_then(parse_ts),
         })
+    }
+
+    async fn fetch_search_page(
+        &self,
+        query: &str,
+        sort: &str,
+        per_page: u32,
+        page: u32,
+        op: &'static str,
+    ) -> Result<SearchPage, GithubError> {
+        let started = Instant::now();
+        let per_page = per_page.to_string();
+        let page_s = page.to_string();
+        let send = async {
+            let resp = self
+                .http
+                .get(SEARCH_URL)
+                .query(&[
+                    ("q", query),
+                    ("sort", sort),
+                    ("order", "desc"),
+                    ("per_page", per_page.as_str()),
+                    ("page", page_s.as_str()),
+                ])
+                .send()
+                .await
+                .map_err(|e| GithubError::Http(e.to_string()))?;
+            self.record_scopes(resp.headers());
+            let remaining = header_u64(resp.headers(), "x-ratelimit-remaining");
+            let resp = search_ok(resp).await?;
+            let bytes = resp
+                .bytes()
+                .await
+                .map_err(|e| GithubError::Http(e.to_string()))?;
+            let body: SearchResponse =
+                serde_json::from_slice(&bytes).map_err(|e| GithubError::Parse(e.to_string()))?;
+            Ok::<_, GithubError>(SearchPage {
+                bytes: bytes.len() as u64,
+                remaining,
+                body,
+            })
+        };
+        match send.await {
+            Ok(page) => {
+                perf::record(op, started.elapsed(), page.bytes, CacheState::Miss, true);
+                Ok(page)
+            }
+            Err(err) => {
+                perf::record(op, started.elapsed(), 0, CacheState::Miss, true);
+                Err(err)
+            }
+        }
     }
 
     /// Enrich a set of PRs (by owner/repo/number) with additions, deletions,
@@ -365,6 +441,16 @@ impl GithubClient {
         // whose `updated_at` has not moved since it was last enriched cannot
         // have changed anything read here, and is answered from the cache.
         let (mut out, stale) = cache::take_enriched(self.token, prs);
+        if !prs.is_empty() {
+            let cache = if stale.is_empty() {
+                CacheState::Hit
+            } else if out.is_empty() {
+                CacheState::Miss
+            } else {
+                CacheState::Delta
+            };
+            perf::record("github.enrich", std::time::Duration::ZERO, 0, cache, false);
+        }
         out.reserve(stale.len());
 
         for chunk in stale.chunks(GRAPHQL_CHUNK) {
@@ -529,6 +615,7 @@ impl GithubClient {
         &self,
         query: &str,
     ) -> Result<Option<HashMap<String, serde_json::Value>>, GithubError> {
+        let started = Instant::now();
         let resp = self
             .http
             .post(GRAPHQL_URL)
@@ -540,18 +627,41 @@ impl GithubClient {
         let status = resp.status();
         self.record_scopes(resp.headers());
         if status.as_u16() == 403 || status.as_u16() == 429 {
+            perf::record(
+                "github.graphql",
+                started.elapsed(),
+                0,
+                CacheState::Miss,
+                true,
+            );
             return Err(GithubError::RateLimited {
                 retry_after_secs: retry_after(resp.headers()),
             });
         }
         if !status.is_success() {
+            perf::record(
+                "github.graphql",
+                started.elapsed(),
+                0,
+                CacheState::Miss,
+                true,
+            );
             return Err(status_error(status.as_u16(), resp).await);
         }
 
-        let body: GraphQlResponse = resp
-            .json()
+        let bytes = resp
+            .bytes()
             .await
-            .map_err(|e| GithubError::Parse(e.to_string()))?;
+            .map_err(|e| GithubError::Http(e.to_string()))?;
+        perf::record(
+            "github.graphql",
+            started.elapsed(),
+            bytes.len() as u64,
+            CacheState::Miss,
+            true,
+        );
+        let body: GraphQlResponse =
+            serde_json::from_slice(&bytes).map_err(|e| GithubError::Parse(e.to_string()))?;
 
         if let Some(errors) = body.errors {
             if body.data.is_none() {
@@ -577,7 +687,7 @@ pub struct ContributionBreakdown {
 }
 
 /// The authenticated user behind the token.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ViewerProfile {
     pub login: String,
     pub created_at: Option<DateTime<Utc>>,
@@ -771,6 +881,38 @@ fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<u64> {
     Some(reset.saturating_sub(now).max(1))
 }
 
+fn shared_http(token: &str, fingerprint: u64) -> Result<reqwest::Client, GithubError> {
+    use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
+
+    static POOL: OnceLock<Mutex<HashMap<u64, reqwest::Client>>> = OnceLock::new();
+    let pool = POOL.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut pool = pool.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(client) = pool.get(&fingerprint) {
+        return Ok(client.clone());
+    }
+
+    let mut headers = HeaderMap::new();
+    let mut auth = HeaderValue::from_str(&format!("Bearer {token}"))
+        .map_err(|e| GithubError::Header(e.to_string()))?;
+    auth.set_sensitive(true);
+    headers.insert(AUTHORIZATION, auth);
+    headers.insert(
+        ACCEPT,
+        HeaderValue::from_static("application/vnd.github+json"),
+    );
+    headers.insert(USER_AGENT, HeaderValue::from_static("fastdash"));
+    headers.insert(
+        "X-GitHub-Api-Version",
+        HeaderValue::from_static("2022-11-28"),
+    );
+    let client = reqwest::Client::builder()
+        .default_headers(headers)
+        .build()
+        .map_err(|e| GithubError::Http(e.to_string()))?;
+    pool.insert(fingerprint, client.clone());
+    Ok(client)
+}
+
 fn parse_ts(s: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(s)
         .ok()
@@ -778,6 +920,12 @@ fn parse_ts(s: &str) -> Option<DateTime<Utc>> {
 }
 
 // --- REST Search wire types ---
+
+struct SearchPage {
+    body: SearchResponse,
+    remaining: Option<u64>,
+    bytes: u64,
+}
 
 #[derive(Debug, Deserialize)]
 struct SearchResponse {

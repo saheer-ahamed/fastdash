@@ -21,9 +21,9 @@
 //!   which stops at its next checkpoint instead of spending more budget. The
 //!   connector's generic `fetch` is the polite exception: it skips rather than
 //!   preempting a fetch the user is waiting on (see [`Gate::begin_if_idle`]).
-//! * A result younger than [`TTL`] is reused instead of refetched, so the view's
-//!   interval and a sub-tab click that land close together cost one round of API
-//!   calls rather than two.
+//! * A result younger than [`TTL`] is reused instead of refetched, so a sub-tab
+//!   click and a refresh that land close together cost one round of API calls
+//!   rather than two.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -165,6 +165,14 @@ impl Gate {
             state
                 .last
                 .insert(lease.key.clone(), (Instant::now(), snapshot.clone()));
+        }
+    }
+
+    /// Drop remembered snapshots. Search results stay cached; this only forgets
+    /// the rendered panels, which bake in the current language.
+    pub fn forget_cached(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.last.clear();
         }
     }
 

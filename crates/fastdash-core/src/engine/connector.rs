@@ -2,13 +2,13 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::engine::config::AppConfig;
 use crate::engine::panel::Panel;
 use crate::engine::range::DateRange;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectorMeta {
     pub id: String,
@@ -19,7 +19,7 @@ pub struct ConnectorMeta {
 }
 
 /// Connector health, surfaced as a status badge in the UI.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "camelCase")]
 pub enum Health {
     Ok,
@@ -43,7 +43,7 @@ pub enum Health {
 }
 
 /// One fetch result: what to render plus status and refresh hints.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     pub status: Health,
@@ -117,8 +117,9 @@ pub trait Connector: Send + Sync {
     /// `true` default would let the next one ship permanently visible instead.
     fn is_configured(&self, cfg: &AppConfig) -> bool;
 
-    /// Fetch the latest snapshot. Driven entirely by the UI: when the
-    /// connector's tab is opened, on `default_refresh_secs` for as long as that
-    /// tab is on screen and the window has focus, and on manual refresh.
+    /// Fetch the latest snapshot. Driven entirely by the UI: the first time the
+    /// connector's tab (or a range it has not loaded) is shown, and on manual
+    /// refresh. Nothing polls, and the window being in the background is not a
+    /// reason to skip or to start a fetch.
     async fn fetch(&self, ctx: &FetchCtx) -> Result<Snapshot, ConnectorError>;
 }

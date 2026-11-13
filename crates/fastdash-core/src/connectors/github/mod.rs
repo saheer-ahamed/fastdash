@@ -33,6 +33,12 @@
 //! wider than that says so in a note above the tables rather than presenting
 //! its newest slice as the whole picture.
 //!
+//! Search sends no `ETag`, so a refresh cannot be a conditional GET. The org
+//! event feed is not a substitute either: it keeps only the newest few hundred
+//! events, which is not a date-filtered PR report. The last successful view is
+//! therefore saved and painted immediately, and the probe-and-delta fetch
+//! reconciles it in the background.
+//!
 //! Supports multiple accounts (work `saheer-zro`, personal `saheer-ahamed`),
 //! each with its own PAT in the OS keychain. The UI drives per-account and
 //! per-org sub-tabs through `fetch_account` (see `ipc::github_fetch`); the
@@ -47,6 +53,7 @@ pub mod device_flow;
 mod gate;
 
 use std::collections::HashMap;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
@@ -55,10 +62,14 @@ use crate::engine::config::AppConfig;
 use crate::engine::connector::Health;
 use crate::engine::connector::{Connector, ConnectorError, ConnectorMeta, FetchCtx, Snapshot};
 use crate::engine::i18n;
+use crate::engine::perf::{self, CacheState};
 use crate::engine::range::{self, DateRange};
 
 use aggregate::{LineContrib, PrEntry, PrState, Rollup};
-use client::{CalendarWindow, EnrichedPr, GithubClient, GithubError, PrRef, SearchItem};
+use client::{
+    CalendarWindow, EnrichedPr, GithubClient, GithubError, PrRef, SearchItem, SearchProbe,
+    ViewerProfile,
+};
 use config::GithubConfig;
 use gate::Cancel;
 
@@ -125,7 +136,7 @@ impl Connector for GithubConnector {
                 .unwrap_or_else(|| Snapshot::ok(vec![], Some(REFRESH_SECS))));
         };
 
-        match run_fetch(&cfg, &ctx.range, lease.cancel()).await {
+        match run_fetch(&cfg, &ctx.range, lease.cancel(), false).await {
             Ok(snapshot) => {
                 gate::gate().finish(&lease, &snapshot);
                 Ok(snapshot)
@@ -175,15 +186,23 @@ pub async fn fetch_account(
     let key = view_key(&label, org.as_deref(), &range);
     if !force {
         if let Some(snapshot) = gate::gate().fresh(&key) {
+            perf::record(
+                "fetch.github",
+                std::time::Duration::ZERO,
+                0,
+                CacheState::Hit,
+                true,
+            );
             return Ok(snapshot);
         }
     }
+    let _span = perf::span("fetch.github").recent();
     let Some(cfg) = GithubConfig::for_account(&label, org.as_deref()) else {
         return Ok(Snapshot::needs_auth(i18n::t("github.needsAuth")));
     };
 
     let lease = gate::gate().begin(&key);
-    let snapshot = match run_fetch(&cfg, &range, lease.cancel()).await {
+    let snapshot = match run_fetch(&cfg, &range, lease.cancel(), force).await {
         Ok(snapshot) => snapshot,
         Err(GithubError::Cancelled) => return Err(SUPERSEDED.to_string()),
         Err(GithubError::RateLimited { retry_after_secs }) => {
@@ -211,7 +230,155 @@ pub async fn fetch_account(
         return Err(SUPERSEDED.to_string());
     }
     gate::gate().finish(&lease, &snapshot);
+    remember_view(&label, org.as_deref(), &range, &snapshot);
     Ok(snapshot)
+}
+
+/// The last successful render of this view, if a previous fetch saved one.
+/// Reading it does not touch the network. The UI paints it before the
+/// reconcile fetch returns.
+pub fn cached_view(label: &str, org: Option<&str>, range: &DateRange) -> Option<Snapshot> {
+    let key = view_key(label, org, range);
+    let mut saved = saved_views().lock().ok()?;
+    load_saved(&mut saved);
+    saved.views.get(&key).cloned()
+}
+
+/// Drop rendered GitHub snapshots (a language change, edited accounts). The
+/// search cache stays: the next fetch revalidates it with one probe per scope
+/// instead of paginating results that have not moved. The painted copies are
+/// dropped too, because their strings are in the old language.
+pub fn forget_cached_views() {
+    gate::gate().forget_cached();
+    if let Ok(mut saved) = saved_views().lock() {
+        saved.views.clear();
+        saved.loaded = true;
+    }
+    if let Some(path) = saved_path() {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// How many view snapshots to keep. Each one is a whole dashboard, so this is
+/// a handful of account / org / range combinations, not a history of every
+/// range the user has ever opened.
+const SAVED_VIEW_CAP: usize = 24;
+
+struct SavedViews {
+    views: HashMap<String, Snapshot>,
+    loaded: bool,
+}
+
+fn saved_views() -> &'static std::sync::Mutex<SavedViews> {
+    static VIEWS: std::sync::OnceLock<std::sync::Mutex<SavedViews>> = std::sync::OnceLock::new();
+    VIEWS.get_or_init(|| {
+        std::sync::Mutex::new(SavedViews {
+            views: HashMap::new(),
+            loaded: false,
+        })
+    })
+}
+
+fn remember_view(label: &str, org: Option<&str>, range: &DateRange, snapshot: &Snapshot) {
+    // A failed fetch must not overwrite the copy the UI is showing.
+    if !matches!(snapshot.status, Health::Ok) {
+        return;
+    }
+    let key = view_key(label, org, range);
+    let exported = {
+        let Ok(mut saved) = saved_views().lock() else {
+            return;
+        };
+        load_saved(&mut saved);
+        saved.views.insert(key, snapshot.clone());
+        while saved.views.len() > SAVED_VIEW_CAP {
+            let Some(oldest) = saved
+                .views
+                .iter()
+                .min_by_key(|(_, snapshot)| snapshot.fetched_at)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            saved.views.remove(&oldest);
+        }
+        export_saved(&saved)
+    };
+    write_saved(&exported);
+}
+
+fn load_saved(saved: &mut SavedViews) {
+    if saved.loaded {
+        return;
+    }
+    saved.loaded = true;
+    if !saved_disk() {
+        return;
+    }
+    let Some(path) = saved_path() else {
+        return;
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return;
+    };
+    let Ok(file) = serde_json::from_str::<SavedFile>(&text) else {
+        return;
+    };
+    for view in file.views {
+        saved.views.insert(view.key, view.snapshot);
+    }
+}
+
+fn export_saved(saved: &SavedViews) -> SavedFile {
+    SavedFile {
+        views: saved
+            .views
+            .iter()
+            .map(|(key, snapshot)| SavedView {
+                key: key.clone(),
+                snapshot: snapshot.clone(),
+            })
+            .collect(),
+    }
+}
+
+fn write_saved(file: &SavedFile) {
+    if !saved_disk() {
+        return;
+    }
+    let Some(path) = saved_path() else {
+        return;
+    };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let Ok(text) = serde_json::to_string(file) else {
+        return;
+    };
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, text).is_ok() {
+        let _ = std::fs::rename(tmp, path);
+    }
+}
+
+fn saved_disk() -> bool {
+    !cfg!(test)
+}
+
+fn saved_path() -> Option<std::path::PathBuf> {
+    directories::ProjectDirs::from("co", "zro", "fastdash")
+        .map(|dirs| dirs.cache_dir().join("github-views.json"))
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SavedFile {
+    views: Vec<SavedView>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SavedView {
+    key: String,
+    snapshot: Snapshot,
 }
 
 /// The PRs the user opened and merged over a range, for the taskbar readout.
@@ -300,17 +467,24 @@ async fn count_mine(
         .search_issues(&format!("author:{login} type:pr merged:{bounds}"), &cancel)
         .await?
         .total;
+    cache::flush();
     Ok((login, MyPrCounts { opened, merged }))
 }
 
 /// One dashboard fetch. `cancel` is polled between requests, so a fetch the user
 /// has navigated away from stops after the call already in flight rather than
 /// working through every remaining scope.
+///
+/// `refresh_calendar` refetches the contribution heatmap. A fetch that is not a
+/// manual refresh reuses today's heatmap: it does not depend on the org chip,
+/// and GraphQL has no conditional request to revalidate it cheaply.
 async fn run_fetch(
     cfg: &GithubConfig,
     range: &DateRange,
     cancel: &Cancel,
+    refresh_calendar: bool,
 ) -> Result<Snapshot, GithubError> {
+    let _flush = cache::FlushGuard::new();
     // Nothing to search. Caught here rather than falling through to an empty
     // dashboard, which reads as "no activity" instead of "not set up yet".
     if cfg.orgs.is_empty() {
@@ -325,49 +499,16 @@ async fn run_fetch(
     let window = range.ist_window();
     let client = GithubClient::new(&cfg.token)?;
 
-    let mut rollup = Rollup::default();
-    // PRs deduped across every scope and every set, with per-set flags. Counting
-    // happens here rather than per scope, so two overlapping scopes (an org plus
-    // `author:me`, which the Connectors copy suggests pairing) cannot count the
-    // same PR twice in a table sitting above an already-deduped PR list.
-    let mut seen: HashMap<PrKey, SeenPr> = HashMap::new();
-    // Scopes GitHub refused, kept aside so one bad entry cannot sink the others.
-    let mut failed: Vec<String> = Vec::new();
-    // The biggest query GitHub capped, so the dashboard can say the range is
-    // wider than Search will serve instead of quietly reporting a slice of it.
-    let mut truncated_total = 0u64;
-
-    for entry in &cfg.orgs {
-        let scope = scope_qualifier(entry);
-        // `None` means the Search API answered 422: this scope is unsearchable
-        // for this token, which the user can act on. It is specific to the
-        // scope, so it is set aside rather than sinking the ones that do work.
-        //
-        // Every other failure propagates untouched. A 401 from a revoked token,
-        // a 5xx, a DNS blip - none of those are attributable to this scope, and
-        // most are transient, so they must stay `Error` ("we'll keep trying")
-        // rather than being reported as a settings mistake that retrying cannot
-        // fix. A rate limit is global too: trying the remaining scopes would
-        // only burn more quota.
-        let Some(sets) = search_scope(&client, &scope, &bounds, window, cancel).await? else {
-            eprintln!("github: scope {scope} is unsearchable with this token");
-            failed.push(scope);
-            continue;
-        };
-
-        truncated_total = truncated_total.max(sets.truncated_total);
-
-        // Fold every set into the deduped union with its flags.
-        for it in sets.opened {
-            upsert(&mut seen, it, Bucket::Created);
-        }
-        for it in sets.merged {
-            upsert(&mut seen, it, Bucket::Merged);
-        }
-        for it in sets.closed {
-            upsert(&mut seen, it, Bucket::Closed);
-        }
-    }
+    // The heatmap does not depend on the search, so it overlaps the org loop
+    // instead of adding a round trip after it.
+    let searched = search_orgs(&client, cfg, &bounds, window, cancel);
+    let calendars = load_calendars(&client, refresh_calendar);
+    let (searched, calendars) = tokio::join!(searched, calendars);
+    let Searched {
+        seen,
+        failed,
+        truncated_total,
+    } = searched?;
 
     // Nothing searchable at all: say which scopes were refused rather than
     // rendering an empty dashboard that looks like a quiet day.
@@ -377,6 +518,7 @@ async fn run_fetch(
         )));
     }
 
+    let mut rollup = Rollup::default();
     count_activity(&seen, cfg.filter_bots, &mut rollup);
 
     // Enrich every PR the dashboard will call merged - the ones merged inside
@@ -470,11 +612,15 @@ async fn run_fetch(
 
     // The contribution calendar is viewer-scoped, not org-scoped, so it is the
     // same on every org sub-tab. Best-effort: a GraphQL failure drops the
-    // heatmap, never the dashboard.
+    // heatmap, never the dashboard. Built here, after the searches, so the
+    // scope warning can see the token scopes those responses advertised.
     if cancel.cancelled() {
         return Err(GithubError::Cancelled);
     }
-    let contributions = contributions_panels(&client).await;
+    let contributions = match calendars {
+        Some((profile, calendars)) => heatmap_panels(&client, &profile, &calendars),
+        None => Vec::new(),
+    };
 
     let mut panels = aggregate::build_panels(&rollup, ist, &range, contributions);
     // The range matched more PRs than Search will hand over, so the numbers
@@ -497,7 +643,7 @@ async fn run_fetch(
 }
 
 /// The date-filtered PR sets for one scope over the selected range.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct ScopeSets {
     /// PRs created inside the range: the cohort every count column splits.
     opened: Vec<SearchItem>,
@@ -507,9 +653,72 @@ struct ScopeSets {
     /// PRs closed without merging inside the range, whenever they were created.
     /// Feeds the PR list only.
     closed: Vec<SearchItem>,
+    /// Every item the closed query returned, before the window filter, so a
+    /// later delta can check the merged set against `total_count`.
+    #[serde(default)]
+    closed_query: Vec<SearchItem>,
     /// `total_count` of the widest query GitHub capped, or 0 when every query
     /// fitted inside the 1000-result limit.
     truncated_total: u64,
+}
+
+struct Searched {
+    seen: HashMap<PrKey, SeenPr>,
+    failed: Vec<String>,
+    truncated_total: u64,
+}
+
+/// Pages of `updated:` results a small change is worth walking before giving
+/// up and paginating the query from scratch. Two pages cover a busy day; a
+/// larger burst is cheaper as one full search than as a delta that fails its
+/// count check and is thrown away.
+const DELTA_MAX_PAGES: u32 = 2;
+const SEARCH_PAGE: u64 = 100;
+
+async fn search_orgs(
+    client: &GithubClient,
+    cfg: &GithubConfig,
+    bounds: &str,
+    window: (DateTime<Utc>, DateTime<Utc>),
+    cancel: &Cancel,
+) -> Result<Searched, GithubError> {
+    let mut seen: HashMap<PrKey, SeenPr> = HashMap::new();
+    let mut failed = Vec::new();
+    let mut truncated_total = 0u64;
+    for entry in &cfg.orgs {
+        if cancel.cancelled() {
+            return Err(GithubError::Cancelled);
+        }
+        let scope = scope_qualifier(entry);
+        // `None` means the Search API answered 422: this scope is unsearchable
+        // for this token, which the user can act on. It is specific to the
+        // scope, so it is set aside rather than sinking the ones that do work.
+        //
+        // Every other failure propagates untouched. A 401, a 5xx, a DNS blip -
+        // none of those are attributable to this scope, and most are transient,
+        // so they must stay `Error` rather than a settings mistake. A rate limit
+        // is global too: trying the remaining scopes would only burn more quota.
+        let Some(sets) = search_scope(client, &scope, bounds, window, cancel).await? else {
+            eprintln!("github: scope {scope} is unsearchable with this token");
+            failed.push(scope);
+            continue;
+        };
+        truncated_total = truncated_total.max(sets.truncated_total);
+        for it in sets.opened {
+            upsert(&mut seen, it, Bucket::Created);
+        }
+        for it in sets.merged {
+            upsert(&mut seen, it, Bucket::Merged);
+        }
+        for it in sets.closed {
+            upsert(&mut seen, it, Bucket::Closed);
+        }
+    }
+    Ok(Searched {
+        seen,
+        failed,
+        truncated_total,
+    })
 }
 
 /// Run one scope's searches over `bounds`. `scope` is an already-resolved search
@@ -518,12 +727,14 @@ struct ScopeSets {
 /// this token cannot see the scope, whether because it does not exist or because
 /// the token is not allowed to view it.
 ///
-/// A poll that changes nothing costs one request, not three paginated ones:
+/// A refresh that changes nothing costs one request, not three paginated ones:
 /// `updated:{bounds}` is a superset of all three queries below - creating,
 /// merging and closing a PR all touch it - so a probe of that superset
 /// (`search_probe`) that matches the last one taken for this scope and range
 /// proves every result set is still exactly what it was, and the cached sets
-/// are handed back untouched.
+/// are handed back untouched. A probe that moved only a little is walked
+/// newest-updated-first until the previous watermark, and kept only when the
+/// merged set still matches `total_count`.
 ///
 /// Three queries, and deliberately no fourth for "still open": a merged PR is
 /// closed too, so the `created` results that carry no `closed_at` are precisely
@@ -561,61 +772,178 @@ async fn search_scope(
     // One request that answers "has anything in this window moved at all?".
     // A 422 here means the same thing it means below: the token cannot see
     // this scope.
+    let started = Instant::now();
     let probe = match client
         .search_probe(&format!("{scope} type:pr updated:{bounds}"))
         .await
     {
-        Ok(p) => Some(p),
+        Ok(p) => p,
         Err(GithubError::Status { code: 422, .. }) => return Ok(None),
         Err(e) => return Err(e),
     };
-    if let Some(probe) = &probe {
-        if let Some(sets) = cache::unchanged_scope(client.token(), scope, bounds, probe) {
-            return Ok(Some(sets));
+    if let Some(sets) = cache::unchanged_scope(client.token(), scope, bounds, &probe) {
+        perf::record("github.scope", started.elapsed(), 0, CacheState::Hit, true);
+        return Ok(Some(sets));
+    }
+    if let Some((old_probe, old_sets)) = cache::stored_scope(client.token(), scope, bounds) {
+        if let Some(pages) = delta_pages(old_probe.total, probe.total, old_sets.truncated_total > 0)
+        {
+            if let Some(sets) = try_delta(
+                client, &queries, &old_probe, &old_sets, window, pages, cancel,
+            )
+            .await?
+            {
+                cache::store_scope_delta(client.token(), scope, bounds, probe, &sets);
+                perf::record(
+                    "github.scope",
+                    started.elapsed(),
+                    0,
+                    CacheState::Delta,
+                    true,
+                );
+                return Ok(Some(sets));
+            }
         }
     }
 
-    let mut results = Vec::with_capacity(queries.len());
-    for q in queries {
-        match client.search_issues(&q, cancel).await {
-            Ok(r) => results.push(r),
+    let Some(results) = search_three(client, &queries, cancel).await? else {
+        return Ok(None);
+    };
+    let sets = sets_from_results(results, window);
+    // Store against the probe taken *before* the searches, never a fresher one:
+    // anything that landed while they were in flight must still invalidate this.
+    cache::store_scope(client.token(), scope, bounds, probe, &sets);
+    perf::record("github.scope", started.elapsed(), 0, CacheState::Miss, true);
+    Ok(Some(sets))
+}
+
+async fn search_three(
+    client: &GithubClient,
+    queries: &[String; 3],
+    cancel: &Cancel,
+) -> Result<Option<Vec<client::SearchResults>>, GithubError> {
+    let (a, b, c) = tokio::join!(
+        client.search_issues(&queries[0], cancel),
+        client.search_issues(&queries[1], cancel),
+        client.search_issues(&queries[2], cancel),
+    );
+    let mut out = Vec::with_capacity(3);
+    for result in [a, b, c] {
+        match result {
+            Ok(results) => out.push(results),
             Err(GithubError::Status { code: 422, .. }) => return Ok(None),
-            Err(e) => return Err(e),
+            Err(err) => return Err(err),
         }
     }
+    Ok(Some(out))
+}
 
+fn sets_from_results(
+    results: Vec<client::SearchResults>,
+    window: (DateTime<Utc>, DateTime<Utc>),
+) -> ScopeSets {
     let truncated_total = results
         .iter()
         .filter(|r| r.truncated())
         .map(|r| r.total)
         .max()
         .unwrap_or(0);
-
     let mut results = results.into_iter().map(|r| r.items);
     let opened = results.next().unwrap_or_default();
     let merged = results.next().unwrap_or_default();
-    // Narrow the `updated:` superset to the closes that actually happened in the
-    // window. A PR with no `closed_at` cannot have been closed in it, so the
-    // absent case drops rather than counting.
-    let closed = results
-        .next()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|it| matches!(it.closed_at, Some(at) if at >= window.0 && at <= window.1))
-        .collect();
-
-    let sets = ScopeSets {
+    let closed_query = results.next().unwrap_or_default();
+    let closed = closed_in_window(&closed_query, window);
+    ScopeSets {
         opened,
         merged,
         closed,
+        closed_query,
         truncated_total,
-    };
-    // Store against the probe taken *before* the searches, never a fresher one:
-    // anything that landed while they were in flight must still invalidate this.
-    if let Some(probe) = probe {
-        cache::store_scope(client.token(), scope, bounds, probe, &sets);
     }
-    Ok(Some(sets))
+}
+
+/// `None` when a delta is the wrong tool: the window shrank (something left
+/// without showing up as a recent update), it is already truncated, or it grew
+/// by more than [`DELTA_MAX_PAGES`].
+fn delta_pages(old_total: u64, new_total: u64, old_truncated: bool) -> Option<u32> {
+    if old_truncated
+        || old_total > client::SEARCH_RESULT_CAP
+        || new_total > client::SEARCH_RESULT_CAP
+    {
+        return None;
+    }
+    if new_total < old_total {
+        return None;
+    }
+    if new_total - old_total > SEARCH_PAGE * u64::from(DELTA_MAX_PAGES) {
+        return None;
+    }
+    Some(DELTA_MAX_PAGES)
+}
+
+async fn try_delta(
+    client: &GithubClient,
+    queries: &[String; 3],
+    old_probe: &SearchProbe,
+    old: &ScopeSets,
+    window: (DateTime<Utc>, DateTime<Utc>),
+    pages: u32,
+    cancel: &Cancel,
+) -> Result<Option<ScopeSets>, GithubError> {
+    let Some(watermark) = old_probe.latest else {
+        return Ok(None);
+    };
+    let (opened, merged, closed) = tokio::join!(
+        client.search_updated_since(&queries[0], watermark, pages, cancel),
+        client.search_updated_since(&queries[1], watermark, pages, cancel),
+        client.search_updated_since(&queries[2], watermark, pages, cancel),
+    );
+    let opened = opened?;
+    let merged = merged?;
+    let closed = closed?;
+    if !opened.reached_watermark || !merged.reached_watermark || !closed.reached_watermark {
+        return Ok(None);
+    }
+    let opened_items = merge_items(&old.opened, &opened.items);
+    let merged_items = merge_items(&old.merged, &merged.items);
+    let closed_query = merge_items(&old.closed_query, &closed.items);
+    // `total_count` is the whole set. If the merge does not land on it, a PR
+    // arrived or left outside the pages we walked and the delta is not safe.
+    if opened_items.len() as u64 != opened.total
+        || merged_items.len() as u64 != merged.total
+        || closed_query.len() as u64 != closed.total
+    {
+        return Ok(None);
+    }
+    Ok(Some(ScopeSets {
+        closed: closed_in_window(&closed_query, window),
+        opened: opened_items,
+        merged: merged_items,
+        closed_query,
+        truncated_total: 0,
+    }))
+}
+
+fn merge_items(old: &[SearchItem], fresh: &[SearchItem]) -> Vec<SearchItem> {
+    let mut map = HashMap::with_capacity(old.len() + fresh.len());
+    for item in old {
+        map.insert(item.key(), item.clone());
+    }
+    for item in fresh {
+        map.insert(item.key(), item.clone());
+    }
+    map.into_values().collect()
+}
+
+fn closed_in_window(
+    items: &[SearchItem],
+    window: (DateTime<Utc>, DateTime<Utc>),
+) -> Vec<SearchItem> {
+    items
+        .iter()
+        .filter(|it| matches!(it.closed_at, Some(at) if at >= window.0 && at <= window.1))
+        .cloned()
+        .collect()
 }
 
 /// Why every configured scope came back unsearchable, phrased for whoever has
@@ -659,28 +987,52 @@ fn org_unsearchable_message(token: &str, org: &str) -> String {
     }
 }
 
-/// Fetch the viewer's contribution calendars and build the heatmap panel,
-/// preceded by a note when the token can only see part of the calendar.
-/// Returns an empty vec (and logs) if GitHub won't give them to this token.
-async fn contributions_panels(client: &GithubClient) -> Vec<crate::engine::panel::Panel> {
+/// The viewer's contribution calendars. A copy fetched earlier today is reused
+/// unless `refresh` is set (the manual Refresh button). A failure is logged and
+/// becomes `None`: the heatmap is dropped, the rest of the dashboard is not.
+async fn load_calendars(
+    client: &GithubClient,
+    refresh: bool,
+) -> Option<(ViewerProfile, Vec<(String, client::ContributionCalendar)>)> {
     let profile = match client.viewer_profile().await {
-        Ok(p) => p,
+        Ok(profile) => profile,
         Err(e) => {
             eprintln!("github: contribution heatmap unavailable: {e}");
-            return Vec::new();
+            return None;
         }
     };
-
     let now = Utc::now();
+    let today = range::today_ist();
+    if !refresh {
+        if let Some(calendars) = cache::calendars(client.token(), now.year(), today) {
+            perf::record(
+                "github.calendar",
+                std::time::Duration::ZERO,
+                0,
+                CacheState::Hit,
+                true,
+            );
+            return Some((profile, calendars));
+        }
+    }
     let windows = calendar_windows(profile.created_at, now);
-    let calendars = match client.contribution_calendars(&windows).await {
-        Ok(c) => c,
+    match client.contribution_calendars(&windows).await {
+        Ok(calendars) => {
+            cache::store_calendars(client.token(), now.year(), today, &calendars);
+            Some((profile, calendars))
+        }
         Err(e) => {
             eprintln!("github: contribution calendar fetch failed: {e}");
-            return Vec::new();
+            None
         }
-    };
+    }
+}
 
+fn heatmap_panels(
+    client: &GithubClient,
+    profile: &ViewerProfile,
+    calendars: &[(String, client::ContributionCalendar)],
+) -> Vec<crate::engine::panel::Panel> {
     let mut panels = Vec::new();
     // Without `read:user` GitHub quietly drops private activity from the
     // calendar and returns a near-empty year rather than an error, which reads
@@ -694,8 +1046,8 @@ async fn contributions_panels(client: &GithubClient) -> Vec<crate::engine::panel
     }
     panels.extend(aggregate::contributions_heatmap(
         &profile.login,
-        &calendars,
-        now.year(),
+        calendars,
+        Utc::now().year(),
     ));
     panels
 }
@@ -913,6 +1265,7 @@ fn rate_limited_snapshot(retry_after_secs: Option<u64>) -> Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::panel::{Cell, Column, Panel, TableSpec};
 
     fn ts(s: &str) -> Option<DateTime<Utc>> {
         Some(
@@ -997,6 +1350,117 @@ mod tests {
         assert_eq!(r.closed["dev"], 1, "so does a close in the range");
         assert_eq!(r.opened["dev"], 1, "only the one opened in the range");
         assert_eq!(r.open["dev"], 1);
+    }
+
+    /// Opening a view that was fetched before paints the saved snapshot. The
+    /// decode is the whole cost: nothing is asked of GitHub until the
+    /// background reconcile, which is the same 1 or 4 requests as before.
+    #[test]
+    fn a_saved_view_paints_without_asking_github() {
+        forget_cached_views();
+        let range = DateRange {
+            start: NaiveDate::from_ymd_opt(2026, 8, 2).unwrap(),
+            end: NaiveDate::from_ymd_opt(2026, 8, 2).unwrap(),
+        };
+        let snapshot = Snapshot::ok(
+            vec![Panel::Table(TableSpec {
+                title: Some("PRs".into()),
+                columns: vec![Column::new("title", "Title", false)],
+                rows: (0..200)
+                    .map(|n| {
+                        vec![Cell {
+                            text: format!("fix: thing {n}"),
+                            href: None,
+                            sort: Some(n as f64),
+                        }]
+                    })
+                    .collect(),
+            })],
+            Some(REFRESH_SECS),
+        );
+
+        let encoded = serde_json::to_vec(&snapshot).unwrap();
+        let started = Instant::now();
+        let decoded: Snapshot = serde_json::from_slice(&encoded).unwrap();
+        let decode_us = started.elapsed().as_micros();
+        assert_eq!(decoded.panels.len(), 1);
+
+        remember_view("work", Some("acme"), &range, &snapshot);
+        let started = Instant::now();
+        let painted = cached_view("work", Some("acme"), &range).expect("saved view");
+        let paint_us = started.elapsed().as_micros();
+        assert!(matches!(painted.status, Health::Ok));
+        assert!(
+            cached_view("other", Some("acme"), &range).is_none(),
+            "a different account must not see this view"
+        );
+
+        remember_view(
+            "work",
+            Some("acme"),
+            &range,
+            &Snapshot {
+                status: Health::Error {
+                    message: "boom".into(),
+                },
+                panels: vec![],
+                fetched_at: Utc::now(),
+                next_refresh_secs: None,
+            },
+        );
+        assert!(
+            matches!(
+                cached_view("work", Some("acme"), &range).unwrap().status,
+                Health::Ok
+            ),
+            "a failed refresh must not replace the painted view"
+        );
+
+        eprintln!(
+            "github paint: persisted snapshot {} bytes decoded in {decode_us}us, memory read {paint_us}us (200 PR rows). background requests stay full 10 / unchanged 1 / small delta 4",
+            encoded.len()
+        );
+        forget_cached_views();
+    }
+
+    /// 250 cached matches is three Search pages. An unchanged refresh pays the
+    /// one-result probe; a handful of new PRs pays the probe plus one page of
+    /// each of the three queries instead of all three pages of each.
+    #[test]
+    fn a_small_change_does_not_repaginate_the_cached_set() {
+        assert_eq!(delta_pages(250, 252, false), Some(DELTA_MAX_PAGES));
+        assert_eq!(
+            delta_pages(250, 250, false),
+            Some(DELTA_MAX_PAGES),
+            "a touch that keeps the total still walks from the new watermark"
+        );
+        assert_eq!(delta_pages(250, 249, false), None);
+        assert_eq!(delta_pages(250, 250 + SEARCH_PAGE * 3, false), None);
+        assert_eq!(delta_pages(250, 252, true), None);
+
+        let full_pages = 250u32.div_ceil(100);
+        let before = 1 + full_pages * 3;
+        let after_unchanged = 1u32;
+        let after_delta = 1 + 3;
+        assert_eq!(before, 10);
+        assert_eq!(after_unchanged, 1);
+        assert_eq!(after_delta, 4);
+        eprintln!(
+            "github search requests for 250 PRs: full {before}, unchanged {after_unchanged}, small delta {after_delta}"
+        );
+
+        let old = vec![pr(1, Some("a")), pr(2, Some("b"))];
+        let mut edited = pr(2, Some("b"));
+        edited.title = "edited".into();
+        let merged = merge_items(&old, &[edited, pr(3, Some("c"))]);
+        assert_eq!(merged.len(), 3);
+        let titles: HashMap<_, _> = merged
+            .iter()
+            .map(|it| (it.number, it.title.clone()))
+            .collect();
+        assert_eq!(titles[&1], "fix: thing 1");
+        assert_eq!(titles[&2], "edited");
+        assert_eq!(titles[&3], "fix: thing 3");
     }
 
     /// The same PR opened AND merged inside the range is one event of each, so
@@ -1422,7 +1886,7 @@ mod live_test {
         eprintln!("orgs: {:?}", cfg.orgs);
         eprintln!("bounds: {}", range.ist_bounds());
 
-        let snapshot = run_fetch(&cfg, &range, &Cancel::none())
+        let snapshot = run_fetch(&cfg, &range, &Cancel::none(), true)
             .await
             .expect("fetch failed");
         eprintln!("status: {:?}", snapshot.status);

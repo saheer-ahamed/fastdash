@@ -111,6 +111,13 @@ async fn official_usage() -> Option<OfficialUsage> {
         let guard = OFFICIAL.lock().unwrap();
         if let Some((usage, at)) = guard.as_ref() {
             if at.elapsed() < OFFICIAL_TTL {
+                crate::engine::perf::record(
+                    "claude.usage",
+                    std::time::Duration::ZERO,
+                    0,
+                    crate::engine::perf::CacheState::Hit,
+                    true,
+                );
                 return Some(usage.clone());
             }
         }

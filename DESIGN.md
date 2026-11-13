@@ -41,8 +41,8 @@ Data reaches the UI only as generic render primitives, so the UI never learns wh
 - `List` - a vertical list of links (Slack mentions, PR list).
 
 The core stays agnostic: `Registry` holds the connectors and a single shared path fetches one into the cache and returns it.
-The UI decides when that runs - on opening a connector's tab, then on the connector's own interval for as long as that tab is on screen and the app window has focus.
-A dashboard nobody is looking at fetches nothing, so a backgrounded app makes no network calls at all.
+The UI decides when that runs - on launch for the visible tab, the first time a tab or date range is opened, and when the user refreshes. Nothing polls, and the window losing focus does not cancel or start a fetch.
+A dashboard nobody is looking at fetches nothing. The tab that is on screen cancels any fetch still in flight for a tab the user left.
 The engine types live in `crates/fastdash-core/src/engine/`; connectors live in `crates/fastdash-core/src/connectors/<name>/`.
 
 ## Connector: Claude
@@ -124,14 +124,16 @@ Panels: `StatCards` for total mentions and active channels, and a `Table`/`List`
 
 Fallback: if a workspace forbids `search:read`, degrade to scanning `conversations.list` + `conversations.history`, which is heavier and needs more scopes, so search is the default.
 
-## Refresh cadences
+## Refresh
 
-- Claude: file-watch driven, effectively instant (2s debounce).
-- GitHub: every 60s or manual.
-- Sentry: every 120s or manual.
-- Slack: every 60s or manual.
+Nothing polls. Each connector still publishes `default_refresh_secs` as a hint, but the UI does not schedule it.
 
-All are async, independent, and non-blocking; the UI always reads the cache.
+- On launch, only the visible tab is fetched.
+- Opening a tab or a date range that has no snapshot yet fetches that view.
+- Refresh fetches the view on screen.
+- Claude transcripts are incremental (unchanged files are not reread). GitHub revalidates with a one-request search probe and applies small deltas. Console and Sentry reuse stored responses, conditionally when the server sent an ETag.
+
+All are async, independent, and non-blocking; the UI always reads the last snapshot it has.
 
 ## Parallel build plan
 

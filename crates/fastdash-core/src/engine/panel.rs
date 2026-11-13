@@ -4,9 +4,9 @@
 //! shapes and never learns what "GitHub" or "Claude" is. Adding a connector that
 //! reuses these primitives needs no frontend work.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Panel {
     /// A row of KPI tiles (tokens, cost, mentions today, ...).
@@ -56,7 +56,7 @@ pub enum Panel {
 }
 
 /// One selectable year of a [`Panel::Heatmap`].
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HeatmapYear {
     /// Year-rail label, e.g. "2026".
@@ -69,7 +69,7 @@ pub struct HeatmapYear {
 
 /// A single day cell. `level` is the shade bucket, so each connector decides
 /// how its own unit maps onto the five shades; the frontend only paints.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HeatDay {
     /// ISO `YYYY-MM-DD`.
@@ -80,7 +80,7 @@ pub struct HeatDay {
     pub tooltip: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Stat {
     pub label: String,
@@ -88,7 +88,7 @@ pub struct Stat {
     pub sub: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Bar {
     pub label: String,
@@ -98,7 +98,7 @@ pub struct Bar {
     pub display: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TableSpec {
     pub title: Option<String>,
@@ -106,7 +106,7 @@ pub struct TableSpec {
     pub rows: Vec<Vec<Cell>>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Column {
     pub key: String,
@@ -134,7 +134,7 @@ impl Column {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Cell {
     pub text: String,
@@ -146,7 +146,7 @@ pub struct Cell {
     pub sort: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListItem {
     pub title: String,

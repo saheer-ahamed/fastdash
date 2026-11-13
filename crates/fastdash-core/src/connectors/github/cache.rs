@@ -24,7 +24,9 @@ use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use super::client::{EnrichedPr, PrRef, SearchProbe, ViewerProfile};
+use chrono::NaiveDate;
+
+use super::client::{ContributionCalendar, EnrichedPr, PrRef, SearchProbe, ViewerProfile};
 use super::ScopeSets;
 
 /// Search result sets held at once - one per scope per date range, so this
@@ -86,6 +88,8 @@ type SearchKey = (u64, String, String);
 /// `(token, owner/repo, number, updated_at)`. A PR with no `updated_at` is
 /// never cached: there would be nothing to invalidate it.
 type EnrichKey = (u64, String, u64, String);
+type CalendarKey = (u64, i32);
+type CachedCalendars = (NaiveDate, Vec<(String, ContributionCalendar)>);
 
 struct Caches {
     search: Bounded<SearchKey, (SearchProbe, ScopeSets)>,
@@ -93,17 +97,25 @@ struct Caches {
     /// Login and join date behind a token. Neither can change for a given
     /// token, so this is filled once and read for the life of the process.
     viewers: HashMap<u64, ViewerProfile>,
+    /// Contribution calendars for `(token, year)`, and the IST day they were
+    /// fetched on. A later day refetches; a manual refresh ignores the entry.
+    calendars: HashMap<CalendarKey, CachedCalendars>,
+    dirty: bool,
+}
+
+fn empty_caches() -> Caches {
+    Caches {
+        search: Bounded::new(SEARCH_CAPACITY),
+        enrich: Bounded::new(ENRICH_CAPACITY),
+        viewers: HashMap::new(),
+        calendars: HashMap::new(),
+        dirty: false,
+    }
 }
 
 fn caches() -> &'static Mutex<Caches> {
     static CACHES: std::sync::OnceLock<Mutex<Caches>> = std::sync::OnceLock::new();
-    CACHES.get_or_init(|| {
-        Mutex::new(Caches {
-            search: Bounded::new(SEARCH_CAPACITY),
-            enrich: Bounded::new(ENRICH_CAPACITY),
-            viewers: HashMap::new(),
-        })
-    })
+    CACHES.get_or_init(|| Mutex::new(load_disk().unwrap_or_else(empty_caches)))
 }
 
 /// How much the caches saved, counted since the process started. Only the
@@ -111,17 +123,19 @@ fn caches() -> &'static Mutex<Caches> {
 /// an atomic increment is nothing next to the request it stands in for.
 static SCOPES_REUSED: AtomicU64 = AtomicU64::new(0);
 static SCOPES_SEARCHED: AtomicU64 = AtomicU64::new(0);
+static SCOPES_DELTA: AtomicU64 = AtomicU64::new(0);
 static ENRICH_HITS: AtomicU64 = AtomicU64::new(0);
 static ENRICH_MISSES: AtomicU64 = AtomicU64::new(0);
 
-/// `(scopes reused, scopes re-searched, PRs from cache, PRs asked for)`.
+/// `(scopes reused, scopes fully re-searched, PRs from cache, PRs asked for, scopes updated from a delta)`.
 #[cfg(test)]
-pub fn savings() -> (u64, u64, u64, u64) {
+pub fn savings() -> (u64, u64, u64, u64, u64) {
     (
         SCOPES_REUSED.load(Ordering::Relaxed),
         SCOPES_SEARCHED.load(Ordering::Relaxed),
         ENRICH_HITS.load(Ordering::Relaxed),
         ENRICH_MISSES.load(Ordering::Relaxed),
+        SCOPES_DELTA.load(Ordering::Relaxed),
     )
 }
 
@@ -131,6 +145,16 @@ pub fn token_fingerprint(token: &str) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     token.hash(&mut hasher);
     hasher.finish()
+}
+
+/// The stored probe and result sets for this scope, even when the probe has
+/// moved. The caller uses that previous probe as the watermark for a delta.
+pub fn stored_scope(token: u64, scope: &str, bounds: &str) -> Option<(SearchProbe, ScopeSets)> {
+    let mut caches = caches().lock().ok()?;
+    caches
+        .search
+        .get(&(token, scope.to_string(), bounds.to_string()))
+        .cloned()
 }
 
 /// The results last searched for this scope and range, but only if `probe`
@@ -160,11 +184,30 @@ pub fn unchanged_scope(
 
 pub fn store_scope(token: u64, scope: &str, bounds: &str, probe: SearchProbe, sets: &ScopeSets) {
     SCOPES_SEARCHED.fetch_add(1, Ordering::Relaxed);
+    remember_scope(token, scope, bounds, probe, sets);
+}
+
+/// Like [`store_scope`], for a result merged from a short updated-since walk
+/// rather than a full pagination. Counted separately so a delta is not reported
+/// as a full search.
+pub fn store_scope_delta(
+    token: u64,
+    scope: &str,
+    bounds: &str,
+    probe: SearchProbe,
+    sets: &ScopeSets,
+) {
+    SCOPES_DELTA.fetch_add(1, Ordering::Relaxed);
+    remember_scope(token, scope, bounds, probe, sets);
+}
+
+fn remember_scope(token: u64, scope: &str, bounds: &str, probe: SearchProbe, sets: &ScopeSets) {
     if let Ok(mut caches) = caches().lock() {
         caches.search.insert(
             (token, scope.to_string(), bounds.to_string()),
             (probe, sets.clone()),
         );
+        caches.dirty = true;
     }
 }
 
@@ -219,6 +262,7 @@ pub fn store_enriched(token: u64, prs: &[PrRef], enriched: &[EnrichedPr]) {
             continue;
         };
         caches.enrich.insert(key, found.clone());
+        caches.dirty = true;
     }
 }
 
@@ -229,7 +273,219 @@ pub fn viewer_profile(token: u64) -> Option<ViewerProfile> {
 pub fn store_viewer_profile(token: u64, profile: &ViewerProfile) {
     if let Ok(mut caches) = caches().lock() {
         caches.viewers.insert(token, profile.clone());
+        caches.dirty = true;
     }
+}
+
+pub fn calendars(
+    token: u64,
+    year: i32,
+    today: NaiveDate,
+) -> Option<Vec<(String, ContributionCalendar)>> {
+    let caches = caches().lock().ok()?;
+    let (day, calendars) = caches.calendars.get(&(token, year))?;
+    (*day == today).then(|| calendars.clone())
+}
+
+pub fn store_calendars(
+    token: u64,
+    year: i32,
+    today: NaiveDate,
+    calendars: &[(String, ContributionCalendar)],
+) {
+    if let Ok(mut caches) = caches().lock() {
+        caches
+            .calendars
+            .insert((token, year), (today, calendars.to_vec()));
+        caches.dirty = true;
+    }
+}
+
+/// Writes the on-disk cache if a store has happened since the last flush.
+/// Tests never touch the real cache directory.
+pub struct FlushGuard;
+
+impl FlushGuard {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Drop for FlushGuard {
+    fn drop(&mut self) {
+        flush();
+    }
+}
+
+pub fn flush() {
+    if !disk_enabled() {
+        return;
+    }
+    let exported = {
+        let Ok(mut caches) = caches().lock() else {
+            return;
+        };
+        if !caches.dirty {
+            return;
+        }
+        caches.dirty = false;
+        to_disk(&caches)
+    };
+    let Some(path) = disk_path() else {
+        return;
+    };
+    if write_json(&path, &exported).is_err() {
+        if let Ok(mut caches) = caches().lock() {
+            caches.dirty = true;
+        }
+    }
+}
+
+fn disk_enabled() -> bool {
+    !cfg!(test)
+}
+
+fn disk_path() -> Option<std::path::PathBuf> {
+    directories::ProjectDirs::from("co", "zro", "fastdash")
+        .map(|dirs| dirs.cache_dir().join("github-fetch.json"))
+}
+
+fn load_disk() -> Option<Caches> {
+    if !disk_enabled() {
+        return None;
+    }
+    let path = disk_path()?;
+    let text = std::fs::read_to_string(path).ok()?;
+    let disk: DiskCache = serde_json::from_str(&text).ok()?;
+    Some(from_disk(disk))
+}
+
+fn write_json(path: &std::path::Path, value: &impl serde::Serialize) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let text = serde_json::to_string(value).map_err(std::io::Error::other)?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(tmp, path)?;
+    Ok(())
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct DiskCache {
+    #[serde(default)]
+    search: Vec<DiskSearch>,
+    #[serde(default)]
+    enrich: Vec<DiskEnrich>,
+    #[serde(default)]
+    viewers: Vec<DiskViewer>,
+    #[serde(default)]
+    calendars: Vec<DiskCalendars>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct DiskSearch {
+    token: u64,
+    scope: String,
+    bounds: String,
+    probe: SearchProbe,
+    sets: ScopeSets,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct DiskEnrich {
+    token: u64,
+    repo: String,
+    number: u64,
+    updated_at: String,
+    pr: EnrichedPr,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct DiskViewer {
+    token: u64,
+    profile: ViewerProfile,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct DiskCalendars {
+    token: u64,
+    year: i32,
+    day: NaiveDate,
+    calendars: Vec<(String, ContributionCalendar)>,
+}
+
+fn to_disk(caches: &Caches) -> DiskCache {
+    DiskCache {
+        search: caches
+            .search
+            .entries
+            .iter()
+            .map(|(key, (_, (probe, sets)))| DiskSearch {
+                token: key.0,
+                scope: key.1.clone(),
+                bounds: key.2.clone(),
+                probe: probe.clone(),
+                sets: sets.clone(),
+            })
+            .collect(),
+        enrich: caches
+            .enrich
+            .entries
+            .iter()
+            .map(|(key, (_, pr))| DiskEnrich {
+                token: key.0,
+                repo: key.1.clone(),
+                number: key.2,
+                updated_at: key.3.clone(),
+                pr: pr.clone(),
+            })
+            .collect(),
+        viewers: caches
+            .viewers
+            .iter()
+            .map(|(token, profile)| DiskViewer {
+                token: *token,
+                profile: profile.clone(),
+            })
+            .collect(),
+        calendars: caches
+            .calendars
+            .iter()
+            .map(|((token, year), (day, calendars))| DiskCalendars {
+                token: *token,
+                year: *year,
+                day: *day,
+                calendars: calendars.clone(),
+            })
+            .collect(),
+    }
+}
+
+fn from_disk(disk: DiskCache) -> Caches {
+    let mut caches = empty_caches();
+    for entry in disk.search {
+        caches.search.insert(
+            (entry.token, entry.scope, entry.bounds),
+            (entry.probe, entry.sets),
+        );
+    }
+    for entry in disk.enrich {
+        caches.enrich.insert(
+            (entry.token, entry.repo, entry.number, entry.updated_at),
+            entry.pr,
+        );
+    }
+    for entry in disk.viewers {
+        caches.viewers.insert(entry.token, entry.profile);
+    }
+    for entry in disk.calendars {
+        caches
+            .calendars
+            .insert((entry.token, entry.year), (entry.day, entry.calendars));
+    }
+    caches.dirty = false;
+    caches
 }
 
 #[cfg(test)]

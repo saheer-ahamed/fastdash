@@ -2,8 +2,8 @@
 //!
 //! Everything that is not UI lives in `fastdash-core`; this crate renders the
 //! generic `Panel`s it produces and decides when to fetch. Nothing fetches on a
-//! timer in the background: only the dashboard on screen, only while the window
-//! has focus.
+//! timer: the visible tab is fetched when it has no data yet, and after that
+//! only when the user hits Refresh.
 
 // A release build is a GUI app: no console window behind it.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -47,6 +47,8 @@ pub enum Command {
 }
 
 fn main() {
+    let booted = std::time::Instant::now();
+    fastdash_core::engine::perf::init();
     crash::install();
     let (commands, mut incoming) = mpsc::unbounded::<Command>();
 
@@ -91,7 +93,17 @@ fn main() {
             let taskbar_settings = config.taskbar.clone();
             let window = cx
                 .open_window(options, |window, cx| {
-                    cx.new(|cx| Root::new(registry, config, window, cx))
+                    cx.new(|cx| {
+                        let root = Root::new(registry, config, window, cx);
+                        fastdash_core::engine::perf::record(
+                            "app.startup",
+                            booted.elapsed(),
+                            0,
+                            fastdash_core::engine::perf::CacheState::Miss,
+                            true,
+                        );
+                        root
+                    })
                 })
                 .expect("failed to open the main window");
 

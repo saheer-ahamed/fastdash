@@ -31,4 +31,19 @@ impl SnapshotCache {
     pub fn set(&self, id: impl Into<String>, snapshot: Snapshot) {
         self.inner.write().unwrap().insert(id.into(), snapshot);
     }
+
+    /// Drop one connector's snapshot. A language change or a settings save
+    /// has invalidated the strings baked into it.
+    pub fn remove(&self, id: &str) {
+        if let Ok(mut inner) = self.inner.write() {
+            inner.remove(id);
+        }
+    }
+
+    /// Drop every snapshot.
+    pub fn clear(&self) {
+        if let Ok(mut inner) = self.inner.write() {
+            inner.clear();
+        }
+    }
 }
