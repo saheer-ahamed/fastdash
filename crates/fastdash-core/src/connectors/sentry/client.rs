@@ -5,8 +5,14 @@
 //! (`https://sentry.io`, or a region host like `https://de.sentry.io`) and a
 //! self-hosted install.
 
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::Instant;
+
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
+
+use crate::engine::perf::{self, CacheState};
 
 /// Issues per page. 100 is the endpoint's maximum.
 const PER_PAGE: u32 = 100;
@@ -86,6 +92,8 @@ pub struct SentryClient {
     http: reqwest::Client,
     /// `{base_url}/api/0`, without a trailing slash.
     api: String,
+    /// Scopes the issue cache to this token without storing the token.
+    token: u64,
 }
 
 impl SentryClient {
@@ -108,6 +116,7 @@ impl SentryClient {
         Ok(SentryClient {
             http,
             api: format!("{}/api/0", normalize_base_url(base_url)?),
+            token: fingerprint(token),
         })
     }
 
@@ -151,9 +160,12 @@ impl SentryClient {
         end: &str,
     ) -> Result<IssuePage, SentryError> {
         let url = format!("{}/organizations/{org}/issues/", self.api);
+        let cache_key = format!("{}|{org}|{query}|{start}|{end}", self.token);
+        let cached_etag = single_page_etag(&cache_key);
         let mut issues = Vec::new();
         let mut cursor: Option<String> = None;
         let mut truncated = false;
+        let mut first_etag: Option<String> = None;
 
         for page in 0..MAX_PAGES {
             let mut params: Vec<(&str, String)> = vec![
@@ -174,20 +186,59 @@ impl SentryClient {
                 params.push(("cursor", c.clone()));
             }
 
-            let resp = self
-                .http
-                .get(&url)
-                .query(&params)
+            let started = Instant::now();
+            let mut req = self.http.get(&url).query(&params);
+            // The first page's ETag only covers that page, so it is a validator
+            // for the whole stream when the previous answer fit in one page.
+            if page == 0 {
+                if let Some(etag) = &cached_etag {
+                    req = req.header("if-none-match", etag);
+                }
+            }
+            let resp = req
                 .send()
                 .await
                 .map_err(|e| SentryError::Http(e.to_string()))?;
 
+            if page == 0 && resp.status().as_u16() == 304 {
+                perf::record(
+                    "sentry.issues",
+                    started.elapsed(),
+                    0,
+                    CacheState::NotModified,
+                    true,
+                );
+                if let Some(hit) = cached_page(&cache_key) {
+                    return Ok(hit);
+                }
+                return Err(SentryError::Status {
+                    code: 304,
+                    message: "not modified, but nothing was cached".into(),
+                });
+            }
+
+            if page == 0 {
+                first_etag = resp
+                    .headers()
+                    .get("etag")
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_string);
+            }
             let resp = check(resp).await?;
             let next = next_cursor(resp.headers());
-            let raw: Vec<RawIssue> = resp
-                .json()
+            let bytes = resp
+                .bytes()
                 .await
-                .map_err(|e| SentryError::Parse(e.to_string()))?;
+                .map_err(|e| SentryError::Http(e.to_string()))?;
+            perf::record(
+                "sentry.issues",
+                started.elapsed(),
+                bytes.len() as u64,
+                CacheState::Miss,
+                true,
+            );
+            let raw: Vec<RawIssue> =
+                serde_json::from_slice(&bytes).map_err(|e| SentryError::Parse(e.to_string()))?;
 
             issues.extend(raw.into_iter().map(RawIssue::normalize));
 
@@ -201,7 +252,51 @@ impl SentryClient {
             }
         }
 
-        Ok(IssuePage { issues, truncated })
+        let page = IssuePage { issues, truncated };
+        if !truncated {
+            if let Some(etag) = first_etag {
+                store_page(cache_key, etag, page.clone());
+            }
+        }
+        Ok(page)
+    }
+}
+
+fn fingerprint(token: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    token.hash(&mut hasher);
+    hasher.finish()
+}
+
+struct CachedPage {
+    etag: String,
+    page: IssuePage,
+}
+
+fn issue_cache() -> &'static Mutex<HashMap<String, CachedPage>> {
+    static CACHE: std::sync::OnceLock<Mutex<HashMap<String, CachedPage>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn single_page_etag(key: &str) -> Option<String> {
+    let cache = issue_cache().lock().ok()?;
+    let hit = cache.get(key)?;
+    (!hit.page.truncated).then(|| hit.etag.clone())
+}
+
+fn cached_page(key: &str) -> Option<IssuePage> {
+    issue_cache()
+        .lock()
+        .ok()?
+        .get(key)
+        .map(|hit| hit.page.clone())
+}
+
+fn store_page(key: String, etag: String, page: IssuePage) {
+    if let Ok(mut cache) = issue_cache().lock() {
+        cache.insert(key, CachedPage { etag, page });
     }
 }
 

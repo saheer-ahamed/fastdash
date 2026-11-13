@@ -6,13 +6,11 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
-use chrono::Utc;
 use fastdash_core::engine::cache::SnapshotCache;
 use fastdash_core::engine::connector::{ConnectorMeta, Health, Snapshot};
 use fastdash_core::engine::range::DateRange;
-use fastdash_core::engine::refresh;
+use fastdash_core::engine::refresh::{self, should_fetch};
 use fastdash_core::engine::registry::Registry;
 use gpui::{div, prelude::*, px, AnyElement, App, Context, Entity, SharedString, Task, Window};
 
@@ -26,20 +24,6 @@ pub fn snap_key(id: &str, range: &DateRange) -> String {
     format!("{id}|{}_{}", range.start, range.end)
 }
 
-/// The cadence a connector asks to be polled at while its tab is watched.
-/// Clamped so a misdeclared 0 can never become a busy loop.
-fn cadence(meta: &ConnectorMeta) -> Duration {
-    Duration::from_secs(meta.default_refresh_secs.max(1))
-}
-
-/// Whether a snapshot is still young enough to leave alone.
-fn is_fresh(snapshot: Option<&Snapshot>, cadence: Duration) -> bool {
-    snapshot.is_some_and(|s| {
-        let age = Utc::now().signed_duration_since(s.fetched_at);
-        age.to_std().is_ok_and(|age| age < cadence)
-    })
-}
-
 pub struct Dashboard {
     registry: Arc<Registry>,
     cache: Arc<SnapshotCache>,
@@ -47,14 +31,16 @@ pub struct Dashboard {
     range_filter: Entity<RangeFilter>,
     active: Option<ConnectorMeta>,
     range: DateRange,
-    /// Whether this dashboard is what the user is looking at: its tab is on
-    /// screen and the window has focus. Nothing fetches unless it is.
+    /// Whether this dashboard's tab is the one on screen. Focus does not matter:
+    /// a backgrounded window keeps a fetch that was already asked for, and
+    /// gaining focus does not start one.
     watched: bool,
     snapshots: HashMap<String, Snapshot>,
-    /// The fetch in flight, if any. Replacing it cancels the old one's update.
+    /// The fetch in flight, if any. Replacing it aborts the previous request.
     fetch: Option<Task<()>>,
-    /// The cadence timer while watched. Dropping it stops the polling dead.
-    poll: Option<Task<()>>,
+    /// Bumped every time a fetch starts or is cancelled, so a late result from
+    /// a request the user already left cannot clear the one that replaced it.
+    fetch_gen: u64,
     /// Whether the last fetch of this dashboard failed outright. The cached
     /// snapshot stays on screen; the topbar says it is not what it looks like.
     failed: bool,
@@ -78,7 +64,7 @@ impl Dashboard {
             watched: false,
             snapshots: HashMap::new(),
             fetch: None,
-            poll: None,
+            fetch_gen: 0,
             failed: false,
         }
     }
@@ -90,14 +76,14 @@ impl Dashboard {
             return;
         }
         self.active = meta;
-        self.fetch = None;
+        self.cancel_fetch();
         // The flag belongs to one dashboard's last fetch, so moving to another
         // tab starts clean instead of accusing it of a failure not its own.
         self.failed = false;
         self.reconcile(cx);
     }
 
-    /// Whether the dashboard is on screen in a focused window.
+    /// Whether the dashboard's tab is the one on screen.
     pub fn set_watched(&mut self, watched: bool, cx: &mut Context<Self>) {
         if watched != self.watched {
             self.watched = watched;
@@ -108,7 +94,7 @@ impl Dashboard {
     pub fn set_range(&mut self, range: DateRange, cx: &mut Context<Self>) {
         if range != self.range {
             self.range = range;
-            self.fetch = None;
+            self.cancel_fetch();
             self.failed = false;
             self.reconcile(cx);
         }
@@ -122,51 +108,40 @@ impl Dashboard {
             Some(id) => {
                 let prefix = format!("{id}|");
                 self.snapshots.retain(|k, _| !k.starts_with(&prefix));
+                self.cache.remove(id);
             }
-            None => self.snapshots.clear(),
+            None => {
+                self.snapshots.clear();
+                self.cache.clear();
+            }
         }
         cx.notify();
     }
 
-    /// Keep the dashboard on screen fresh - and only that one. Coming back to a
-    /// tab refetches at once only if what we have has aged past the connector's
-    /// cadence; otherwise it paints the cache and lets the timer take over.
-    /// Only today polls: a past range cannot change, so it is fetched once and
-    /// left to the Refresh button.
+    /// Fetch the dashboard on screen when it has no snapshot yet. A tab the
+    /// user already opened keeps what it has until they hit Refresh.
     fn reconcile(&mut self, cx: &mut Context<Self>) {
-        self.poll = None;
         cx.notify();
         let Some(meta) = self.active.clone().filter(|_| self.watched) else {
+            self.cancel_fetch();
             return;
         };
-        let every = cadence(&meta);
         let key = snap_key(&meta.id, &self.range);
-        let is_today = self.range == DateRange::today();
         // Nothing on screen for this view yet: the warm cache may still hold a
         // snapshot from earlier in the session. It only ever holds today.
-        if is_today && !self.snapshots.contains_key(&key) {
+        if self.range == DateRange::today() && !self.snapshots.contains_key(&key) {
             if let Some(cached) = self.cache.get(&meta.id) {
                 self.snapshots.insert(key.clone(), cached);
             }
         }
-        if !is_fresh(self.snapshots.get(&key), every) && self.fetch.is_none() {
+        if should_fetch(self.snapshots.contains_key(&key), false) && self.fetch.is_none() {
             self.fetch_now(cx);
         }
-        if is_today {
-            self.poll = Some(cx.spawn(async move |this, cx| loop {
-                cx.background_executor().timer(every).await;
-                let alive = this.update(cx, |this, cx| {
-                    // A fetch slower than the cadence never gets a second one
-                    // piled on top of it.
-                    if this.fetch.is_none() {
-                        this.fetch_now(cx);
-                    }
-                });
-                if alive.is_err() {
-                    break;
-                }
-            }));
-        }
+    }
+
+    fn cancel_fetch(&mut self) {
+        self.fetch_gen = self.fetch_gen.wrapping_add(1);
+        self.fetch = None;
     }
 
     /// The health of what `id`'s tab last loaded, for its sidebar dot.
@@ -192,12 +167,19 @@ impl Dashboard {
         let range = self.range.clone();
         let key = snap_key(&meta.id, &range);
         let timezone = self.timezone.clone();
-        let job = runtime::spawn(async move {
+        self.fetch_gen = self.fetch_gen.wrapping_add(1);
+        let gen = self.fetch_gen;
+        // Abortable: dropping this task (a newer refresh, or leaving the tab)
+        // cancels the request instead of letting it finish in the background.
+        let job = runtime::spawn_abortable(async move {
             refresh::refresh_one(&connector, &cache, timezone, range).await
         });
         self.fetch = Some(cx.spawn(async move |this, cx| {
             let snapshot = job.await;
             let _ = this.update(cx, |this, cx| {
+                if this.fetch_gen != gen {
+                    return;
+                }
                 match snapshot {
                     // Filed under the range it covers, so a fetch that lands
                     // after the filter moved cannot overwrite the view.
@@ -252,6 +234,7 @@ impl Dashboard {
 
 impl Render for Dashboard {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _span = fastdash_core::engine::perf::span("ui.dashboard");
         let dev_mode = prefs::get(cx).dev_mode;
         let body: AnyElement = match (self.current(), &self.active) {
             (Some(snapshot), Some(meta)) => {

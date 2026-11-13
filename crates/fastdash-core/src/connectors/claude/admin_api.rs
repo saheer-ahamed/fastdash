@@ -25,9 +25,14 @@
 //! buckets on (<= 7 days) use them, holding the bleed under an hour; wider
 //! spans fall back to daily, where an edge day can bleed by up to 5h30m.
 
-use chrono::{DateTime, Duration, Utc};
-use serde::Deserialize;
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::Instant;
 
+use chrono::{DateTime, Duration, NaiveDate, Utc};
+use serde::{Deserialize, Serialize};
+
+use crate::engine::perf::{self, CacheState};
 use crate::engine::range::{self, DateRange};
 
 const BASE: &str = "https://api.anthropic.com";
@@ -71,7 +76,7 @@ pub struct OrgInfo {
 }
 
 /// Per-model token counts over the selected range.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelUsage {
     pub model: String,
     pub uncached_input: u64,
@@ -87,7 +92,7 @@ impl ModelUsage {
 }
 
 /// The official numbers for one range, normalized for the panels.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ConsoleUsage {
     /// Descending by total tokens.
     pub per_model: Vec<ModelUsage>,
@@ -115,6 +120,84 @@ fn http() -> Result<reqwest::Client, AdminError> {
         .map_err(|e| AdminError::Http(e.to_string()))
 }
 
+struct RawGet {
+    status: u16,
+    etag: Option<String>,
+    body: Vec<u8>,
+}
+
+/// GET `url` with the admin key. `etag` is sent as `If-None-Match`; a `304`
+/// comes back with an empty body so the caller can reuse what it stored.
+async fn get_raw(
+    client: &reqwest::Client,
+    url: &str,
+    key: &str,
+    page: Option<&str>,
+    etag: Option<&str>,
+) -> Result<RawGet, AdminError> {
+    let started = Instant::now();
+    let mut req = client
+        .get(url)
+        .header("x-api-key", key)
+        .header("anthropic-version", API_VERSION);
+    if let Some(token) = page {
+        req = req.query(&[("page", token)]);
+    }
+    if let Some(etag) = etag {
+        req = req.header("if-none-match", etag);
+    }
+
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| AdminError::Http(e.to_string()))?;
+    let status = resp.status().as_u16();
+    let response_etag = resp
+        .headers()
+        .get("etag")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+
+    let finish = |bytes: u64, cache: CacheState| {
+        perf::record("claude.admin", started.elapsed(), bytes, cache, true);
+    };
+
+    match status {
+        304 => {
+            finish(0, CacheState::NotModified);
+            Ok(RawGet {
+                status,
+                etag: etag.map(str::to_string),
+                body: Vec::new(),
+            })
+        }
+        200 => {
+            let body = resp
+                .bytes()
+                .await
+                .map_err(|e| AdminError::Http(e.to_string()))?;
+            finish(body.len() as u64, CacheState::Miss);
+            Ok(RawGet {
+                status,
+                etag: response_etag,
+                body: body.to_vec(),
+            })
+        }
+        401 => {
+            finish(0, CacheState::Miss);
+            Err(AdminError::Unauthorized)
+        }
+        403 => {
+            finish(0, CacheState::Miss);
+            Err(AdminError::Forbidden)
+        }
+        other => {
+            finish(0, CacheState::Miss);
+            Err(AdminError::Status(other))
+        }
+    }
+}
+
 /// GET `url` with the admin key, mapping the statuses the user can act on onto
 /// their own variants so the UI can say something better than "403".
 async fn get_json<T: serde::de::DeserializeOwned>(
@@ -123,28 +206,8 @@ async fn get_json<T: serde::de::DeserializeOwned>(
     key: &str,
     page: Option<&str>,
 ) -> Result<T, AdminError> {
-    let mut req = client
-        .get(url)
-        .header("x-api-key", key)
-        .header("anthropic-version", API_VERSION);
-    if let Some(token) = page {
-        req = req.query(&[("page", token)]);
-    }
-
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| AdminError::Http(e.to_string()))?;
-
-    match resp.status().as_u16() {
-        200 => resp
-            .json::<T>()
-            .await
-            .map_err(|e| AdminError::Parse(e.to_string())),
-        401 => Err(AdminError::Unauthorized),
-        403 => Err(AdminError::Forbidden),
-        other => Err(AdminError::Status(other)),
-    }
+    let raw = get_raw(client, url, key, page, None).await?;
+    serde_json::from_slice(&raw.body).map_err(|e| AdminError::Parse(e.to_string()))
 }
 
 /// Confirm a pasted key works and name the organization it belongs to. Called
@@ -198,22 +261,66 @@ fn overlaps(bucket_start: &str, bucket_end: &str, from: DateTime<Utc>, to: DateT
 /// unavailable rather than sinking the whole fetch.
 pub async fn fetch_console_usage(key: &str, range: &DateRange) -> Result<ConsoleUsage, AdminError> {
     let range = range.normalized();
+    let fp = fingerprint(key);
+    let today = range::today_ist();
+    if let Some(slot) = recall(fp, &range) {
+        // A finished day does not change, and without an ETag there is nothing
+        // to revalidate against. An open range, or a stored ETag, revalidates.
+        // Only a copy fetched *after* the range ended is final. One fetched
+        // while the day was still in progress is missing the rest of the day,
+        // so the next fetch (now that the day is closed) must not reuse it.
+        if range_is_closed(&range, today)
+            && slot.fetched_on > range.end
+            && slot.usage_etag.is_none()
+            && slot.cost_etag.is_none()
+        {
+            perf::record(
+                "claude.admin",
+                std::time::Duration::ZERO,
+                0,
+                CacheState::Hit,
+                true,
+            );
+            return Ok(slot.usage);
+        }
+        if slot.single_page {
+            if let Some(usage) = revalidate(key, &range, &slot).await? {
+                return Ok(usage);
+            }
+        }
+    }
+
     let (from, to) = utc_window(&range);
     let client = http()?;
-
-    let per_model = fetch_usage(&client, key, &range, from, to).await?;
-    let cost_usd = match fetch_cost(&client, key, from, to).await {
-        Ok(cost) => Some(cost),
+    let (per_model, usage_etag, single_page) = fetch_usage(&client, key, &range, from, to).await?;
+    let (cost_usd, cost_etag) = match fetch_cost(&client, key, from, to).await {
+        Ok((cost, etag)) => (Some(cost), etag),
         Err(e) => {
             eprintln!("claude: cost report unavailable: {e}");
-            None
+            (None, None)
         }
     };
 
-    Ok(ConsoleUsage {
+    let usage = ConsoleUsage {
         per_model,
         cost_usd,
-    })
+    };
+    remember(ConsoleSlot {
+        fp,
+        start: range.start.to_string(),
+        end: range.end.to_string(),
+        fetched_on: today,
+        usage: usage.clone(),
+        usage_etag,
+        cost_etag,
+        single_page,
+    });
+    Ok(usage)
+}
+
+/// `true` when `range` ends before `today`, so its Console buckets are final.
+fn range_is_closed(range: &DateRange, today: NaiveDate) -> bool {
+    range.normalized().end < today
 }
 
 // --- usage report ---
@@ -263,33 +370,56 @@ impl CacheCreation {
     }
 }
 
-async fn fetch_usage(
-    client: &reqwest::Client,
-    key: &str,
-    range: &DateRange,
-    from: DateTime<Utc>,
-    to: DateTime<Utc>,
-) -> Result<Vec<ModelUsage>, AdminError> {
+fn usage_url(range: &DateRange, from: DateTime<Utc>, to: DateTime<Utc>) -> String {
     let span_days = (range.end - range.start).num_days() + 1;
     let (bucket, limit) = if span_days <= HOURLY_MAX_DAYS {
         ("1h", 168)
     } else {
         ("1d", 31)
     };
-
-    let url = format!(
+    format!(
         "{BASE}/v1/organizations/usage_report/messages\
          ?starting_at={start}&ending_at={end}&bucket_width={bucket}&group_by[]=model&limit={limit}",
         start = ts(from),
         end = ts(to),
-    );
+    )
+}
 
-    let mut totals: std::collections::HashMap<String, ModelUsage> =
-        std::collections::HashMap::new();
+fn cost_url(from: DateTime<Utc>, to: DateTime<Utc>) -> String {
+    format!(
+        "{BASE}/v1/organizations/cost_report?starting_at={start}&ending_at={end}&bucket_width=1d&limit=31",
+        start = ts(from),
+        end = ts(to),
+    )
+}
+
+async fn fetch_usage(
+    client: &reqwest::Client,
+    key: &str,
+    range: &DateRange,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Result<(Vec<ModelUsage>, Option<String>, bool), AdminError> {
+    let url = usage_url(range, from, to);
+
+    let mut totals: HashMap<String, ModelUsage> = HashMap::new();
     let mut page: Option<String> = None;
+    let mut etag = None;
+    let mut single_page = true;
+    let mut first = true;
 
     for _ in 0..MAX_PAGES {
-        let report: UsageReport = get_json(client, &url, key, page.as_deref()).await?;
+        let raw = get_raw(client, &url, key, page.as_deref(), None).await?;
+        let report: UsageReport =
+            serde_json::from_slice(&raw.body).map_err(|e| AdminError::Parse(e.to_string()))?;
+        if first {
+            first = false;
+            if report.has_more {
+                single_page = false;
+            } else {
+                etag = raw.etag;
+            }
+        }
 
         for b in &report.data {
             if !overlaps(&b.starting_at, &b.ending_at, from, to) {
@@ -323,7 +453,7 @@ async fn fetch_usage(
     let mut per_model: Vec<ModelUsage> = totals.into_values().filter(|m| m.total() > 0).collect();
     // Biggest consumer first, which is the order the table is read in.
     per_model.sort_by_key(|m| std::cmp::Reverse(m.total()));
-    Ok(per_model)
+    Ok((per_model, etag, single_page))
 }
 
 // --- cost report ---
@@ -358,19 +488,25 @@ async fn fetch_cost(
     key: &str,
     from: DateTime<Utc>,
     to: DateTime<Utc>,
-) -> Result<f64, AdminError> {
+) -> Result<(f64, Option<String>), AdminError> {
     // Daily is the only granularity the cost endpoint offers.
-    let url = format!(
-        "{BASE}/v1/organizations/cost_report?starting_at={start}&ending_at={end}&bucket_width=1d&limit=31",
-        start = ts(from),
-        end = ts(to),
-    );
+    let url = cost_url(from, to);
 
     let mut cents = 0.0_f64;
     let mut page: Option<String> = None;
+    let mut etag = None;
+    let mut first = true;
 
     for _ in 0..MAX_PAGES {
-        let report: CostReport = get_json(client, &url, key, page.as_deref()).await?;
+        let raw = get_raw(client, &url, key, page.as_deref(), None).await?;
+        let report: CostReport =
+            serde_json::from_slice(&raw.body).map_err(|e| AdminError::Parse(e.to_string()))?;
+        if first {
+            first = false;
+            if !report.has_more {
+                etag = raw.etag;
+            }
+        }
 
         for b in &report.data {
             if !overlaps(&b.starting_at, &b.ending_at, from, to) {
@@ -389,7 +525,122 @@ async fn fetch_cost(
         }
     }
 
-    Ok(cents / 100.0)
+    Ok((cents / 100.0, etag))
+}
+
+async fn revalidate(
+    key: &str,
+    range: &DateRange,
+    slot: &ConsoleSlot,
+) -> Result<Option<ConsoleUsage>, AdminError> {
+    let (Some(usage_etag), Some(cost_etag)) = (&slot.usage_etag, &slot.cost_etag) else {
+        return Ok(None);
+    };
+    let client = http()?;
+    let (from, to) = utc_window(range);
+    let usage = get_raw(
+        &client,
+        &usage_url(range, from, to),
+        key,
+        None,
+        Some(usage_etag),
+    )
+    .await?;
+    let cost = get_raw(&client, &cost_url(from, to), key, None, Some(cost_etag)).await?;
+    if usage.status == 304 && cost.status == 304 {
+        Ok(Some(slot.usage.clone()))
+    } else {
+        // One side changed. The caller fetches both reports again; the 200 body
+        // already counted toward the byte total above.
+        Ok(None)
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct ConsoleSlot {
+    fp: u64,
+    start: String,
+    end: String,
+    fetched_on: NaiveDate,
+    usage: ConsoleUsage,
+    usage_etag: Option<String>,
+    cost_etag: Option<String>,
+    single_page: bool,
+}
+
+fn fingerprint(key: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    key.hash(&mut hasher);
+    hasher.finish()
+}
+
+type SlotKey = (u64, String, String);
+type SlotMap = HashMap<SlotKey, ConsoleSlot>;
+
+fn slots() -> &'static Mutex<SlotMap> {
+    static SLOTS: std::sync::OnceLock<Mutex<SlotMap>> = std::sync::OnceLock::new();
+    SLOTS.get_or_init(|| Mutex::new(load_slots()))
+}
+
+fn recall(fp: u64, range: &DateRange) -> Option<ConsoleSlot> {
+    let key = (fp, range.start.to_string(), range.end.to_string());
+    slots().lock().ok()?.get(&key).cloned()
+}
+
+fn remember(slot: ConsoleSlot) {
+    let key = (slot.fp, slot.start.clone(), slot.end.clone());
+    if let Ok(mut slots) = slots().lock() {
+        slots.insert(key, slot);
+        let snapshot: Vec<ConsoleSlot> = slots.values().cloned().collect();
+        drop(slots);
+        save_slots(&snapshot);
+    }
+}
+
+fn slots_path() -> Option<std::path::PathBuf> {
+    directories::ProjectDirs::from("co", "zro", "fastdash")
+        .map(|dirs| dirs.cache_dir().join("claude-admin.json"))
+}
+
+fn load_slots() -> SlotMap {
+    if cfg!(test) {
+        return HashMap::new();
+    }
+    let Some(path) = slots_path() else {
+        return HashMap::new();
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return HashMap::new();
+    };
+    let Ok(list) = serde_json::from_str::<Vec<ConsoleSlot>>(&text) else {
+        return HashMap::new();
+    };
+    list.into_iter()
+        .map(|slot| {
+            let key = (slot.fp, slot.start.clone(), slot.end.clone());
+            (key, slot)
+        })
+        .collect()
+}
+
+fn save_slots(slots: &[ConsoleSlot]) {
+    if cfg!(test) {
+        return;
+    }
+    let Some(path) = slots_path() else {
+        return;
+    };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let Ok(text) = serde_json::to_string(slots) else {
+        return;
+    };
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, text).is_ok() {
+        let _ = std::fs::rename(tmp, path);
+    }
 }
 
 #[cfg(test)]
@@ -403,6 +654,23 @@ mod tests {
 
     /// An IST day starts at 18:30 UTC the day before; the window must span
     /// exactly 24h from there, or the report covers the wrong day entirely.
+    #[test]
+    fn a_range_is_closed_only_once_today_has_moved_past_it() {
+        let yesterday = DateRange {
+            start: day(2026, 11, 12),
+            end: day(2026, 11, 12),
+        };
+        let today = day(2026, 11, 13);
+        assert!(range_is_closed(&yesterday, today));
+        assert!(!range_is_closed(
+            &DateRange {
+                start: today,
+                end: today,
+            },
+            today
+        ));
+    }
+
     #[test]
     fn ist_day_maps_onto_the_right_utc_window() {
         let range = DateRange {

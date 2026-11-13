@@ -8,23 +8,18 @@
 //! the cache at once and refreshes quietly behind it.
 
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
 
-use chrono::Utc;
-use fastdash_core::connectors::github::{fetch_account, SUPERSEDED};
+use fastdash_core::connectors::github::{self, fetch_account, SUPERSEDED};
 use fastdash_core::engine::config::{self, GithubAccount};
 use fastdash_core::engine::connector::{Health, Snapshot};
 use fastdash_core::engine::range::DateRange;
+use fastdash_core::engine::refresh::should_fetch;
 use gpui::{div, prelude::*, px, AnyElement, Context, Entity, SharedString, Task, Window};
 
 use crate::dashboard::{fetched_label, snapshot_view};
 use crate::i18n::{t, tf};
 use crate::range_filter::RangeFilter;
 use crate::{assets, panels, prefs, runtime, ui};
-
-/// How long a view's snapshot counts as fresh, and the polling cadence while
-/// the GitHub tab is watched.
-const REFRESH: Duration = Duration::from_secs(60);
 
 /// Stable cache key for an (account, org, range) view. A space cannot appear
 /// in a label or a stored org, so it is a safe separator.
@@ -60,12 +55,12 @@ pub struct GithubView {
     range: DateRange,
     watched: bool,
     snaps: HashMap<String, Snapshot>,
-    /// Views with a fetch in flight, each owning its own task. Only the newest
-    /// request for a view may paint: replacing the task drops the older one.
-    loading: HashMap<String, Task<()>>,
+    /// The fetch in flight for a view, tagged so a late result cannot paint
+    /// over the request that replaced it.
+    loading: HashMap<String, (u64, Task<()>)>,
+    load_gen: u64,
     /// Views whose last fetch failed. The cached snapshot stays on screen.
     failed: HashSet<String>,
-    poll: Option<Task<()>>,
 }
 
 impl GithubView {
@@ -80,8 +75,8 @@ impl GithubView {
             watched: false,
             snaps: HashMap::new(),
             loading: HashMap::new(),
+            load_gen: 0,
             failed: HashSet::new(),
-            poll: None,
         };
         view.reload_accounts(cx);
         view
@@ -103,8 +98,12 @@ impl GithubView {
     }
 
     /// Forget every cached view (a language change, or edited accounts).
+    /// Rendered panels are dropped; the search cache in the connector stays
+    /// and is revalidated with one probe per scope on the next fetch.
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.snaps.clear();
+        self.loading.clear();
+        github::forget_cached_views();
         cx.notify();
     }
 
@@ -138,34 +137,27 @@ impl GithubView {
         self.reconcile(cx);
     }
 
-    /// Keep the selected view fresh while the tab is watched: refetch if its
-    /// snapshot is missing or older than the cadence, and poll - today only. A
-    /// past day cannot change, and a multi-day range costs several paginated
-    /// Search queries per org, which would eat GitHub's search budget.
+    /// Fetch the selected view when it has never been loaded. Switching back to
+    /// a view that already has a snapshot does not refetch; Refresh does.
     fn reconcile(&mut self, cx: &mut Context<Self>) {
-        self.poll = None;
         cx.notify();
         if !self.watched {
+            // Leaving the tab cancels whatever GitHub fetch is in flight so it
+            // stops spending the Search budget on a view nobody is looking at.
+            self.loading.clear();
             return;
         }
         let Some(key) = self.key() else { return };
-        let fresh = self.snaps.get(&key).is_some_and(|s| {
-            Utc::now()
-                .signed_duration_since(s.fetched_at)
-                .to_std()
-                .is_ok_and(|age| age < REFRESH)
-        });
-        if !fresh {
-            self.load(false, cx);
+        if !should_fetch(self.snaps.contains_key(&key), false) {
+            // This view is ready. Drop a fetch for a view the user just left,
+            // but keep a refresh of the view that is on screen.
+            self.loading.retain(|k, _| k == &key);
+            return;
         }
-        if self.range == DateRange::today() {
-            self.poll = Some(cx.spawn(async move |this, cx| loop {
-                cx.background_executor().timer(REFRESH).await;
-                if this.update(cx, |this, cx| this.load(false, cx)).is_err() {
-                    break;
-                }
-            }));
+        if self.loading.contains_key(&key) {
+            return;
         }
+        self.load(false, cx);
     }
 
     /// Fetch the selected view in the background: never clears its cached
@@ -176,11 +168,20 @@ impl GithubView {
             return;
         };
         let (org, range) = (self.org.clone(), self.range.clone());
-        let job = runtime::spawn(fetch_account(label, org, range, force));
+        // One GitHub fetch at a time: the connector cancels the previous
+        // request, and dropping these tasks aborts it if the user has moved on.
+        self.loading.clear();
+        self.load_gen = self.load_gen.wrapping_add(1);
+        let gen = self.load_gen;
+        let job = runtime::spawn_abortable(fetch_account(label, org, range, force));
         let task_key = key.clone();
         let task = cx.spawn(async move |this, cx| {
             let result = job.await;
             let _ = this.update(cx, |this, cx| {
+                let current = this.loading.get(&task_key).map(|(id, _)| *id);
+                if current != Some(gen) {
+                    return;
+                }
                 this.loading.remove(&task_key);
                 match result {
                     Some(Ok(snapshot)) => {
@@ -196,7 +197,7 @@ impl GithubView {
                 cx.notify();
             });
         });
-        self.loading.insert(key, task);
+        self.loading.insert(key, (gen, task));
         cx.notify();
     }
 
@@ -252,6 +253,7 @@ impl GithubView {
 
 impl Render for GithubView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _span = fastdash_core::engine::perf::span("ui.github");
         if self.accounts.is_empty() {
             return div()
                 .flex()

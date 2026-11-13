@@ -92,7 +92,7 @@ Only CI release builds check for updates (`FASTDASH_RELEASE`); any other build c
 - `crates/fastdash-core/src/engine/` - connector-agnostic core: `Connector` trait, registry, config, secrets (OS keychain), snapshot cache, the shared fetch path (`refresh.rs`), i18n, and the shared date filter (`range.rs`).
   The UI's date filter resolves its presets to a `DateRange` and every fetch carries one (default: today);
   live "right now" readings - Claude's plan-limit meters, the GitHub contribution heatmap - deliberately ignore it.
-  Nothing fetches on a timer in the core: the UI drives every fetch, and only for the dashboard on screen while the app window has focus.
+  Nothing fetches on a timer in the core: the UI fetches the visible tab when it has no snapshot yet, and otherwise only on a manual refresh. Focus does not gate fetching. `FASTDASH_PERF=1` (or developer mode) turns on the fetch/render breakdown.
 - `crates/fastdash-core/src/connectors/` - self-contained connectors behind the trait; adding one needs zero UI changes.
 - `crates/fastdash-app/` - the native desktop UI on GPUI; it only ever renders generic `Panel`s. `cargo run -p fastdash-app` starts it.
   UI-only preferences (theme, developer mode, tours seen) live in `ui.toml` beside the core's `config.toml`.

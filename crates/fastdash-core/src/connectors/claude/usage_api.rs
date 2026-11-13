@@ -18,8 +18,12 @@
 //! TODO(feat/claude): refresh the OAuth token via `claudeAiOauth.refreshToken`
 //! when `expiresAt` has passed (Claude Code also rewrites the file on refresh).
 
+use std::time::Instant;
+
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
+
+use crate::engine::perf::{self, CacheState};
 
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const OAUTH_BETA: &str = "oauth-2025-04-20";
@@ -139,6 +143,7 @@ pub fn read_plan() -> Option<String> {
 
 /// Fetch and normalize the official usage numbers.
 pub async fn fetch_official_usage(token: &str) -> Result<OfficialUsage, UsageError> {
+    let started = Instant::now();
     let resp = reqwest::Client::new()
         .get(USAGE_URL)
         .bearer_auth(token)
@@ -150,13 +155,23 @@ pub async fn fetch_official_usage(token: &str) -> Result<OfficialUsage, UsageErr
         .map_err(|e| UsageError::Http(e.to_string()))?;
 
     if !resp.status().is_success() {
+        perf::record("claude.usage", started.elapsed(), 0, CacheState::Miss, true);
         return Err(UsageError::Status(resp.status().as_u16()));
     }
 
-    let parsed: UsageResponse = resp
-        .json()
+    let bytes = resp
+        .bytes()
         .await
-        .map_err(|e| UsageError::Parse(e.to_string()))?;
+        .map_err(|e| UsageError::Http(e.to_string()))?;
+    perf::record(
+        "claude.usage",
+        started.elapsed(),
+        bytes.len() as u64,
+        CacheState::Miss,
+        true,
+    );
+    let parsed: UsageResponse =
+        serde_json::from_slice(&bytes).map_err(|e| UsageError::Parse(e.to_string()))?;
     Ok(parsed.normalize())
 }
 

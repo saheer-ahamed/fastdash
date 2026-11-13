@@ -56,8 +56,6 @@ pub struct Root {
     settings_page: Option<(Entity<Settings>, Subscription)>,
     range_filter: Entity<RangeFilter>,
     update_banner: Entity<crate::updater::UpdateBanner>,
-    /// Whether the window is active. Every fetch in the app is gated on it.
-    focused: bool,
     /// The IST day the app believes it is on, re-read as the calendar rolls.
     today: NaiveDate,
     _subscriptions: Vec<Subscription>,
@@ -78,10 +76,16 @@ impl Root {
         let appearance = cx.observe_window_appearance(window, |_, window, cx| {
             theme::apply(prefs::get(cx).theme, window.appearance(), cx);
         });
-        // Fetching is gated on the app being watched: the window is active. A
-        // background app makes no network calls at all.
+        // Coming back to the window is when a machine that slept across
+        // midnight gets another chance to notice the new day. Focus does not
+        // start or stop fetches.
         let activation = cx.observe_window_activation(window, |this, window, cx| {
             this.on_activation(window.is_window_active(), cx);
+        });
+        fastdash_core::engine::perf::sync_enabled(prefs::get(cx).dev_mode);
+        let perf_prefs = cx.observe_global::<prefs::Prefs>(|_, cx| {
+            fastdash_core::engine::perf::sync_enabled(prefs::get(cx).dev_mode);
+            cx.notify();
         });
         let range_filter = cx.new(RangeFilter::new);
         let dashboard = cx.new(|cx| {
@@ -106,7 +110,6 @@ impl Root {
                 .update(cx, |d, cx| d.set_range(range.clone(), cx));
             this.github.update(cx, |g, cx| g.set_range(range, cx));
         });
-        let focused = window.is_window_active();
         let mut root = Root {
             registry,
             config,
@@ -120,11 +123,11 @@ impl Root {
             settings_page: None,
             range_filter,
             update_banner: cx.new(crate::updater::UpdateBanner::new),
-            focused,
             today: today_ist(),
             _subscriptions: vec![
                 appearance,
                 activation,
+                perf_prefs,
                 dashboard_changed,
                 github_changed,
                 range_changed,
@@ -201,8 +204,6 @@ impl Root {
         if active {
             self.check_today(cx);
         }
-        self.focused = active;
-        self.sync_dashboard(cx);
     }
 
     /// Follow the calendar. The app is long-lived: left running past midnight
@@ -302,8 +303,8 @@ impl Root {
         self.active.as_deref().filter(|_| self.page.is_none())
     }
 
-    /// Point the dashboards at what is on screen and tell them whether they
-    /// are being watched - the tab is showing and the window has focus.
+    /// Point the dashboards at what is on screen. The visible tab fetches if
+    /// it has no snapshot; every other tab's in-flight fetch is cancelled.
     fn sync_dashboard(&mut self, cx: &mut Context<Self>) {
         let live = self.live().map(str::to_string);
         let on_github = live.as_deref() == Some("github");
@@ -311,13 +312,12 @@ impl Root {
             .filter(|_| !on_github)
             .and_then(|id| self.connectors.iter().find(|c| c.meta.id == id))
             .map(|c| c.meta.clone());
-        let focused = self.focused;
+        let dashboard_visible = !on_github && self.page.is_none() && self.active.is_some();
         self.dashboard.update(cx, |d, cx| {
             d.show(meta, cx);
-            d.set_watched(focused, cx);
+            d.set_watched(dashboard_visible, cx);
         });
-        self.github
-            .update(cx, |g, cx| g.set_watched(focused && on_github, cx));
+        self.github.update(cx, |g, cx| g.set_watched(on_github, cx));
     }
 
     fn sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -443,6 +443,7 @@ impl Render for Root {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let th = theme::current(cx);
         div()
+            .relative()
             .flex()
             .size_full()
             .bg(th.bg)
@@ -461,7 +462,40 @@ impl Render for Root {
                     .h_full()
                     .child(self.content(cx)),
             )
+            .children(perf_hud(cx))
     }
+}
+
+/// The performance overlay. Absent unless `FASTDASH_PERF` is set or developer
+/// mode is on, so the widget is not built on the path that has to stay cheap.
+fn perf_hud(cx: &mut Context<Root>) -> Option<gpui::AnyElement> {
+    let text = fastdash_core::engine::perf::hud()?;
+    let th = theme::current(cx);
+    let lines = text.lines().map(|line| {
+        div().child(SharedString::from(if line.is_empty() {
+            " ".to_string()
+        } else {
+            line.to_string()
+        }))
+    });
+    Some(
+        div()
+            .absolute()
+            .bottom(px(8.))
+            .left(px(216.))
+            .w(px(460.))
+            .max_h(px(240.))
+            .overflow_hidden()
+            .px(px(8.))
+            .py(px(6.))
+            .bg(th.panel)
+            .border_1()
+            .border_color(th.border)
+            .text_size(px(11.))
+            .text_color(th.muted)
+            .children(lines)
+            .into_any_element(),
+    )
 }
 
 /// A sidebar tab (`.tab`): status dot + name, with a 2px rule when active.

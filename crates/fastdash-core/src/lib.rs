@@ -6,8 +6,8 @@
 //! taskbar readout. A UI crate only ever sees `Panel`s, so adding a connector
 //! needs zero UI changes.
 //!
-//! Nothing here fetches on a timer. The UI drives every fetch, and only for the
-//! dashboard on screen while the app window has focus.
+//! Nothing here fetches on a timer. The UI drives every fetch: the visible tab
+//! when it has nothing cached yet, and whatever the user refreshes by hand.
 
 // TODO: remove once every connector is fleshed out; keeps the scaffold quiet.
 #![allow(dead_code)]

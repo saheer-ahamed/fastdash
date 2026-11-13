@@ -50,10 +50,24 @@ pub fn render_panels(
         .iter()
         .enumerate()
         .map(|(i, panel)| {
+            let _span = fastdash_core::engine::perf::span(panel_span(panel));
             let id = ElementId::Name(format!("{scope}#{i}").into());
             render(panel, id, window, cx)
         })
         .collect()
+}
+
+fn panel_span(panel: &Panel) -> &'static str {
+    match panel {
+        Panel::Heading { .. } => "ui.panel.heading",
+        Panel::StatCards { .. } => "ui.panel.stats",
+        Panel::Meter { .. } => "ui.panel.meter",
+        Panel::Table(_) => "ui.panel.table",
+        Panel::BarList { .. } => "ui.panel.bars",
+        Panel::List { .. } => "ui.panel.list",
+        Panel::Note { .. } => "ui.panel.note",
+        Panel::Heatmap { .. } => "ui.panel.heatmap",
+    }
 }
 
 fn render(panel: &Panel, id: ElementId, window: &mut Window, cx: &mut App) -> AnyElement {
