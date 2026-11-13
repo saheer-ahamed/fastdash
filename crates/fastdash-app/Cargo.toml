@@ -11,7 +11,11 @@ build = "build.rs"
 name = "fastdash"
 path = "src/main.rs"
 
-[dependencies]
+# Everything the desktop window needs. Omitted on wasm32: the published GPUI
+# 0.2.2 has no browser platform (see docs/web.md), and these crates do not
+# build for wasm32-unknown-unknown either. The wasm target compiles only the
+# proxy seam in `src/proxy.rs`.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 fastdash-core = { path = "../fastdash-core" }
 # Pinned exactly: GPUI is pre-1.0 and breaks between versions. Default
 # features are off because the default `windows-manifest` embeds GPUI's own

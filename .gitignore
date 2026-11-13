@@ -4,6 +4,10 @@
 # rust build output (the workspace target dir)
 /target
 
+# wrangler
+/cloudflare/node_modules
+/.wrangler
+
 # release staging (installer, zip, manifest) built by the release workflow
 /dist
 

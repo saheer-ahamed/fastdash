@@ -1,0 +1,27 @@
+name: Deploy web
+
+# Manual on purpose. Merging to main does not deploy. Run it from the Actions
+# tab after docs/web.md's checklist, including the KV namespace ids in
+# wrangler.jsonc and the FASTDASH_WEB_SECRET_KEY Worker secret.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Install Wrangler
+        working-directory: cloudflare
+        run: npm ci
+      - name: Deploy the Worker and the host page
+        run: ./cloudflare/node_modules/.bin/wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

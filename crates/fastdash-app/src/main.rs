@@ -8,44 +8,78 @@
 // A release build is a GUI app: no console window behind it.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+// The wasm32 target cannot link this window. GPUI 0.2.2 ships no browser
+// platform, so the modules below stay on the desktop build. `proxy` is the
+// seam the same app will use once a web backend exists: connector URLs become
+// same-origin Worker paths, and the Worker attaches the stored tokens.
+#[cfg(any(test, target_arch = "wasm32"))]
+mod proxy;
+
+#[cfg(not(target_arch = "wasm32"))]
 mod app;
+#[cfg(not(target_arch = "wasm32"))]
 mod assets;
+#[cfg(not(target_arch = "wasm32"))]
 mod connectors;
+#[cfg(not(target_arch = "wasm32"))]
 mod crash;
+#[cfg(not(target_arch = "wasm32"))]
 mod dashboard;
+#[cfg(not(target_arch = "wasm32"))]
 mod fonts;
+#[cfg(not(target_arch = "wasm32"))]
 mod github_view;
+#[cfg(not(target_arch = "wasm32"))]
 mod i18n;
+#[cfg(not(target_arch = "wasm32"))]
 mod panels;
+#[cfg(not(target_arch = "wasm32"))]
 mod platform;
+#[cfg(not(target_arch = "wasm32"))]
 mod prefs;
+#[cfg(not(target_arch = "wasm32"))]
 mod range_filter;
+#[cfg(not(target_arch = "wasm32"))]
 mod runtime;
+#[cfg(not(target_arch = "wasm32"))]
 mod settings;
+#[cfg(not(target_arch = "wasm32"))]
 mod theme;
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(all(not(target_arch = "wasm32"), any(windows, target_os = "macos")))]
 mod tray;
+#[cfg(not(target_arch = "wasm32"))]
 mod ui;
+#[cfg(not(target_arch = "wasm32"))]
 mod updater;
+#[cfg(not(target_arch = "wasm32"))]
 mod welcome;
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 
+#[cfg(not(target_arch = "wasm32"))]
 use fastdash_core::engine::{config, i18n as core_i18n, registry::Registry};
+#[cfg(not(target_arch = "wasm32"))]
 use fastdash_core::taskbar;
+#[cfg(not(target_arch = "wasm32"))]
 use futures::channel::mpsc;
+#[cfg(not(target_arch = "wasm32"))]
 use futures::StreamExt;
+#[cfg(not(target_arch = "wasm32"))]
 use gpui::{prelude::*, px, size, App, Application, TitlebarOptions, WindowBounds, WindowOptions};
 
+#[cfg(not(target_arch = "wasm32"))]
 use app::Root;
 
 /// What the world outside the window - tray, taskbar readout, a second
 /// launch - asks of the app. Delivered to one GPUI task that owns the window.
+#[cfg(not(target_arch = "wasm32"))]
 pub enum Command {
     Show,
     Quit,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn main() {
     crash::install();
     let (commands, mut incoming) = mpsc::unbounded::<Command>();
@@ -146,4 +180,11 @@ fn main() {
             .detach();
             cx.activate(true);
         });
+}
+
+/// wasm32 has nothing to open: the GPUI platform crate refuses this target.
+/// The proxy mapper is linked so the Worker path stays compiled beside the app.
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    let _ = proxy::to_worker_path("https://api.github.com/");
 }
