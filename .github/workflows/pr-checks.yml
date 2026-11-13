@@ -46,7 +46,7 @@ jobs:
         run: |
           branch="${{ github.head_ref }}"
           echo "Branch: $branch"
-          pattern='^(feat|fix|perf|refactor|style|docs|test|build|ci|chore|revert)/[a-z0-9._-]+$'
+          pattern='^(feat|fix|perf|refactor|style|docs|test|build|ci|chore|revert)/[a-z0-9._-]+$|^cursor/[a-z0-9._-]+$'
           if ! echo "$branch" | grep -Eq "$pattern"; then
             echo "::error::Branch '$branch' does not match $pattern"
             echo "Rename it, e.g.  git branch -m feat/short-description"
@@ -87,3 +87,20 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Test
         run: cargo test --workspace --locked
+
+  # The same GPUI crate, compiled for wasm32. It does not link the window:
+  # published GPUI 0.2.2 has no browser platform (docs/web.md). This job checks
+  # the proxy seam that the window will call once that platform exists, and
+  # that the desktop-only modules stay cfg'd out of the wasm target.
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: swatinem/rust-cache@v2
+      - name: Check the wasm target
+        run: cargo check -p fastdash-app --target wasm32-unknown-unknown --locked
+      - name: Build the wasm target
+        run: cargo build -p fastdash-app --target wasm32-unknown-unknown --locked

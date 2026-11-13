@@ -11,7 +11,7 @@ One glance shows Claude usage; connectors add GitHub, Sentry and Slack views.
 
 ## Stack
 
-- A native GPUI desktop UI (`crates/fastdash-app/`): GPU-rendered, one process, no webview.
+- A native GPUI desktop UI (`crates/fastdash-app/`): GPU-rendered, one process, no webview. This is the only UI. A browser build of the same crate is prepared, but GPUI 0.2.2 has no wasm platform, so the window does not link there yet (`docs/web.md`).
 - Rust core (`crates/fastdash-core/`) for all fetching, parsing, and aggregation.
 - The UI is a thin, generic renderer of the core's `Panel`s.
 - Secrets in the OS keychain via the `keyring` crate (Windows Credential Manager).

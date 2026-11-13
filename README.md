@@ -238,13 +238,21 @@ The installer is `installer/fastdash.nsi` (NSIS); the release workflow builds an
 Releases are automatic: merging to `main` computes the next version from the Conventional Commits since the last tag, builds the signed installers, and publishes the GitHub release.
 Never bump a version or push a `v*` tag by hand.
 
+## Browser
+
+There is one UI, the GPUI app. It does not run in the browser yet: the published GPUI 0.2.2 crate has no wasm platform, and the web backend that landed later in Zed's repo is not published and already uses a different startup API. What is ready is the Cloudflare Worker that will hold GitHub, Anthropic, and Sentry tokens and attach them to proxied fetches, so a future wasm build of this same app never sees the secrets. Details, the exact blocker, and the deploy checklist are in [docs/web.md](./docs/web.md).
+
+```bash
+cargo check -p fastdash-app --target wasm32-unknown-unknown
+```
+
 ## Architecture
 
 See [DESIGN.md](./DESIGN.md).
 
 - `crates/fastdash-core/src/engine/` - connector-agnostic core: the `Connector` trait, registry, config, keychain secrets, snapshot cache, the shared fetch path, i18n, and the shared date filter.
 - `crates/fastdash-core/src/connectors/` - self-contained connectors behind that trait.
-- `crates/fastdash-app/` - the desktop UI on GPUI, which only ever renders generic `Panel`s.
+- `crates/fastdash-app/` - the only UI, on GPUI. The same crate is the wasm target; the published GPUI 0.2.2 cannot open a window in the browser yet. See [docs/web.md](./docs/web.md).
 - `xtask/` and `installer/` - release tooling: signing, the update manifest, the installer.
 
 ## Status

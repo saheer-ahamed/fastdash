@@ -1,0 +1,8 @@
+{
+  "name": "fastdash-cloudflare",
+  "private": true,
+  "description": "Wrangler for the fastdash Worker. The UI is the GPUI app, not this package.",
+  "devDependencies": {
+    "wrangler": "^4.46.0"
+  }
+}

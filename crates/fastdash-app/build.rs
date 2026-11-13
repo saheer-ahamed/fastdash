@@ -1,6 +1,12 @@
 fn main() {
     #[cfg(windows)]
     {
+        // build.rs runs on the host. A Windows host cross-compiling the wasm
+        // artifact must not embed the desktop manifest into it.
+        let target = std::env::var("TARGET").unwrap_or_default();
+        if target.contains("wasm32") {
+            return;
+        }
         // The exe's icon and manifest. Re-run when either changes: cargo does
         // not track resource inputs, so an icon swap would otherwise relink
         // with the stale resource.

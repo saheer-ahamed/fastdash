@@ -45,6 +45,7 @@ chore(release): v0.2.0
 
 Branches must match `^(feat|fix|perf|refactor|style|docs|test|build|ci|chore|revert)/[a-z0-9._-]+$`.
 Examples: `feat/dev-mode`, `fix/scheduler-race`, `chore/husky-pre-commit`.
+Cloud-agent branches named `cursor/<description>` are also accepted by CI.
 
 ### Pull requests
 
