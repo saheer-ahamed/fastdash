@@ -14,7 +14,7 @@
 //! Flow*, and put its Client ID in `CLIENT_ID` below (or the
 //! `FASTDASH_GITHUB_CLIENT_ID` env var for local dev).
 
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -106,8 +106,8 @@ struct TokenResp {
     interval: Option<u64>,
 }
 
-fn http() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
+fn http() -> Result<crate::engine::http::Client, String> {
+    crate::engine::http::Client::builder()
         .user_agent("fastdash")
         .build()
         .map_err(|e| e.to_string())
@@ -139,7 +139,10 @@ pub async fn start() -> Result<DeviceCode, String> {
 
     // Best-effort: open the verification page. If it fails (headless, no
     // browser), the UI still shows the link so the user can open it manually.
+    #[cfg(not(target_arch = "wasm32"))]
     let _ = open::that(&body.verification_uri);
+    #[cfg(target_arch = "wasm32")]
+    let _ = &body.verification_uri;
 
     Ok(DeviceCode {
         device_code: body.device_code,
@@ -160,7 +163,7 @@ pub async fn poll(device_code: &str, interval: u64) -> Result<String, String> {
     let deadline = Instant::now() + Duration::from_secs(MAX_POLL_SECS);
 
     loop {
-        tokio::time::sleep(Duration::from_secs(wait)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
         if Instant::now() >= deadline {
             return Err("The login code expired before it was approved. Please try again.".into());
         }

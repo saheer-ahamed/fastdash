@@ -2,6 +2,7 @@
   "$schema": "./cloudflare/node_modules/wrangler/config-schema.json",
   "name": "fastdash",
   "main": "cloudflare/src/index.js",
+  "preview_urls": false,
   "compatibility_date": "2026-11-13",
   "assets": {
     "directory": "./cloudflare/public",

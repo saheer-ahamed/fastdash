@@ -27,7 +27,7 @@
 
 use std::collections::HashMap;
 use std::sync::Mutex;
-use std::time::Instant;
+use web_time::Instant;
 
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
@@ -113,8 +113,8 @@ impl ConsoleUsage {
     }
 }
 
-fn http() -> Result<reqwest::Client, AdminError> {
-    reqwest::Client::builder()
+fn http() -> Result<crate::engine::http::Client, AdminError> {
+    crate::engine::http::Client::builder()
         .user_agent(UA)
         .build()
         .map_err(|e| AdminError::Http(e.to_string()))
@@ -129,7 +129,7 @@ struct RawGet {
 /// GET `url` with the admin key. `etag` is sent as `If-None-Match`; a `304`
 /// comes back with an empty body so the caller can reuse what it stored.
 async fn get_raw(
-    client: &reqwest::Client,
+    client: &crate::engine::http::Client,
     url: &str,
     key: &str,
     page: Option<&str>,
@@ -201,7 +201,7 @@ async fn get_raw(
 /// GET `url` with the admin key, mapping the statuses the user can act on onto
 /// their own variants so the UI can say something better than "403".
 async fn get_json<T: serde::de::DeserializeOwned>(
-    client: &reqwest::Client,
+    client: &crate::engine::http::Client,
     url: &str,
     key: &str,
     page: Option<&str>,
@@ -276,7 +276,7 @@ pub async fn fetch_console_usage(key: &str, range: &DateRange) -> Result<Console
         {
             perf::record(
                 "claude.admin",
-                std::time::Duration::ZERO,
+                web_time::Duration::ZERO,
                 0,
                 CacheState::Hit,
                 true,
@@ -394,7 +394,7 @@ fn cost_url(from: DateTime<Utc>, to: DateTime<Utc>) -> String {
 }
 
 async fn fetch_usage(
-    client: &reqwest::Client,
+    client: &crate::engine::http::Client,
     key: &str,
     range: &DateRange,
     from: DateTime<Utc>,
@@ -484,7 +484,7 @@ struct CostItem {
 }
 
 async fn fetch_cost(
-    client: &reqwest::Client,
+    client: &crate::engine::http::Client,
     key: &str,
     from: DateTime<Utc>,
     to: DateTime<Utc>,
@@ -610,7 +610,7 @@ fn load_slots() -> SlotMap {
     let Some(path) = slots_path() else {
         return HashMap::new();
     };
-    let Ok(text) = std::fs::read_to_string(path) else {
+    let Ok(text) = crate::engine::disk::read_to_string(path) else {
         return HashMap::new();
     };
     let Ok(list) = serde_json::from_str::<Vec<ConsoleSlot>>(&text) else {
@@ -632,14 +632,14 @@ fn save_slots(slots: &[ConsoleSlot]) {
         return;
     };
     if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
+        let _ = crate::engine::disk::create_dir_all(dir);
     }
     let Ok(text) = serde_json::to_string(slots) else {
         return;
     };
     let tmp = path.with_extension("json.tmp");
-    if std::fs::write(&tmp, text).is_ok() {
-        let _ = std::fs::rename(tmp, path);
+    if crate::engine::disk::write(&tmp, text).is_ok() {
+        let _ = crate::engine::disk::rename(tmp, path);
     }
 }
 

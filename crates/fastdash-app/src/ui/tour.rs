@@ -107,7 +107,7 @@ pub fn scroll_into_view(scroll: &ScrollHandle, target: Bounds<Pixels>) {
     }
     let offset = scroll.offset();
     let delta = target.center().y - view.center().y;
-    let max = scroll.max_offset().height;
+    let max = scroll.max_offset().y;
     let y = (offset.y - delta).clamp(-max, px(0.));
     scroll.set_offset(point(offset.x, y));
 }
@@ -219,6 +219,7 @@ pub fn render(
             offset: point(px(0.), px(6.)),
             blur_radius: px(24.),
             spread_radius: px(0.),
+            inset: false,
         }])
         .occlude()
         .child(record(anchors, BUBBLE))

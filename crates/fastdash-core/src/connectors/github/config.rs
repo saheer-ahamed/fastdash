@@ -104,13 +104,19 @@ impl GithubConfig {
 fn token_from_keychain(label: &str) -> Option<String> {
     // Read through the shared keychain wrapper so this matches exactly what the
     // Connectors UI writes via `set_secret` (service `fastdash`, key `github/<label>`).
-    let token = crate::engine::secrets::get("github", label).ok()??;
-    let token = token.trim().to_string();
-    if token.is_empty() {
-        None
-    } else {
-        Some(token)
+    if let Some(token) = crate::engine::secrets::get("github", label).ok().flatten() {
+        let token = token.trim().to_string();
+        if !token.is_empty() {
+            return Some(token);
+        }
     }
+    // The browser never holds the PAT. A signed-in session means the Worker
+    // will attach it, and the HTTP layer drops this placeholder.
+    #[cfg(target_arch = "wasm32")]
+    if crate::engine::web_session::has_github() {
+        return Some(crate::engine::web_session::PLACEHOLDER.to_string());
+    }
+    None
 }
 
 fn token_from_env() -> Option<String> {

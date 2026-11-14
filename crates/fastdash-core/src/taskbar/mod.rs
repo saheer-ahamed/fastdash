@@ -117,6 +117,16 @@ pub fn start(
 /// Bring the readout in line with `settings`: fetch and redraw it, or hide it
 /// when it is turned off.
 pub async fn apply(settings: &TaskbarConfig) {
+    // The readout is a Windows taskbar window. Other desktops still run the
+    // fetch so a later Windows build of the same config is not a special
+    // case; the browser has nowhere to draw it and must not spend API calls
+    // on it.
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = settings;
+        return;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     if settings.enabled {
         refresh(&settings.lines).await;
     } else {

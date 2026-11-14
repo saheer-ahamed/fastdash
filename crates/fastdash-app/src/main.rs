@@ -8,56 +8,36 @@
 // A release build is a GUI app: no console window behind it.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-// The wasm32 target cannot link this window. GPUI 0.2.2 ships no browser
-// platform, so the modules below stay on the desktop build. `proxy` is the
-// seam the same app will use once a web backend exists: connector URLs become
-// same-origin Worker paths, and the Worker attaches the stored tokens.
-#[cfg(any(test, target_arch = "wasm32"))]
+// One window, two platforms. Desktop uses the OS backends. wasm32 uses Zed's
+// `gpui_web` platform (`gpui_platform::single_threaded_web`), and connector
+// HTTP goes through `proxy` so tokens stay in the Worker.
 mod proxy;
 
-#[cfg(not(target_arch = "wasm32"))]
 mod app;
-#[cfg(not(target_arch = "wasm32"))]
 mod assets;
-#[cfg(not(target_arch = "wasm32"))]
 mod connectors;
 #[cfg(not(target_arch = "wasm32"))]
 mod crash;
-#[cfg(not(target_arch = "wasm32"))]
 mod dashboard;
-#[cfg(not(target_arch = "wasm32"))]
 mod fonts;
-#[cfg(not(target_arch = "wasm32"))]
 mod github_view;
-#[cfg(not(target_arch = "wasm32"))]
 mod i18n;
-#[cfg(not(target_arch = "wasm32"))]
 mod panels;
-#[cfg(not(target_arch = "wasm32"))]
 mod platform;
-#[cfg(not(target_arch = "wasm32"))]
 mod prefs;
-#[cfg(not(target_arch = "wasm32"))]
 mod range_filter;
-#[cfg(not(target_arch = "wasm32"))]
 mod runtime;
-#[cfg(not(target_arch = "wasm32"))]
 mod settings;
-#[cfg(not(target_arch = "wasm32"))]
 mod theme;
 #[cfg(all(not(target_arch = "wasm32"), any(windows, target_os = "macos")))]
 mod tray;
-#[cfg(not(target_arch = "wasm32"))]
 mod ui;
 #[cfg(not(target_arch = "wasm32"))]
 mod updater;
-#[cfg(not(target_arch = "wasm32"))]
 mod welcome;
 
-#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 
-#[cfg(not(target_arch = "wasm32"))]
 use fastdash_core::engine::{config, i18n as core_i18n, registry::Registry};
 #[cfg(not(target_arch = "wasm32"))]
 use fastdash_core::taskbar;
@@ -65,10 +45,10 @@ use fastdash_core::taskbar;
 use futures::channel::mpsc;
 #[cfg(not(target_arch = "wasm32"))]
 use futures::StreamExt;
-#[cfg(not(target_arch = "wasm32"))]
-use gpui::{prelude::*, px, size, App, Application, TitlebarOptions, WindowBounds, WindowOptions};
+use gpui::{
+    prelude::*, px, size, App, Application, Bounds, TitlebarOptions, WindowBounds, WindowOptions,
+};
 
-#[cfg(not(target_arch = "wasm32"))]
 use app::Root;
 
 /// What the world outside the window - tray, taskbar readout, a second
@@ -81,7 +61,7 @@ pub enum Command {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() {
-    let booted = std::time::Instant::now();
+    let booted = web_time::Instant::now();
     fastdash_core::engine::perf::init();
     crash::install();
     let (commands, mut incoming) = mpsc::unbounded::<Command>();
@@ -102,7 +82,7 @@ fn main() {
     let ui_prefs = prefs::load();
     crash::set_dev_mode(ui_prefs.dev_mode);
 
-    Application::new()
+    application()
         .with_assets(assets::Assets)
         .run(move |cx: &mut App| {
             let choice = ui_prefs.theme;
@@ -114,16 +94,7 @@ fn main() {
             ui::text_input::bind_keys(cx);
             ui::text_input::install_focus_actions(cx);
 
-            let options = WindowOptions {
-                window_bounds: Some(WindowBounds::centered(size(px(1120.), px(740.)), cx)),
-                window_min_size: Some(size(px(880.), px(560.))),
-                titlebar: Some(TitlebarOptions {
-                    title: Some("fastdash".into()),
-                    ..Default::default()
-                }),
-                app_id: Some("co.zro.fastdash".into()),
-                ..Default::default()
-            };
+            let options = window_options(cx);
             let taskbar_settings = config.taskbar.clone();
             let window = cx
                 .open_window(options, |window, cx| {
@@ -184,7 +155,7 @@ fn main() {
                             let _ = window.update(cx, |_, window, cx| platform::show(window, cx));
                         }
                         Command::Quit => {
-                            let _ = cx.update(|cx| cx.quit());
+                            cx.update(|cx| cx.quit());
                         }
                     }
                 }
@@ -194,9 +165,86 @@ fn main() {
         });
 }
 
-/// wasm32 has nothing to open: the GPUI platform crate refuses this target.
-/// The proxy mapper is linked so the Worker path stays compiled beside the app.
+fn window_options(cx: &mut App) -> WindowOptions {
+    let bounds = Bounds::centered(None, size(px(1120.), px(740.)), cx);
+    WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        window_min_size: Some(size(px(880.), px(560.))),
+        titlebar: Some(TitlebarOptions {
+            title: Some("fastdash".into()),
+            ..Default::default()
+        }),
+        app_id: Some("co.zro.fastdash".into()),
+        ..Default::default()
+    }
+}
+
+/// Desktop: GPUI's platform crate for macOS and Linux. Windows is constructed
+/// directly so GPUI's own manifest is not embedded beside ours.
+fn application() -> Application {
+    #[cfg(target_arch = "wasm32")]
+    {
+        gpui_platform::single_threaded_web()
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let platform = std::rc::Rc::new(
+            gpui_windows::WindowsPlatform::new(false)
+                .expect("failed to initialize Windows platform"),
+        );
+        Application::with_platform(platform)
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        gpui_platform::application()
+    }
+}
+
+/// The browser build. `main` is empty because `wasm-bindgen` starts [`start`].
 #[cfg(target_arch = "wasm32")]
-fn main() {
-    let _ = proxy::to_worker_path("https://api.github.com/");
+fn main() {}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen(start)]
+pub fn start() {
+    gpui_platform::web_init();
+    let handle = application()
+        .with_assets(assets::Assets)
+        .run_embedded(|cx: &mut App| open_browser(cx));
+    // The browser event loop outlives this call. Dropping the handle drops
+    // the window that was just opened.
+    std::mem::forget(handle);
+}
+
+#[cfg(target_arch = "wasm32")]
+fn open_browser(cx: &mut App) {
+    let booted = web_time::Instant::now();
+    fastdash_core::engine::perf::init();
+    let config = config::load();
+    core_i18n::set_locale(&config.locale);
+    let registry = Arc::new(Registry::with_default_connectors());
+    let ui_prefs = prefs::load();
+    let choice = ui_prefs.theme;
+    cx.set_global(ui_prefs);
+    theme::apply(choice, cx.window_appearance(), cx);
+    fonts::install(cx);
+    ui::text_input::bind_keys(cx);
+    ui::text_input::install_focus_actions(cx);
+
+    let options = window_options(cx);
+    cx.open_window(options, |window, cx| {
+        cx.new(|cx| {
+            let root = Root::new(registry, config, window, cx);
+            fastdash_core::engine::perf::record(
+                "app.startup",
+                booted.elapsed(),
+                0,
+                fastdash_core::engine::perf::CacheState::Miss,
+                true,
+            );
+            root
+        })
+    })
+    .expect("failed to open the main window");
+    cx.activate(true);
 }

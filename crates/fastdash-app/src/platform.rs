@@ -1,3 +1,4 @@
+#![cfg_attr(target_arch = "wasm32", allow(dead_code))]
 //! The few things GPUI does not do for a desktop app, done natively: hiding
 //! and restoring the window, keeping to one instance, and a last-resort
 //! message box.

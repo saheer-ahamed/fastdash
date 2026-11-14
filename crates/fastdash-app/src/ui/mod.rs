@@ -430,7 +430,15 @@ pub fn track(frac: f32, height: f32, cx: &App) -> Div {
 /// Open a URL in the default browser. Only http(s) ever leaves the app, so a
 /// panel link can never launch an arbitrary scheme locally.
 pub fn open_url(url: &str) {
-    if url.starts_with("http://") || url.starts_with("https://") {
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return;
+    }
+    #[cfg(target_arch = "wasm32")]
+    if let Some(window) = web_sys::window() {
+        let _ = window.open_with_url(url);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
         let _ = open::that(url);
     }
 }

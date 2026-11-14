@@ -126,7 +126,7 @@ impl GithubForm {
         }
         self.tour = Some(0);
         self.scrolled_for = None;
-        window.focus(&self.tour_focus);
+        window.focus(&self.tour_focus, cx);
         cx.notify();
     }
 
@@ -155,7 +155,7 @@ impl GithubForm {
         };
         self.scrolled_for = None;
         match self.tour {
-            Some(_) => window.focus(&self.tour_focus),
+            Some(_) => window.focus(&self.tour_focus, cx),
             // Ran to completion or skipped: never auto-open again.
             None => prefs::update(cx, |p| {
                 p.tours_seen.insert(TOUR_ID.to_string());
@@ -203,7 +203,17 @@ impl GithubForm {
             labels
                 .into_iter()
                 .map(|l| {
-                    let has = matches!(secrets::get("github", &l), Ok(Some(_)));
+                    let has = {
+                        #[cfg(target_arch = "wasm32")]
+                        {
+                            let _ = &l;
+                            fastdash_core::engine::web_session::has_github()
+                        }
+                        #[cfg(not(target_arch = "wasm32"))]
+                        {
+                            matches!(secrets::get("github", &l), Ok(Some(_)))
+                        }
+                    };
                     (l, has)
                 })
                 .collect::<HashMap<_, _>>()
@@ -241,6 +251,16 @@ impl GithubForm {
 
     fn save_all(&mut self, cx: &mut Context<Self>) {
         // Freshly typed tokens go to the keychain first, keyed by label.
+        // The browser never stores them: the sign-in form posts them to the Worker.
+        #[cfg(target_arch = "wasm32")]
+        if self
+            .rows
+            .iter()
+            .any(|r| !r.token.read(cx).text().trim().is_empty())
+        {
+            cx.emit(FormEvent::Error(t("web.useSignIn").to_string()));
+            return;
+        }
         let tokens: Vec<(String, String)> = self
             .rows
             .iter()
@@ -536,7 +556,7 @@ impl GithubForm {
                     .child("i")
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.guide_open = true;
-                        window.focus(&this.guide_focus);
+                        window.focus(&this.guide_focus, cx);
                         cx.notify();
                     }));
                 let field = if token_stored && !row.replacing {
@@ -545,7 +565,8 @@ impl GithubForm {
                             if let Some(row) = this.rows.iter_mut().find(|r| r.key == key) {
                                 row.replacing = true;
                                 row.token.update(cx, |i, cx| i.set_text("", cx));
-                                row.token.read(cx).focus(window);
+                                let handle = row.token.read(cx).handle();
+                                window.focus(&handle, cx);
                             }
                             cx.notify();
                         }));
@@ -585,8 +606,13 @@ impl GithubForm {
                     pat_field
                 };
                 div()
-                    .child(div().flex().mb(px(14.)).child(connect))
+                    .when(!cfg!(target_arch = "wasm32"), |row| {
+                        row.child(div().flex().mb(px(14.)).child(connect))
+                    })
                     .child(div().mb(px(12.)).child(pat_field))
+                    .when(cfg!(target_arch = "wasm32"), |row| {
+                        row.child(ui::hint(t("web.githubSignIn"), cx))
+                    })
             }
         };
         let orgs = ui::field(t("settings.orgs"), cx)

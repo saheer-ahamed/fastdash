@@ -1,42 +1,37 @@
 # fastdash in the browser
 
-One UI. `crates/fastdash-app` is the GPUI window, and it is also the wasm target. There is no second dashboard.
+One UI. `crates/fastdash-app` is the GPUI window on the desktop and the same window in the browser. There is no second dashboard.
 
-## What blocks the window
+## How the window is built
 
-The desktop app depends on `gpui` **0.2.2** from crates.io, pinned because GPUI is pre-1.0 and breaks between releases (`crates/fastdash-app/Cargo.toml`).
+GPUI on crates.io (0.2.2) has no browser platform. This repo depends on Zed's tree instead, pinned to one commit in `crates/fastdash-app/Cargo.toml`:
 
-That published crate has no browser platform. Its `src/platform/` tree is macOS, Windows, and Linux (Wayland and X11) only. Asking the full window to compile for `wasm32-unknown-unknown` fails inside GPUI's own dependency tree, before any fastdash view is reached:
+`https://github.com/zed-industries/zed` @ `f0fa51bb510fc91f6da7ec55f3e0f317f1f975ec`
 
+That commit is Zed `main` as of 14 Nov 2026. It contains the web platform from [GPUI on the web](https://github.com/zed-industries/zed/pull/50228) (`gpui_web` and `gpui_platform`). The browser build calls `gpui_platform::web_init()` and `gpui_platform::single_threaded_web()`. Single-threaded is the stable-Rust path: Zed's default `multithreaded` feature needs nightly, `build-std`, and cross-origin isolation, which a static Worker page does not use.
+
+Desktop entry points stay on the same GPUI types. macOS and Linux go through `gpui_platform::application()` (font-kit on macOS, Wayland and X11 on Linux). Windows constructs `gpui_windows::WindowsPlatform` directly so GPUI's own manifest is not embedded beside `resources/fastdash.manifest.xml`.
+
+`scripts/build-web.sh` runs `cargo build --target wasm32-unknown-unknown` and `wasm-bindgen --target web`, and writes `cloudflare/public/fastdash.js` plus `fastdash_bg.wasm`. `cloudflare/public/index.html` imports that module. The generated files are gitignored.
+
+```bash
+bash scripts/build-web.sh          # release
+bash scripts/build-web.sh --debug  # faster local iteration
 ```
-error: The target OS is "unknown" or "none", so it's unsupported by the errno crate.
-```
 
-`errno` is pulled in by GPUI's native platform crates (`rustix` / `async-io`). Even if that compile error were patched, there is still no `Platform` implementation for `wasm32-unknown-unknown`, so the app could not open a window.
+### What the browser build does not do
 
-A browser backend does exist, but not as a release of this crate:
-
-- Zed merged [GPUI on the web](https://github.com/zed-industries/zed/pull/50228) on 26 Feb 2026 (`14f37ed`). It lives in the Zed workspace as `gpui_web` plus `gpui_platform`, not on crates.io.
-- By the time that landed, examples had already moved from `Application::new().run(...)` (what fastdash calls) to `gpui_platform::application().run(...)`, plus `gpui_platform::web_init()` for wasm.
-- Current Zed `main` still prints version `0.2.2` and has not shipped a new crates.io release. Depending on that git tree would retarget the desktop app off the pinned API. This repo's rule is that the pin stays, because a GPUI bump breaks the window.
-
-So the wasm target of `fastdash-app` compiles only `src/proxy.rs`. The views, the window, the tray, and the taskbar stay `cfg`'d to the desktop build. CI checks and builds that wasm target so the split cannot rot. It does **not** produce a GPUI canvas.
-
-### Closest path that keeps this one codebase
-
-1. Stay on GPUI 0.2.2 for desktop. Do not fork a second UI.
-2. Keep `src/proxy.rs` next to the window. It rewrites `https://api.github.com/...`, `https://api.anthropic.com/...`, and `https://*.sentry.io/...` into `/api/proxy/...` on the same origin. When Zed publishes a GPUI that can open a window in wasm, the connectors call this instead of putting a token in `Authorization`, and the same views render.
-3. Until that publish, the Cloudflare Worker below is the secret holder. It is not a dashboard. `cloudflare/public/index.html` is only the host page the wasm module will boot in (the same shape as Zed's `gpui_web` example: a document the canvas is appended to). Today it says why the module is absent.
-
-What will still be desktop-only even after GPUI grows a web backend, because those APIs are not in a browser:
+These stay desktop-only. The web build hides them or shows a note. It does not crash.
 
 - The Windows taskbar readout and the tray icon.
-- The OS keychain. Tokens for the browser copy live in the Worker.
-- Claude plan-limit meters. They read Claude Code's login under `~/.claude`. Anthropic does not offer that login to third parties. An Admin API key, stored on the Worker, is the web path for billed usage.
-- The in-app updater and single-instance mutex.
-- Self-hosted Sentry at an arbitrary origin. SaaS (`sentry.io` and `*.sentry.io`) is proxied. A session may also name one extra hostname; the desktop app can still talk to any origin with the keychain token.
+- The OS keychain, the in-app updater, and the single-instance mutex.
+- Claude Code transcripts and plan-limit meters under `~/.claude`. An Admin API key posted to the Worker is the web path for billed Console usage.
+- Device Flow. The browser sign-in form posts a token instead.
+- Self-hosted Sentry at an arbitrary origin. SaaS (`sentry.io` and `*.sentry.io`) is proxied. The sign-in form can also name one extra hostname; the desktop app can still talk to any origin with the keychain token.
 
-Fetch behavior does not change on the desktop: the window still decides when to fetch, and nothing in the core polls. The wasm build does not fetch yet, because the views are not linked.
+Fetch behavior does not change on the desktop: the window still decides when to fetch, and nothing in the core polls. In the browser the same connectors run, but every GitHub, Anthropic, and Sentry URL is rewritten by `engine/proxy.rs` (re-exported from `crates/fastdash-app/src/proxy.rs`) onto `/api/proxy/...`. `Authorization` and `x-api-key` are stripped before the request leaves the page. The session cookie is the credential.
+
+The browser font is IBM Plex Mono (Regular and Bold), SIL Open Font License, in `crates/fastdash-app/resources/fonts/`. Desktop builds still pick an installed monospace face.
 
 ## The Worker
 
@@ -121,7 +116,7 @@ Do not set `GITHUB_TOKEN` or an Anthropic key as a Worker variable. Those would 
 
 GitHub → Actions → **Deploy web** → Run workflow.
 
-Open the `workers.dev` URL. It shows the host page, not the dashboards. `POST /api/session` is how a client stores a token. There is no GPUI canvas until the crate above ships a web platform and this repo points the wasm target at it.
+Open the `workers.dev` URL. The host page loads the GPUI app. The sign-in form posts `{ githubToken, anthropicAdminKey, sentryToken, sentryHost }` to `POST /api/session`. After that, Refresh on a connected tab fetches through `/api/proxy/...`. The taskbar, the tray, local Claude transcripts, and the updater are not in this build.
 
 ### 7. Custom domain (optional)
 

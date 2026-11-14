@@ -355,19 +355,19 @@ fn load_disk() -> Option<Caches> {
         return None;
     }
     let path = disk_path()?;
-    let text = std::fs::read_to_string(path).ok()?;
+    let text = crate::engine::disk::read_to_string(path).ok()?;
     let disk: DiskCache = serde_json::from_str(&text).ok()?;
     Some(from_disk(disk))
 }
 
 fn write_json(path: &std::path::Path, value: &impl serde::Serialize) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
+        crate::engine::disk::create_dir_all(dir)?;
     }
     let text = serde_json::to_string(value).map_err(std::io::Error::other)?;
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(tmp, path)?;
+    crate::engine::disk::write(&tmp, text)?;
+    crate::engine::disk::rename(tmp, path)?;
     Ok(())
 }
 

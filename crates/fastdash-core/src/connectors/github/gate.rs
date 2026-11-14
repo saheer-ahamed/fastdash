@@ -28,7 +28,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 use crate::engine::connector::Snapshot;
 

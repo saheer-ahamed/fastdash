@@ -5,8 +5,8 @@
 // the app (once GPUI can run here) calls `/api/proxy/...` with that cookie,
 // and this Worker adds the credential on the way to the upstream.
 //
-// There is no second dashboard in this file. The page under `public/` only
-// hosts the wasm module, which this GPUI version cannot produce yet.
+// There is no second dashboard in this file. The page under `public/` hosts
+// the GPUI wasm module (`fastdash.js`), which calls back into `/api`.
 
 const COOKIE = "fastdash_session";
 const SESSION_SECONDS = 60 * 60 * 24 * 30;

@@ -11,32 +11,38 @@ build = "build.rs"
 name = "fastdash"
 path = "src/main.rs"
 
-# Everything the desktop window needs. Omitted on wasm32: the published GPUI
-# 0.2.2 has no browser platform (see docs/web.md), and these crates do not
-# build for wasm32-unknown-unknown either. The wasm target compiles only the
-# proxy seam in `src/proxy.rs`.
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# GPUI comes from Zed's repository, pinned to one commit. The crates.io
+# release (0.2.2) has no browser platform. `gpui_platform` is the desktop
+# and web entry point that Zed's examples call. Default features stay off:
+# on Windows they would embed GPUI's own manifest, which lacks the Windows 8+
+# compatibility section the taskbar readout needs (`build.rs` embeds ours).
+# On wasm, the default `multithreaded` feature needs nightly and shared
+# memory; the browser build uses the single-threaded platform instead.
+[dependencies]
 fastdash-core = { path = "../fastdash-core" }
-# Pinned exactly: GPUI is pre-1.0 and breaks between versions. Default
-# features are off because the default `windows-manifest` embeds GPUI's own
-# manifest, which lacks the Windows 8+ compatibility section the taskbar
-# readout needs - `build.rs` embeds ours instead (see resources/).
-gpui = { version = "=0.2.2", default-features = false }
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "f0fa51bb510fc91f6da7ec55f3e0f317f1f975ec", default-features = false }
 futures = "0.3"
 anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+chrono = "0.4"
+web-time = "1"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
 # The in-app updater: fetch the release manifest and installer, and verify
 # the installer's minisign signature before running it.
 reqwest = { version = "0.12", features = ["json"] }
 base64 = "0.22"
 minisign-verify = "0.2"
-serde = { version = "1", features = ["derive"] }
-toml = "0.8"
 directories = "5"
-chrono = "0.4"
 open = "5"
 
 [target.'cfg(target_os = "windows")'.dependencies]
+# Not `gpui_platform`: that crate turns on GPUI's `windows-manifest` feature,
+# and a second manifest beside `resources/fastdash.manifest.xml` breaks the
+# taskbar readout. The Windows platform type is constructed directly.
+gpui_windows = { git = "https://github.com/zed-industries/zed", rev = "f0fa51bb510fc91f6da7ec55f3e0f317f1f975ec" }
 windows = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_Security",
@@ -52,12 +58,22 @@ raw-window-handle = "0.6"
 tray-icon = "0.26"
 image = { version = "0.25", default-features = false, features = ["png"] }
 
-# Off Windows, GPUI needs a real text system and a windowing backend.
 [target.'cfg(target_os = "macos")'.dependencies]
-gpui = { version = "=0.2.2", default-features = false, features = ["font-kit"] }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "f0fa51bb510fc91f6da7ec55f3e0f317f1f975ec", default-features = false, features = ["font-kit"] }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "f0fa51bb510fc91f6da7ec55f3e0f317f1f975ec", default-features = false, features = ["font-kit"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-gpui = { version = "=0.2.2", default-features = false, features = ["wayland", "x11"] }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "f0fa51bb510fc91f6da7ec55f3e0f317f1f975ec", default-features = false, features = ["wayland", "x11"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "f0fa51bb510fc91f6da7ec55f3e0f317f1f975ec", default-features = false }
+tokio = { version = "1", default-features = false, features = ["sync", "time"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["console", "Location", "Storage", "Window"] }
+serde_json = "1"
+getrandom = { version = "0.2", features = ["js"] }
+getrandom_03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
 
 [target.'cfg(target_os = "windows")'.build-dependencies]
 embed-resource = "3"

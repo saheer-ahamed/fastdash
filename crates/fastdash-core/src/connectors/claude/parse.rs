@@ -14,15 +14,23 @@
 //! The parsed turns are also written under the app cache dir so the next launch
 //! does not reread history that is already on disk.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+#[cfg(not(target_arch = "wasm32"))]
+use std::collections::HashSet;
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::{Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::Path;
+use std::path::PathBuf;
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Mutex;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::engine::perf::{self, CacheState};
 
 #[derive(Debug, thiserror::Error)]
@@ -49,19 +57,41 @@ pub struct Turn {
     pub service_tier: Option<String>,
 }
 
+/// The browser has no `~/.claude`. Callers treat this as "no local transcripts".
+#[cfg(target_arch = "wasm32")]
+pub fn claude_dir() -> Result<PathBuf, ParseError> {
+    Err(ParseError::NoHome)
+}
+
+/// The browser has no `~/.claude`.
+#[cfg(target_arch = "wasm32")]
+pub fn projects_dir() -> Result<PathBuf, ParseError> {
+    Err(ParseError::NoHome)
+}
+
+/// Nothing to scan in the browser. The dashboard says so instead of showing
+/// a row of zeros from an empty directory.
+#[cfg(target_arch = "wasm32")]
+pub fn scan_transcripts() -> Result<Vec<Turn>, ParseError> {
+    Ok(Vec::new())
+}
+
 /// Resolve `~/.claude`, everything Claude Code keeps on this machine.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn claude_dir() -> Result<PathBuf, ParseError> {
     let base = directories::BaseDirs::new().ok_or(ParseError::NoHome)?;
     Ok(base.home_dir().join(".claude"))
 }
 
 /// Resolve `~/.claude/projects`.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn projects_dir() -> Result<PathBuf, ParseError> {
     Ok(claude_dir()?.join("projects"))
 }
 
 /// Every assistant turn under `~/.claude/projects`, reusing files that have not
 /// changed since the last scan.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn scan_transcripts() -> Result<Vec<Turn>, ParseError> {
     let root = projects_dir()?;
     let started = Instant::now();
@@ -135,20 +165,24 @@ enum FileRead {
     Skip,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn global_index() -> &'static Mutex<TranscriptIndex> {
     static INDEX: std::sync::OnceLock<Mutex<TranscriptIndex>> = std::sync::OnceLock::new();
     INDEX.get_or_init(|| Mutex::new(TranscriptIndex::new()))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn persist_enabled() -> bool {
     !cfg!(test)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn index_path() -> Option<PathBuf> {
     directories::ProjectDirs::from("co", "zro", "fastdash")
         .map(|dirs| dirs.cache_dir().join("claude-transcripts.json"))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn load_index(index: &mut TranscriptIndex) {
     if index.loaded || !persist_enabled() {
         index.loaded = true;
@@ -177,6 +211,7 @@ fn load_index(index: &mut TranscriptIndex) {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn save_index(index: &TranscriptIndex) {
     if !persist_enabled() {
         return;
@@ -202,6 +237,7 @@ fn save_index(index: &TranscriptIndex) {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn write_json(path: &Path, value: &impl Serialize) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -227,6 +263,7 @@ struct DiskFile {
     turns: Vec<Turn>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn scan_index(root: &Path, index: &mut TranscriptIndex) -> ScanReport {
     let mut files = Vec::new();
     collect_jsonl(root, &mut files);
@@ -281,6 +318,7 @@ fn scan_index(root: &Path, index: &mut TranscriptIndex) -> ScanReport {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn read_file(path: &Path, index: &TranscriptIndex) -> FileRead {
     let Ok(meta) = std::fs::metadata(path) else {
         return FileRead::Skip;
@@ -314,6 +352,7 @@ fn read_file(path: &Path, index: &TranscriptIndex) -> FileRead {
 
 /// Parse only the bytes appended past `entry.len`, when the head of the file
 /// is still the one we parsed and the previous end was a line boundary.
+#[cfg(not(target_arch = "wasm32"))]
 fn read_tail(path: &Path, entry: &FileEntry, len: u64, mtime_ms: u64) -> Option<FileRead> {
     if entry.len == 0 {
         return None;
@@ -354,6 +393,7 @@ fn read_tail(path: &Path, entry: &FileEntry, len: u64, mtime_ms: u64) -> Option<
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn turns_in(bytes: &[u8]) -> Vec<Turn> {
     let mut turns = Vec::new();
     if let Ok(text) = std::str::from_utf8(bytes) {
@@ -362,6 +402,7 @@ fn turns_in(bytes: &[u8]) -> Vec<Turn> {
     turns
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn head_hash(bytes: &[u8]) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -370,6 +411,7 @@ fn head_hash(bytes: &[u8]) -> u64 {
     hasher.finish()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn mtime_ms(meta: &std::fs::Metadata) -> u64 {
     meta.modified()
         .ok()
@@ -396,6 +438,7 @@ pub fn parse_lines(contents: &str, out: &mut Vec<Turn>) {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn collect_jsonl(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;

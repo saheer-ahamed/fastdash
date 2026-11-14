@@ -101,6 +101,7 @@ pub fn render(
             offset: gpui::point(px(0.), px(10.)),
             blur_radius: px(40.),
             spread_radius: px(0.),
+            inset: false,
         }])
         .child(
             div()

@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::sync::Mutex;
-use std::time::Instant;
+use web_time::Instant;
 
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
@@ -89,7 +89,7 @@ pub struct IssuePage {
 }
 
 pub struct SentryClient {
-    http: reqwest::Client,
+    http: crate::engine::http::Client,
     /// `{base_url}/api/0`, without a trailing slash.
     api: String,
     /// Scopes the issue cache to this token without storing the token.
@@ -108,7 +108,7 @@ impl SentryClient {
         headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
         headers.insert(USER_AGENT, HeaderValue::from_static("fastdash"));
 
-        let http = reqwest::Client::builder()
+        let http = crate::engine::http::Client::builder()
             .default_headers(headers)
             .build()
             .map_err(|e| SentryError::Http(e.to_string()))?;

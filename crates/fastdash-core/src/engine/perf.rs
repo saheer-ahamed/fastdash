@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 /// How a sample relates to work that was already stored.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
