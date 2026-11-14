@@ -53,7 +53,7 @@ pub mod device_flow;
 mod gate;
 
 use std::collections::HashMap;
-use std::time::Instant;
+use web_time::Instant;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
@@ -90,7 +90,8 @@ impl GithubConnector {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl Connector for GithubConnector {
     fn meta(&self) -> ConnectorMeta {
         ConnectorMeta {
@@ -188,7 +189,7 @@ pub async fn fetch_account(
         if let Some(snapshot) = gate::gate().fresh(&key) {
             perf::record(
                 "fetch.github",
-                std::time::Duration::ZERO,
+                web_time::Duration::ZERO,
                 0,
                 CacheState::Hit,
                 true,
@@ -255,7 +256,7 @@ pub fn forget_cached_views() {
         saved.loaded = true;
     }
     if let Some(path) = saved_path() {
-        let _ = std::fs::remove_file(path);
+        let _ = crate::engine::disk::remove_file(path);
     }
 }
 
@@ -318,7 +319,7 @@ fn load_saved(saved: &mut SavedViews) {
     let Some(path) = saved_path() else {
         return;
     };
-    let Ok(text) = std::fs::read_to_string(path) else {
+    let Ok(text) = crate::engine::disk::read_to_string(path) else {
         return;
     };
     let Ok(file) = serde_json::from_str::<SavedFile>(&text) else {
@@ -350,14 +351,14 @@ fn write_saved(file: &SavedFile) {
         return;
     };
     if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
+        let _ = crate::engine::disk::create_dir_all(dir);
     }
     let Ok(text) = serde_json::to_string(file) else {
         return;
     };
     let tmp = path.with_extension("json.tmp");
-    if std::fs::write(&tmp, text).is_ok() {
-        let _ = std::fs::rename(tmp, path);
+    if crate::engine::disk::write(&tmp, text).is_ok() {
+        let _ = crate::engine::disk::rename(tmp, path);
     }
 }
 
@@ -1007,7 +1008,7 @@ async fn load_calendars(
         if let Some(calendars) = cache::calendars(client.token(), now.year(), today) {
             perf::record(
                 "github.calendar",
-                std::time::Duration::ZERO,
+                web_time::Duration::ZERO,
                 0,
                 CacheState::Hit,
                 true,

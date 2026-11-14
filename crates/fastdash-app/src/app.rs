@@ -55,6 +55,7 @@ pub struct Root {
     /// The Settings page while it is showing, mounted fresh on each visit.
     settings_page: Option<(Entity<Settings>, Subscription)>,
     range_filter: Entity<RangeFilter>,
+    #[cfg(not(target_arch = "wasm32"))]
     update_banner: Entity<crate::updater::UpdateBanner>,
     /// The IST day the app believes it is on, re-read as the calendar rolls.
     today: NaiveDate,
@@ -63,6 +64,10 @@ pub struct Root {
     /// Which connectors are connected, as of the last list. The taskbar
     /// readout follows it, so connecting or disconnecting one redraws it.
     connected: Option<Vec<String>>,
+    #[cfg(target_arch = "wasm32")]
+    sign_in: Entity<crate::connectors::web_signin::WebSignIn>,
+    #[cfg(target_arch = "wasm32")]
+    _sign_in: Subscription,
 }
 
 impl Root {
@@ -110,6 +115,15 @@ impl Root {
                 .update(cx, |d, cx| d.set_range(range.clone(), cx));
             this.github.update(cx, |g, cx| g.set_range(range, cx));
         });
+        #[cfg(target_arch = "wasm32")]
+        let sign_in = cx.new(|cx| crate::connectors::web_signin::WebSignIn::new(cx));
+        #[cfg(target_arch = "wasm32")]
+        let sign_sub = cx.subscribe(
+            &sign_in,
+            |this, _, _: &crate::connectors::web_signin::Changed, cx| {
+                this.reload_connectors(cx);
+            },
+        );
         let mut root = Root {
             registry,
             config,
@@ -122,6 +136,7 @@ impl Root {
             connectors_page: None,
             settings_page: None,
             range_filter,
+            #[cfg(not(target_arch = "wasm32"))]
             update_banner: cx.new(crate::updater::UpdateBanner::new),
             today: today_ist(),
             _subscriptions: vec![
@@ -134,6 +149,10 @@ impl Root {
             ],
             _midnight: Task::ready(()),
             connected: None,
+            #[cfg(target_arch = "wasm32")]
+            sign_in,
+            #[cfg(target_arch = "wasm32")]
+            _sign_in: sign_sub,
         };
         root.sync_dashboard(cx);
         root.schedule_midnight(cx);
@@ -422,14 +441,26 @@ impl Root {
                 // answered, so it never flashes on the way to a dashboard.
                 None if self.listed => {
                     let root = cx.entity().downgrade();
-                    crate::welcome::render(
+                    let welcome = crate::welcome::render(
                         move |id, window, cx| {
                             let _ = root.update(cx, |root, cx| {
                                 root.open_page(Page::Connectors, Some(id), window, cx)
                             });
                         },
                         cx,
-                    )
+                    );
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        div()
+                            .flex()
+                            .flex_col()
+                            .size_full()
+                            .child(self.sign_in.clone())
+                            .child(div().flex_1().min_h_0().child(welcome))
+                            .into_any_element()
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    welcome
                 }
                 None => div().into_any_element(),
                 Some(id) if id == "github" => self.github.clone().into_any_element(),
@@ -451,7 +482,16 @@ impl Render for Root {
             .font_family(crate::fonts::family(cx))
             .text_size(px(ui::TEXT))
             .line_height(gpui::relative(1.5))
-            .child(self.update_banner.clone())
+            .when(cfg!(not(target_arch = "wasm32")), |this| {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    this.child(self.update_banner.clone())
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    this
+                }
+            })
             .child(self.sidebar(cx))
             .child(
                 div()

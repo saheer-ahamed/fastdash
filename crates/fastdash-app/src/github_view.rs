@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use std::time::Instant;
+use web_time::Instant;
 
 use fastdash_core::connectors::github::{self, fetch_account, SUPERSEDED};
 use fastdash_core::engine::config::{self, GithubAccount};

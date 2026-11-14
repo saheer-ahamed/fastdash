@@ -286,6 +286,7 @@ impl Render for UpdateBanner {
                 offset: point(px(0.), px(6.)),
                 blur_radius: px(24.),
                 spread_radius: px(0.),
+                inset: false,
             }])
             .child(ui::left_rule(th.ok))
             // The message wraps; the actions keep their size.
@@ -310,7 +311,7 @@ impl Render for UpdateBanner {
             anchored()
                 .position_mode(AnchoredPositionMode::Window)
                 .position(point(size.width - px(16.), size.height - px(16.)))
-                .anchor(gpui::Corner::BottomRight)
+                .anchor(gpui::Anchor::BottomRight)
                 .child(div().occlude().child(toast)),
         )
         .with_priority(3)

@@ -65,7 +65,11 @@ pub fn render(
                     .text_size(px(ui::SMALL))
                     .line_height(gpui::relative(1.6))
                     .text_color(th.muted)
-                    .child(t("welcome.footnote")),
+                    .child(if cfg!(target_arch = "wasm32") {
+                        t("web.footnote")
+                    } else {
+                        t("welcome.footnote")
+                    }),
             )
             .into_any_element()
     };

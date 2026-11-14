@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
-use std::time::Instant;
+use web_time::Instant;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -191,7 +191,7 @@ impl CalendarWindow {
 }
 
 pub struct GithubClient {
-    http: reqwest::Client,
+    http: crate::engine::http::Client,
     /// Scopes every cache lookup to this account - see [`cache`].
     token: u64,
     /// `x-oauth-scopes` from the last response that carried it. Classic tokens
@@ -449,7 +449,7 @@ impl GithubClient {
             } else {
                 CacheState::Delta
             };
-            perf::record("github.enrich", std::time::Duration::ZERO, 0, cache, false);
+            perf::record("github.enrich", web_time::Duration::ZERO, 0, cache, false);
         }
         out.reserve(stale.len());
 
@@ -881,10 +881,10 @@ fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<u64> {
     Some(reset.saturating_sub(now).max(1))
 }
 
-fn shared_http(token: &str, fingerprint: u64) -> Result<reqwest::Client, GithubError> {
+fn shared_http(token: &str, fingerprint: u64) -> Result<crate::engine::http::Client, GithubError> {
     use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
 
-    static POOL: OnceLock<Mutex<HashMap<u64, reqwest::Client>>> = OnceLock::new();
+    static POOL: OnceLock<Mutex<HashMap<u64, crate::engine::http::Client>>> = OnceLock::new();
     let pool = POOL.get_or_init(|| Mutex::new(HashMap::new()));
     let mut pool = pool.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(client) = pool.get(&fingerprint) {
@@ -905,7 +905,7 @@ fn shared_http(token: &str, fingerprint: u64) -> Result<reqwest::Client, GithubE
         "X-GitHub-Api-Version",
         HeaderValue::from_static("2022-11-28"),
     );
-    let client = reqwest::Client::builder()
+    let client = crate::engine::http::Client::builder()
         .default_headers(headers)
         .build()
         .map_err(|e| GithubError::Http(e.to_string()))?;
