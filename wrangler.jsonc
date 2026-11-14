@@ -11,8 +11,8 @@
   "kv_namespaces": [
     {
       "binding": "SESSIONS",
-      "id": "replace-with-wrangler-kv-namespace-create",
-      "preview_id": "replace-with-wrangler-kv-namespace-create"
+      "id": "859a44268d2e4586bd99f1cbbe039e27",
+      "preview_id": "d96bc060925c4206aa4e785c144b63ee"
     }
   ]
 }
