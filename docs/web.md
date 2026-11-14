@@ -65,14 +65,14 @@ Sign up at <https://dash.cloudflare.com>. Note the account id (Workers & Pages �
 
 ### 2. KV namespace
 
-From the repo, after `npm ci --prefix cloudflare` and `npx wrangler login` (or with `CLOUDFLARE_API_TOKEN` set):
+The `SESSIONS` ids are set in `wrangler.jsonc`: production `859a44268d2e4586bd99f1cbbe039e27`, preview `d96bc060925c4206aa4e785c144b63ee`. The Worker is live at <https://fastdash.saheer-ahamed570.workers.dev>.
+
+They were created with:
 
 ```bash
 npx --prefix cloudflare wrangler kv namespace create SESSIONS
 npx --prefix cloudflare wrangler kv namespace create SESSIONS --preview
 ```
-
-Paste both ids into `wrangler.jsonc` in place of `replace-with-wrangler-kv-namespace-create`. The placeholder will not deploy.
 
 ### 3. API token for GitHub Actions
 
@@ -121,7 +121,7 @@ Do not set `GITHUB_TOKEN` or an Anthropic key as a Worker variable. Those would 
 
 GitHub → Actions → **Deploy web** → Run workflow.
 
-Open the `workers.dev` URL. It shows the host page, not the dashboards. `POST /api/session` is how a client stores a token. There is no GPUI canvas until the crate above ships a web platform and this repo points the wasm target at it.
+Open <https://fastdash.saheer-ahamed570.workers.dev>. It shows the host page, not the dashboards. `POST /api/session` is how a client stores a token. There is no GPUI canvas until the crate above ships a web platform and this repo points the wasm target at it.
 
 ### 7. Custom domain (optional)
 
