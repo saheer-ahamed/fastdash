@@ -1419,7 +1419,7 @@ dependencies = [
 
 [[package]]
 name = "fastdash-app"
-version = "0.1.0"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1452,7 +1452,7 @@ dependencies = [
 
 [[package]]
 name = "fastdash-core"
-version = "0.1.0"
+version = "0.20.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -7513,7 +7513,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
