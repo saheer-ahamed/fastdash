@@ -8,6 +8,13 @@
 /cloudflare/node_modules
 /.wrangler
 
+# wasm-bindgen output. `scripts/build-web.sh` writes these next to the host page.
+/cloudflare/public/fastdash.js
+/cloudflare/public/fastdash_bg.wasm
+/cloudflare/public/fastdash.d.ts
+/cloudflare/public/fastdash_bg.wasm.d.ts
+/cloudflare/public/snippets
+
 # release staging (installer, zip, manifest) built by the release workflow
 /dist
 

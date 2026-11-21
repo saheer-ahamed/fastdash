@@ -9,7 +9,9 @@
 //! keychain, and it is never read back. Only the organization name is
 //! persisted to the config.
 
-use fastdash_core::connectors::claude::{admin_api, CONSOLE_LABEL};
+#[cfg(not(target_arch = "wasm32"))]
+use fastdash_core::connectors::claude::admin_api;
+use fastdash_core::connectors::claude::CONSOLE_LABEL;
 use fastdash_core::engine::secrets;
 use gpui::{div, prelude::*, px, Context, Entity, EventEmitter, Subscription, Window};
 
@@ -45,6 +47,11 @@ impl ClaudeForm {
         let org = fastdash_core::engine::config::load().claude.console_org;
         cx.spawn(async move |this, cx| {
             let has = runtime::spawn_blocking(|| {
+                #[cfg(target_arch = "wasm32")]
+                {
+                    return fastdash_core::engine::web_session::has_anthropic();
+                }
+                #[cfg(not(target_arch = "wasm32"))]
                 matches!(secrets::get("claude", CONSOLE_LABEL), Ok(Some(_)))
             })
             .await
@@ -70,48 +77,56 @@ impl ClaudeForm {
         if self.connecting {
             return;
         }
-        let key = self.key.read(cx).text().trim().to_string();
-        if key.is_empty() {
-            cx.emit(FormEvent::Error(t("settings.claudeNeedKey").to_string()));
+        #[cfg(target_arch = "wasm32")]
+        {
+            cx.emit(FormEvent::Error(t("web.useSignIn").to_string()));
             return;
         }
-        self.connecting = true;
-        cx.notify();
-        // Verify against Anthropic before anything is written to the keychain,
-        // so a bad key fails here rather than as a broken dashboard later.
-        let job = runtime::spawn(async move {
-            let org = admin_api::verify_key(&key)
-                .await
-                .map_err(|e| e.to_string())?;
-            secrets::set("claude", CONSOLE_LABEL, &key).map_err(|e| e.to_string())?;
-            Ok::<_, String>(org.name)
-        });
-        cx.spawn(async move |this, cx| {
-            let result = job.await.unwrap_or_else(|| Err("cancelled".into()));
-            let _ = this.update(cx, |this, cx| {
-                this.connecting = false;
-                let saved = result.and_then(|org| {
-                    patch_config(|c| c.claude.console_org = org.clone())?;
-                    Ok(org)
-                });
-                match saved {
-                    Ok(org) => {
-                        this.org = org.clone();
-                        this.stored = true;
-                        this.replacing = false;
-                        this.key.update(cx, |k, cx| k.set_text("", cx));
-                        cx.emit(FormEvent::Saved);
-                        cx.emit(FormEvent::Flash(tf(
-                            "settings.claudeConnected",
-                            &[("org", &org)],
-                        )));
-                    }
-                    Err(e) => cx.emit(FormEvent::Error(e)),
-                }
-                cx.notify();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let key = self.key.read(cx).text().trim().to_string();
+            if key.is_empty() {
+                cx.emit(FormEvent::Error(t("settings.claudeNeedKey").to_string()));
+                return;
+            }
+            self.connecting = true;
+            cx.notify();
+            // Verify against Anthropic before anything is written to the keychain,
+            // so a bad key fails here rather than as a broken dashboard later.
+            let job = runtime::spawn(async move {
+                let org = admin_api::verify_key(&key)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                secrets::set("claude", CONSOLE_LABEL, &key).map_err(|e| e.to_string())?;
+                Ok::<_, String>(org.name)
             });
-        })
-        .detach();
+            cx.spawn(async move |this, cx| {
+                let result = job.await.unwrap_or_else(|| Err("cancelled".into()));
+                let _ = this.update(cx, |this, cx| {
+                    this.connecting = false;
+                    let saved = result.and_then(|org| {
+                        patch_config(|c| c.claude.console_org = org.clone())?;
+                        Ok(org)
+                    });
+                    match saved {
+                        Ok(org) => {
+                            this.org = org.clone();
+                            this.stored = true;
+                            this.replacing = false;
+                            this.key.update(cx, |k, cx| k.set_text("", cx));
+                            cx.emit(FormEvent::Saved);
+                            cx.emit(FormEvent::Flash(tf(
+                                "settings.claudeConnected",
+                                &[("org", &org)],
+                            )));
+                        }
+                        Err(e) => cx.emit(FormEvent::Error(e)),
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
     }
 
     fn disconnect(&mut self, cx: &mut Context<Self>) {
@@ -160,7 +175,8 @@ impl Render for ClaudeForm {
                 cx.listener(|this, _, window, cx| {
                     this.replacing = true;
                     this.key.update(cx, |k, cx| k.set_text("", cx));
-                    this.key.read(cx).focus(window);
+                    let handle = this.key.read(cx).handle();
+                    window.focus(&handle, cx);
                     cx.notify();
                 }),
             );

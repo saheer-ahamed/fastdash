@@ -41,7 +41,7 @@ mod pricing;
 mod usage_api;
 
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -80,11 +80,20 @@ enum Console {
 
 /// The Admin API key the user connected, if any.
 fn console_key() -> Option<String> {
-    secrets::get("claude", CONSOLE_LABEL)
+    let stored = secrets::get("claude", CONSOLE_LABEL)
         .ok()
         .flatten()
         .map(|k| k.trim().to_string())
-        .filter(|k| !k.is_empty())
+        .filter(|k| !k.is_empty());
+    if stored.is_some() {
+        return stored;
+    }
+    // The browser keeps the Admin key in the Worker session, not in memory.
+    #[cfg(target_arch = "wasm32")]
+    if crate::engine::web_session::has_anthropic() {
+        return Some(crate::engine::web_session::PLACEHOLDER.to_string());
+    }
+    None
 }
 
 /// Whether Claude Code has left anything on this machine to read. Its login and
@@ -113,7 +122,7 @@ async fn official_usage() -> Option<OfficialUsage> {
             if at.elapsed() < OFFICIAL_TTL {
                 crate::engine::perf::record(
                     "claude.usage",
-                    std::time::Duration::ZERO,
+                    Duration::ZERO,
                     0,
                     crate::engine::perf::CacheState::Hit,
                     true,
@@ -170,7 +179,8 @@ impl ClaudeConnector {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl Connector for ClaudeConnector {
     fn meta(&self) -> ConnectorMeta {
         ConnectorMeta {
@@ -215,11 +225,15 @@ impl Connector for ClaudeConnector {
             }),
         };
 
-        // Local transcripts (blocking fs) off the async runtime.
+        // Local transcripts. On the desktop the scan is blocking filesystem
+        // work, so it leaves the async runtime. The browser has no transcripts.
+        #[cfg(not(target_arch = "wasm32"))]
         let turns = tokio::task::spawn_blocking(parse::scan_transcripts)
             .await
             .map_err(|e| ConnectorError::Other(format!("scan task failed: {e}")))?
             .map_err(|e| ConnectorError::Other(e.to_string()))?;
+        #[cfg(target_arch = "wasm32")]
+        let turns = parse::scan_transcripts().map_err(|e| ConnectorError::Other(e.to_string()))?;
 
         let now = Utc::now();
         let agg = aggregate::build(&turns, now, &range);
@@ -232,7 +246,7 @@ impl Connector for ClaudeConnector {
 // --- panel assembly ---
 
 fn build_panels(
-    agg: &Aggregate,
+    #[cfg_attr(target_arch = "wasm32", allow(unused_variables))] agg: &Aggregate,
     official: Option<&OfficialUsage>,
     console: Option<&Console>,
     plan: Option<String>,
@@ -266,17 +280,26 @@ fn build_panels(
         }
         None => {
             // Official numbers unavailable (offline / rate-limited): show local
-            // estimates so the section is never blank.
-            panels.push(local_meter(
-                &i18n::t("claude.currentSessionEst"),
-                agg.five_hour_tokens,
-                &i18n::t("claude.inLast5h"),
-            ));
-            panels.push(local_meter(
-                &i18n::t("claude.thisWeekEst"),
-                agg.current_week_tokens,
-                &i18n::t("claude.thisWeek"),
-            ));
+            // estimates so the section is never blank. The browser cannot read
+            // Claude Code's login, so there is nothing to estimate.
+            #[cfg(target_arch = "wasm32")]
+            panels.push(Panel::Note {
+                title: Some(i18n::t("claude.webNoPlanTitle")),
+                message: i18n::t("claude.webNoPlan"),
+            });
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                panels.push(local_meter(
+                    &i18n::t("claude.currentSessionEst"),
+                    agg.five_hour_tokens,
+                    &i18n::t("claude.inLast5h"),
+                ));
+                panels.push(local_meter(
+                    &i18n::t("claude.thisWeekEst"),
+                    agg.current_week_tokens,
+                    &i18n::t("claude.thisWeek"),
+                ));
+            }
         }
     }
 
@@ -309,20 +332,31 @@ fn build_panels(
                 }),
                 _ => {}
             }
-            panels.push(Panel::Heading {
-                title: i18n::t("claude.tokenUsage"),
-                badge: Some(i18n::t("claude.sourceLocal")),
+            #[cfg(target_arch = "wasm32")]
+            panels.push(Panel::Note {
+                title: Some(i18n::t("claude.webNoTranscriptsTitle")),
+                message: i18n::t("claude.webNoTranscripts"),
             });
-            panels.push(local_stats(agg, &range_label));
-            panels.push(tokens_by_model_table(agg, &range_label));
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                panels.push(Panel::Heading {
+                    title: i18n::t("claude.tokenUsage"),
+                    badge: Some(i18n::t("claude.sourceLocal")),
+                });
+                panels.push(local_stats(agg, &range_label));
+                panels.push(tokens_by_model_table(agg, &range_label));
+            }
         }
     }
 
     // Both of these are local-only by necessity: the Console report caps at 31
     // buckets (so it cannot carry all-time history) and has no effort
-    // dimension at all.
-    panels.push(monthly_table(agg));
-    panels.push(effort_bars(agg, &range_label));
+    // dimension at all. The browser has no transcript history to chart.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        panels.push(monthly_table(agg));
+        panels.push(effort_bars(agg, &range_label));
+    }
 
     panels
 }

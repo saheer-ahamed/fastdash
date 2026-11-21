@@ -18,7 +18,7 @@
 //! TODO(feat/claude): refresh the OAuth token via `claudeAiOauth.refreshToken`
 //! when `expiresAt` has passed (Claude Code also rewrites the file on refresh).
 
-use std::time::Instant;
+use web_time::Instant;
 
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
@@ -79,7 +79,7 @@ fn read_credentials() -> Result<serde_json::Value, UsageError> {
     let base = directories::BaseDirs::new().ok_or(UsageError::NoHome)?;
     let path = base.home_dir().join(".claude").join(".credentials.json");
 
-    let raw = match std::fs::read_to_string(&path) {
+    let raw = match crate::engine::disk::read_to_string(&path) {
         Ok(raw) => raw,
         Err(err) => keychain_credentials().ok_or(UsageError::Credentials(err.to_string()))?,
     };
@@ -144,7 +144,7 @@ pub fn read_plan() -> Option<String> {
 /// Fetch and normalize the official usage numbers.
 pub async fn fetch_official_usage(token: &str) -> Result<OfficialUsage, UsageError> {
     let started = Instant::now();
-    let resp = reqwest::Client::new()
+    let resp = crate::engine::http::Client::new()
         .get(USAGE_URL)
         .bearer_auth(token)
         .header("anthropic-beta", OAUTH_BETA)

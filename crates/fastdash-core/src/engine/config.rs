@@ -126,30 +126,49 @@ pub fn config_path() -> Option<PathBuf> {
 /// TOML, unreadable path). The UI must never block on config, so this never
 /// returns an error - a broken file simply yields defaults.
 pub fn load() -> AppConfig {
-    let Some(path) = config_path() else {
-        return AppConfig::default();
-    };
-    match std::fs::read_to_string(&path) {
-        Ok(text) => toml::from_str(&text).unwrap_or_else(|err| {
-            eprintln!("fastdash: ignoring malformed config at {path:?}: {err}");
-            AppConfig::default()
-        }),
-        Err(_) => AppConfig::default(),
+    #[cfg(target_arch = "wasm32")]
+    {
+        return crate::engine::browser_store::get("fastdash.config")
+            .and_then(|text| toml::from_str(&text).ok())
+            .unwrap_or_default();
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let Some(path) = config_path() else {
+            return AppConfig::default();
+        };
+        match crate::engine::disk::read_to_string(&path) {
+            Ok(text) => toml::from_str(&text).unwrap_or_else(|err| {
+                eprintln!("fastdash: ignoring malformed config at {path:?}: {err}");
+                AppConfig::default()
+            }),
+            Err(_) => AppConfig::default(),
+        }
     }
 }
 
 /// Persist the config atomically: write a sibling temp file then rename over the
 /// target so a crash mid-write can never leave a half-written config.
 pub fn save(config: &AppConfig) -> Result<(), ConfigError> {
-    let path = config_path().ok_or(ConfigError::NoConfigDir)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let text = toml::to_string_pretty(config)?;
+        crate::engine::browser_store::set("fastdash.config", &text)
+            .map_err(|err| ConfigError::Io(std::io::Error::other(err)))?;
+        return Ok(());
     }
-    let text = toml::to_string_pretty(config)?;
-    let tmp = path.with_extension("toml.tmp");
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, &path)?;
-    Ok(())
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let path = config_path().ok_or(ConfigError::NoConfigDir)?;
+        if let Some(parent) = path.parent() {
+            crate::engine::disk::create_dir_all(parent)?;
+        }
+        let text = toml::to_string_pretty(config)?;
+        let tmp = path.with_extension("toml.tmp");
+        crate::engine::disk::write(&tmp, text)?;
+        crate::engine::disk::rename(&tmp, &path)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

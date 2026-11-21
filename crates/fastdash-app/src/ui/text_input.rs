@@ -52,10 +52,17 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("right", Right, Some(CONTEXT)),
         KeyBinding::new("shift-left", SelectLeft, Some(CONTEXT)),
         KeyBinding::new("shift-right", SelectRight, Some(CONTEXT)),
-        KeyBinding::new("secondary-a", SelectAll, Some(CONTEXT)),
-        KeyBinding::new("secondary-v", Paste, Some(CONTEXT)),
-        KeyBinding::new("secondary-c", Copy, Some(CONTEXT)),
-        KeyBinding::new("secondary-x", Cut, Some(CONTEXT)),
+        // `secondary-` is resolved by the OS keymap. `KeyBinding::new` parses
+        // the chord literally, and the web keymap rejects it. Ctrl is the
+        // shortcut on Windows, Linux, and the browser; cmd is the Mac one.
+        KeyBinding::new("ctrl-a", SelectAll, Some(CONTEXT)),
+        KeyBinding::new("cmd-a", SelectAll, Some(CONTEXT)),
+        KeyBinding::new("ctrl-v", Paste, Some(CONTEXT)),
+        KeyBinding::new("cmd-v", Paste, Some(CONTEXT)),
+        KeyBinding::new("ctrl-c", Copy, Some(CONTEXT)),
+        KeyBinding::new("cmd-c", Copy, Some(CONTEXT)),
+        KeyBinding::new("ctrl-x", Cut, Some(CONTEXT)),
+        KeyBinding::new("cmd-x", Cut, Some(CONTEXT)),
         KeyBinding::new("home", Home, Some(CONTEXT)),
         KeyBinding::new("end", End, Some(CONTEXT)),
         KeyBinding::new("enter", Submit, Some(CONTEXT)),
@@ -152,8 +159,10 @@ impl TextInput {
         cx.notify();
     }
 
-    pub fn focus(&self, window: &mut Window) {
-        window.focus(&self.focus_handle);
+    /// A clone of the focus handle that does not borrow the context, so a
+    /// caller can drop its `read` guard before focusing.
+    pub fn handle(&self) -> FocusHandle {
+        self.focus_handle.clone()
     }
 
     fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
@@ -217,7 +226,7 @@ impl TextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        window.focus(&self.focus_handle);
+        window.focus(&self.focus_handle, cx);
         self.is_selecting = true;
         if event.modifiers.shift {
             self.select_to(self.index_for_mouse_position(event.position), cx);
@@ -537,14 +546,6 @@ struct PrepaintState {
     scroll_x: Pixels,
 }
 
-impl IntoElement for TextElement {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
-    }
-}
-
 impl Element for TextElement {
     type RequestLayoutState = ();
     type PrepaintState = PrepaintState;
@@ -723,7 +724,14 @@ impl Element for TextElement {
                 window.paint_quad(selection)
             }
             let origin = point(bounds.left() - scroll_x, bounds.top());
-            let _ = line.paint(origin, window.line_height(), window, cx);
+            let _ = line.paint(
+                origin,
+                window.line_height(),
+                gpui::TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
             if focus_handle.is_focused(window) && !read_only {
                 if let Some(cursor) = prepaint.cursor.take() {
                     window.paint_quad(cursor);
@@ -799,12 +807,12 @@ impl Focusable for TextInput {
 pub fn install_focus_actions(cx: &mut App) {
     cx.on_action(|_: &FocusNext, cx| {
         if let Some(window) = cx.active_window() {
-            let _ = window.update(cx, |_, window, _| window.focus_next());
+            let _ = window.update(cx, |_, window, cx| window.focus_next(cx));
         }
     });
     cx.on_action(|_: &FocusPrev, cx| {
         if let Some(window) = cx.active_window() {
-            let _ = window.update(cx, |_, window, _| window.focus_prev());
+            let _ = window.update(cx, |_, window, cx| window.focus_prev(cx));
         }
     });
 }

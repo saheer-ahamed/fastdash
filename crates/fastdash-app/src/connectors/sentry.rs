@@ -100,7 +100,17 @@ impl SentryForm {
             labels
                 .into_iter()
                 .map(|l| {
-                    let has = matches!(secrets::get("sentry", &l), Ok(Some(_)));
+                    let has = {
+                        #[cfg(target_arch = "wasm32")]
+                        {
+                            let _ = &l;
+                            fastdash_core::engine::web_session::has_sentry()
+                        }
+                        #[cfg(not(target_arch = "wasm32"))]
+                        {
+                            matches!(secrets::get("sentry", &l), Ok(Some(_)))
+                        }
+                    };
                     (l, has)
                 })
                 .collect::<HashMap<_, _>>()
@@ -137,6 +147,15 @@ impl SentryForm {
     }
 
     fn save_all(&mut self, cx: &mut Context<Self>) {
+        #[cfg(target_arch = "wasm32")]
+        if self
+            .rows
+            .iter()
+            .any(|r| !r.token.read(cx).text().trim().is_empty())
+        {
+            cx.emit(FormEvent::Error(t("web.useSignIn").to_string()));
+            return;
+        }
         let tokens: Vec<(String, String)> = self
             .rows
             .iter()
@@ -214,7 +233,8 @@ impl SentryForm {
                     if let Some(row) = this.rows.iter_mut().find(|r| r.key == key) {
                         row.replacing = true;
                         row.token.update(cx, |i, cx| i.set_text("", cx));
-                        row.token.read(cx).focus(window);
+                        let handle = row.token.read(cx).handle();
+                        window.focus(&handle, cx);
                     }
                     cx.notify();
                 }));

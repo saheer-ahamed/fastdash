@@ -4,8 +4,10 @@
 //! `AppConfig`. Loading never fails (defaults stand in); saving is atomic.
 
 use std::collections::BTreeSet;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
 
+#[cfg(not(target_arch = "wasm32"))]
 use directories::ProjectDirs;
 use gpui::{App, Global};
 use serde::{Deserialize, Serialize};
@@ -25,29 +27,48 @@ pub struct Prefs {
 
 impl Global for Prefs {}
 
+#[cfg(not(target_arch = "wasm32"))]
 fn path() -> Option<PathBuf> {
     ProjectDirs::from("co", "zro", "fastdash").map(|d| d.config_dir().join("ui.toml"))
 }
 
 pub fn load() -> Prefs {
-    path()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|s| toml::from_str(&s).ok())
-        .unwrap_or_default()
+    #[cfg(target_arch = "wasm32")]
+    {
+        return fastdash_core::engine::browser_store::get("fastdash.ui")
+            .and_then(|text| toml::from_str(&text).ok())
+            .unwrap_or_default();
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        path()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|s| toml::from_str(&s).ok())
+            .unwrap_or_default()
+    }
 }
 
 fn save(prefs: &Prefs) -> std::io::Result<()> {
-    let Some(path) = path() else {
-        return Ok(());
-    };
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let text = toml::to_string_pretty(prefs).map_err(std::io::Error::other)?;
+        return fastdash_core::engine::browser_store::set("fastdash.ui", &text)
+            .map_err(std::io::Error::other);
     }
-    let text = toml::to_string_pretty(prefs).map_err(std::io::Error::other)?;
-    // Write-then-rename, so a crash mid-write can never leave a torn file.
-    let tmp = path.with_extension("toml.tmp");
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(tmp, path)
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let Some(path) = path() else {
+            return Ok(());
+        };
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let text = toml::to_string_pretty(prefs).map_err(std::io::Error::other)?;
+        // Write-then-rename, so a crash mid-write can never leave a torn file.
+        let tmp = path.with_extension("toml.tmp");
+        std::fs::write(&tmp, text)?;
+        std::fs::rename(tmp, path)
+    }
 }
 
 pub fn get(cx: &App) -> &Prefs {

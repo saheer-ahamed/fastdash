@@ -94,8 +94,19 @@ fn from_env() -> Option<SentryConnection> {
 /// Read `fastdash/sentry/<label>` from the OS keychain. Any error (including a
 /// missing entry) yields `None` so the caller can fall back to the env var.
 fn token_from_keychain(label: &str) -> Option<String> {
-    let token = crate::engine::secrets::get("sentry", label).ok()??;
-    non_empty(token)
+    if let Some(token) = crate::engine::secrets::get("sentry", label)
+        .ok()
+        .flatten()
+        .and_then(non_empty)
+    {
+        return Some(token);
+    }
+    // See the GitHub resolver: the browser session's token stays on the Worker.
+    #[cfg(target_arch = "wasm32")]
+    if crate::engine::web_session::has_sentry() {
+        return Some(crate::engine::web_session::PLACEHOLDER.to_string());
+    }
+    None
 }
 
 fn token_from_env() -> Option<String> {

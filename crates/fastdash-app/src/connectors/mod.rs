@@ -10,6 +10,8 @@ mod claude;
 mod github;
 mod sentry;
 mod token_guide;
+#[cfg(target_arch = "wasm32")]
+pub mod web_signin;
 
 use fastdash_core::engine::config::{self, AppConfig};
 use gpui::{
@@ -83,6 +85,10 @@ pub struct ConnectorsPage {
     form: AnyView,
     flash: Entity<Flash>,
     _form_events: Subscription,
+    #[cfg(target_arch = "wasm32")]
+    sign_in: Entity<web_signin::WebSignIn>,
+    #[cfg(target_arch = "wasm32")]
+    _sign_in: Subscription,
 }
 
 impl EventEmitter<ConnectorSaved> for ConnectorsPage {}
@@ -98,12 +104,22 @@ impl ConnectorsPage {
         let flash = cx.new(|_| Flash::default());
         let scroll = gpui::ScrollHandle::new();
         let (form, sub) = Self::mount(active, &scroll, window, cx);
+        #[cfg(target_arch = "wasm32")]
+        let sign_in = cx.new(|cx| web_signin::WebSignIn::new(cx));
+        #[cfg(target_arch = "wasm32")]
+        let sign_sub = cx.subscribe(&sign_in, |_this, _, _: &web_signin::Changed, cx| {
+            cx.emit(ConnectorSaved("session"));
+        });
         ConnectorsPage {
             active,
             scroll,
             form,
             flash,
             _form_events: sub,
+            #[cfg(target_arch = "wasm32")]
+            sign_in,
+            #[cfg(target_arch = "wasm32")]
+            _sign_in: sign_sub,
         }
     }
 
@@ -181,6 +197,16 @@ impl Render for ConnectorsPage {
                     .child(
                         ui::panels()
                             .child(self.flash.clone())
+                            .when(cfg!(target_arch = "wasm32"), |panels| {
+                                #[cfg(target_arch = "wasm32")]
+                                {
+                                    panels.child(self.sign_in.clone())
+                                }
+                                #[cfg(not(target_arch = "wasm32"))]
+                                {
+                                    panels
+                                }
+                            })
                             .child(self.form.clone()),
                     ),
             )

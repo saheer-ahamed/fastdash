@@ -88,10 +88,8 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
-  # The same GPUI crate, compiled for wasm32. It does not link the window:
-  # published GPUI 0.2.2 has no browser platform (docs/web.md). This job checks
-  # the proxy seam that the window will call once that platform exists, and
-  # that the desktop-only modules stay cfg'd out of the wasm target.
+  # The GPUI app, compiled for the browser and packed for the host page.
+  # Zed's web backend is single-threaded here, so this stays on stable Rust.
   wasm:
     runs-on: ubuntu-latest
     steps:
@@ -100,7 +98,14 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: swatinem/rust-cache@v2
-      - name: Check the wasm target
-        run: cargo check -p fastdash-app --target wasm32-unknown-unknown --locked
-      - name: Build the wasm target
+      - name: Build the wasm app
         run: cargo build -p fastdash-app --target wasm32-unknown-unknown --locked
+      - name: Pack the host-page assets
+        run: |
+          version="$(cargo metadata --format-version 1 --filter-platform wasm32-unknown-unknown --locked \
+            | python3 -c 'import json,sys; packages=json.load(sys.stdin)["packages"]; print(next(p["version"] for p in packages if p["name"]=="wasm-bindgen"))')"
+          cargo install wasm-bindgen-cli --version "$version" --locked
+          wasm-bindgen --target web --out-dir "$RUNNER_TEMP/fastdash-web" \
+            target/wasm32-unknown-unknown/debug/fastdash.wasm
+          test -s "$RUNNER_TEMP/fastdash-web/fastdash.js"
+          test -s "$RUNNER_TEMP/fastdash-web/fastdash_bg.wasm"
