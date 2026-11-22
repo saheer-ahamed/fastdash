@@ -19,7 +19,7 @@ use crate::i18n::t;
 use crate::range_filter::{RangeChanged, RangeFilter};
 use crate::settings::{Settings, SettingsEvent};
 use crate::theme::{self, Theme};
-use crate::ui;
+use crate::ui::{self, AxisScroll};
 use crate::{prefs, runtime};
 
 /// One connector as the sidebar sees it: its fixed identity plus whether it is
@@ -64,6 +64,8 @@ pub struct Root {
     /// Which connectors are connected, as of the last list. The taskbar
     /// readout follows it, so connecting or disconnecting one redraws it.
     connected: Option<Vec<String>>,
+    /// The phone menu. Open only while the viewport is below [`ui::NARROW_BELOW`].
+    nav_open: bool,
     #[cfg(target_arch = "wasm32")]
     sign_in: Entity<crate::connectors::web_signin::WebSignIn>,
     #[cfg(target_arch = "wasm32")]
@@ -149,6 +151,7 @@ impl Root {
             ],
             _midnight: Task::ready(()),
             connected: None,
+            nav_open: false,
             #[cfg(target_arch = "wasm32")]
             sign_in,
             #[cfg(target_arch = "wasm32")]
@@ -252,6 +255,7 @@ impl Root {
 
     fn select_connector(&mut self, id: String, cx: &mut Context<Self>) {
         self.page = None;
+        self.nav_open = false;
         self.active = Some(id);
         self.sync_dashboard(cx);
         cx.notify();
@@ -271,6 +275,7 @@ impl Root {
         cx: &mut Context<Self>,
     ) {
         self.page = Some(page);
+        self.nav_open = false;
         self.connectors_page = (page == Page::Connectors).then(|| {
             let view = cx.new(|cx| ConnectorsPage::new(connector, window, cx));
             let sub = cx.subscribe(&view, |this, _, event: &ConnectorSaved, cx| {
@@ -339,7 +344,7 @@ impl Root {
         self.github.update(cx, |g, cx| g.set_watched(on_github, cx));
     }
 
-    fn sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn sidebar(&self, roomy: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let th = theme::current(cx);
         // Only connected connectors get a tab. The Connectors page still lists
         // every connector on purpose - it is where you go to connect one.
@@ -361,6 +366,7 @@ impl Root {
                     c.meta.name.clone(),
                     dot,
                     active,
+                    roomy,
                     &th,
                 )
                 .on_click(cx.listener(move |this, _, _, cx| this.select_connector(id.clone(), cx)))
@@ -371,13 +377,12 @@ impl Root {
             .flex()
             .flex_col()
             .flex_none()
-            .w(px(208.))
-            .h_full()
+            .when(!roomy, |this| this.w(px(208.)).h_full().border_r_1())
+            .when(roomy, |this| this.w_full())
             .gap(px(4.))
             .px(px(8.))
             .py(px(12.))
             .bg(th.panel)
-            .border_r_1()
             .border_color(th.border)
             .child(
                 div()
@@ -405,6 +410,7 @@ impl Root {
                             t("app.connectors"),
                             th.idle,
                             self.page == Some(Page::Connectors),
+                            roomy,
                             &th,
                         )
                         .on_click(cx.listener(|this, _, window, cx| {
@@ -417,6 +423,7 @@ impl Root {
                             t("app.settings"),
                             th.idle,
                             self.page == Some(Page::Settings),
+                            roomy,
                             &th,
                         )
                         .on_click(cx.listener(|this, _, window, cx| {
@@ -468,12 +475,81 @@ impl Root {
             },
         }
     }
-}
 
-impl Render for Root {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The column that holds the current page. `h_full` is added by the desktop
+    /// row; a phone column uses `min_h_0` so the page scrolls inside the menu bar.
+    fn pane(&self, cx: &mut Context<Self>) -> gpui::Div {
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w_0()
+            .child(self.content(cx))
+    }
+
+    /// The phone menu bar. The sidebar opens under it instead of sitting beside
+    /// a page that no longer has room.
+    fn mobile_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let th = theme::current(cx);
+        let open = self.nav_open;
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(4.))
+            .h(px(MOBILE_BAR))
+            .px(px(4.))
+            .bg(th.panel)
+            .border_b_1()
+            .border_color(th.border)
+            .child(
+                div()
+                    .id("nav-toggle")
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .min_w(px(44.))
+                    .h(px(44.))
+                    .px(px(8.))
+                    .cursor_pointer()
+                    .text_color(th.bright)
+                    .child(if open { t("web.close") } else { t("web.menu") })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.nav_open = !this.nav_open;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(th.bright)
+                    .child("fastdash"),
+            )
+    }
+
+    fn nav_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let th = theme::current(cx);
         div()
+            .id("mobile-nav")
+            .absolute()
+            .top(px(MOBILE_BAR))
+            .left_0()
+            .right_0()
+            .bottom_0()
+            .bg(th.panel)
+            .scroll_y()
+            .child(self.sidebar(true, cx))
+    }
+}
+
+/// Height of the phone menu bar, in pixels. The open menu starts below it.
+const MOBILE_BAR: f32 = 48.;
+
+impl Render for Root {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let narrow = window.viewport_size().width < px(ui::NARROW_BELOW);
+        let th = theme::current(cx);
+        let shell = div()
             .relative()
             .flex()
             .size_full()
@@ -491,24 +567,27 @@ impl Render for Root {
                 {
                     this
                 }
-            })
-            .child(self.sidebar(cx))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .child(self.content(cx)),
-            )
-            .children(perf_hud(cx))
+            });
+        if narrow {
+            shell
+                .flex_col()
+                .overflow_hidden()
+                .child(self.mobile_bar(cx))
+                .child(self.pane(cx).min_h_0().overflow_hidden())
+                .when(self.nav_open, |this| this.child(self.nav_panel(cx)))
+                .children(perf_hud(true, cx))
+        } else {
+            shell
+                .child(self.sidebar(false, cx))
+                .child(self.pane(cx).h_full())
+                .children(perf_hud(false, cx))
+        }
     }
 }
 
 /// The performance overlay. Absent unless `FASTDASH_PERF` is set or developer
 /// mode is on, so the widget is not built on the path that has to stay cheap.
-fn perf_hud(cx: &mut Context<Root>) -> Option<gpui::AnyElement> {
+fn perf_hud(narrow: bool, cx: &mut Context<Root>) -> Option<gpui::AnyElement> {
     let text = fastdash_core::engine::perf::hud()?;
     let th = theme::current(cx);
     let lines = text.lines().map(|line| {
@@ -522,8 +601,9 @@ fn perf_hud(cx: &mut Context<Root>) -> Option<gpui::AnyElement> {
         div()
             .absolute()
             .bottom(px(8.))
-            .left(px(216.))
-            .w(px(460.))
+            .left(if narrow { px(8.) } else { px(216.) })
+            .when(narrow, |this| this.right(px(8.)))
+            .when(!narrow, |this| this.w(px(460.)))
             .max_h(px(240.))
             .overflow_hidden()
             .px(px(8.))
@@ -544,6 +624,7 @@ fn sidebar_tab(
     label: impl Into<SharedString>,
     dot: gpui::Hsla,
     active: bool,
+    roomy: bool,
     th: &Theme,
 ) -> gpui::Stateful<gpui::Div> {
     let th = *th;
@@ -554,7 +635,8 @@ fn sidebar_tab(
         .items_center()
         .gap(px(9.))
         .px(px(10.))
-        .py(px(7.))
+        .py(if roomy { px(12.) } else { px(7.) })
+        .when(roomy, |this| this.min_h(px(44.)))
         .cursor_pointer()
         .child(ui::dot(dot))
         .child(label.into());

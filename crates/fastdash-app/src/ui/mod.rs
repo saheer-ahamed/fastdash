@@ -17,6 +17,9 @@ use crate::theme::{self, Theme};
 
 /// Base text size, set at a 1.5 line height.
 pub const TEXT: f32 = 13.;
+/// Viewport width below which the browser stacks the sidebar into a menu.
+/// Native windows cannot be narrower than 880px, so this does not apply there.
+pub const NARROW_BELOW: f32 = 720.;
 /// The smaller size used for labels, chips and captions.
 pub const SMALL: f32 = 12.;
 
@@ -37,9 +40,11 @@ pub fn topbar(title: impl Into<SharedString>, actions: Option<gpui::AnyElement>,
     let title: SharedString = title.into();
     div()
         .flex()
+        .flex_wrap()
         .flex_none()
         .items_center()
         .justify_between()
+        .gap_y(px(6.))
         .px(px(20.))
         .py(px(12.))
         .min_h(px(54.5))

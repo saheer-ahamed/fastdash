@@ -14,6 +14,8 @@ Desktop entry points stay on the same GPUI types. macOS and Linux go through `gp
 
 `scripts/build-web.sh` runs `cargo build --target wasm32-unknown-unknown` and `wasm-bindgen --target web`, and writes `cloudflare/public/fastdash.js` plus `fastdash_bg.wasm`. `cloudflare/public/index.html` imports that module. The generated files are gitignored.
 
+Below 720px the same window stacks: a menu button opens the sidebar as a panel, and the page fills the column. Wider browser windows keep the side-by-side layout. The host page sets `width=device-width` and `100dvh` so the canvas CSS box follows the visual viewport; GPUI sizes the backing store from that box and `devicePixelRatio`.
+
 ```bash
 bash scripts/build-web.sh          # release
 bash scripts/build-web.sh --debug  # faster local iteration
