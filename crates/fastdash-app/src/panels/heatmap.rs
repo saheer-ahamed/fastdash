@@ -264,11 +264,13 @@ pub fn render(
             }))
     });
 
+    let narrow = window.viewport_size().width < px(ui::NARROW_BELOW);
     ui::card(cx)
         .children(title.map(|title| ui::card_title(title.to_string(), cx)))
         .child(
             div()
                 .flex()
+                .when(narrow, |row| row.flex_col())
                 .items_start()
                 .gap(px(14.))
                 .child(main)
